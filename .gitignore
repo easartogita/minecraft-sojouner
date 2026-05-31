@@ -1,0 +1,7 @@
+node_modules/
+out/
+dist/
+src-tauri/target/
+*.tsbuildinfo
+.claude/
+src-tauri/*.tiff

@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for Minecraft Sojourner",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "fs:read-all",
+    "fs:allow-read-dir",
+    "fs:allow-watch",
+    "fs:allow-unwatch",
+    "fs:scope-home-recursive",
+    "shell:allow-open"
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "name": "minecraft-sojourner",
+  "version": "1.8.0",
+  "description": "Interactive Minecraft world map viewer",
+  "author": "",
+  "scripts": {
+    "dev:vite": "vite",
+    "build:vite": "vite build",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "postbuild": "mkdir -p release/$npm_package_version && cp -r src-tauri/target/release/bundle/. release/$npm_package_version",
+    "clean": "rm -rf dist src-tauri/target",
+    "tauri": "tauri"
+  },
+  "engines": {
+    "node": ">=18.19.1",
+    "npm": ">=9.2.0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.10.1",
+    "leaflet": "1.9.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.10.1",
+    "@types/leaflet": "1.9.21",
+    "@types/node": "20.19.37",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "4.7.0",
+    "playwright": "1.60.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "typescript": "5.9.3",
+    "vite": "5.4.21"
+  }
+}

@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Biome Loading Animation</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0 }
+    body {
+      background: #111;
+      color: #ddd;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 24px;
+      padding: 32px 20px;
+    }
+    h1 { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #666; }
+    .previews { display: flex; gap: 32px; align-items: flex-end; }
+    .preview-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    canvas { image-rendering: pixelated; border: 1px solid #2a2a2a; }
+    .label { font-size: 10px; color: #555; }
+    .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; }
+    button {
+      background: #1e3a1e;
+      color: #4ade80;
+      border: 1px solid #2d5a2d;
+      padding: 7px 18px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+    }
+    button:hover { background: #253f25; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    select {
+      background: #1a1a1a;
+      color: #bbb;
+      border: 1px solid #333;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 12px;
+    }
+    #status { font-size: 11px; color: #555; min-height: 16px; }
+    .params { font-size: 10px; color: #444; }
+  </style>
+</head>
+<body>
+  <h1>Biome Tile Loading Animation</h1>
+
+  <div class="previews">
+    <div class="preview-wrap">
+      <canvas id="c64"  width="64"  height="64"></canvas>
+      <span class="label">64 px</span>
+    </div>
+    <div class="preview-wrap">
+      <canvas id="c128" width="128" height="128"></canvas>
+      <span class="label">128 px (native)</span>
+    </div>
+    <div class="preview-wrap">
+      <canvas id="c256" width="256" height="256"></canvas>
+      <span class="label">256 px</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <select id="sizeSelect">
+      <option value="64">64 px</option>
+      <option value="128" selected>128 px</option>
+      <option value="256">256 px</option>
+    </select>
+    <button id="exportBtn">Export GIF</button>
+    <button id="exportAllBtn">Export 5 GIFs</button>
+  </div>
+  <div id="status"></div>
+  <div class="params" id="params"></div>
+
+<script>
+// ── Animation (mirrors BiomeTileLayer.tsx) ────────────────────────────────────
+
+const BIOME_SWATCHES = [
+  { base: [88, 154, 56],  accent: [66, 114, 42]  },  // Forest
+  { base: [52, 122, 208], accent: [36,  89, 168]  },  // Ocean
+  { base: [208, 190, 122], accent: [180, 162, 94] },  // Desert
+  { base: [210, 228, 240], accent: [170, 194, 216] },  // Snow
+]
+
+function drawBiomeSwatch(ctx, x, y, w, tileIdx) {
+  const BLOCK = Math.max(4, (w / 8) | 0)
+  const { base, accent } = BIOME_SWATCHES[tileIdx]
+  for (let py = 0; py < w; py += BLOCK) {
+    for (let px = 0; px < w; px += BLOCK) {
+      const bx = (px / BLOCK) | 0
+      const by = (py / BLOCK) | 0
+      const h  = ((bx * 1664525 + by * 22695477 + (bx ^ by) * 134775813) >>> 0) & 0xff
+      const [r, g, b] = h < 55 ? accent : base
+      const j = (h & 0x1f) - 15
+      ctx.fillStyle = `rgb(${Math.min(255,r+j)},${Math.min(255,g+j)},${Math.min(255,b+j)})`
+      ctx.fillRect(x + px, y + py, Math.min(BLOCK, w - px), Math.min(BLOCK, w - py))
+    }
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)'
+  ctx.lineWidth = 1
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, w - 1)
+}
+
+const MOVE_MS   = 420
+const PAUSE_MS  = 110
+const CYCLE_MS  = MOVE_MS + PAUSE_MS   // 530 ms per tile step
+const LOOP_MS   = CYCLE_MS * 4         // 2120 ms full rotation
+
+const TRAVEL_MS = 440   // gem flies in
+const LINGER_MS = 90    // gem rests at centre (440+90 = CYCLE_MS ✓)
+
+// Generic faceted gem pixel art — top-left lit, right/bottom in shadow.
+// Values: 0=transparent  1=highlight  2=mid  3=dark
+const GEM_ART = {
+  diamond: [
+    [0, 0, 1, 0, 0],
+    [0, 1, 1, 2, 0],
+    [1, 1, 2, 2, 3],
+    [0, 1, 2, 3, 0],
+    [0, 0, 3, 0, 0],
+  ],
+  emerald: [
+    [0, 1, 1, 0],
+    [1, 1, 2, 3],
+    [1, 2, 2, 3],
+    [1, 2, 3, 3],
+    [0, 1, 3, 0],
+  ],
+}
+
+const GEM_PAL = {
+  diamond: ['#bde8ff', '#5ab9e0', '#1f7fa8'],
+  emerald: ['#adf2c0', '#42c475', '#1a7848'],
+}
+
+const GEM_TRACKS = [
+  { type: 'diamond', fx: -0.06, fy: 0.32, phase: 0    },
+  { type: 'emerald', fx:  1.06, fy: 0.42, phase: 530  },
+  { type: 'diamond', fx:  1.06, fy: 0.28, phase: 1060 },
+  { type: 'emerald', fx: -0.06, fy: 0.38, phase: 1590 },
+]
+
+function drawGem(ctx, cx, cy, type, scale) {
+  const art  = GEM_ART[type]
+  const pal  = GEM_PAL[type]
+  const rows = art.length
+  const cols = art[0].length
+  const ox   = Math.round(cx - (cols * scale) / 2)
+  const oy   = Math.round(cy - (rows * scale) / 2)
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const v = art[r][c]
+      if (!v) continue
+      ctx.fillStyle = pal[v - 1]
+      ctx.fillRect(ox + c * scale, oy + r * scale, scale, scale)
+    }
+  }
+}
+
+function renderFrame(ctx, size, elapsed) {
+  const margin = Math.max(3, (size * 0.04) | 0)
+  const tileW  = ((size - 2 * margin) / 3) | 0
+  const gap    = size - 2 * margin - 2 * tileW
+
+  // Clockwise slots: TL → TR → BR → BL → TL
+  const slots = [
+    [margin,              margin             ],
+    [margin + tileW + gap, margin            ],
+    [margin + tileW + gap, margin + tileW + gap],
+    [margin,              margin + tileW + gap],
+  ]
+
+  const totalCycle = (elapsed / CYCLE_MS) | 0
+  const phaseT     = elapsed % CYCLE_MS
+  const rawP       = phaseT < MOVE_MS ? phaseT / MOVE_MS : 1.0
+  const eased      = rawP < 0.5 ? 4 * rawP ** 3 : 1 - (-2 * rawP + 2) ** 3 / 2
+
+  ctx.fillStyle = '#0d0d0d'
+  ctx.fillRect(0, 0, size, size)
+
+  ctx.fillStyle = 'rgba(255,255,255,0.04)'
+  for (const [sx, sy] of slots) ctx.fillRect(sx, sy, tileW, tileW)
+
+  for (let i = 0; i < 4; i++) {
+    const from = (i + totalCycle) % 4
+    const to   = (from + 1) % 4
+    const [fx, fy] = slots[from]
+    const [tx, ty] = slots[to]
+    drawBiomeSwatch(
+      ctx,
+      Math.round(fx + (tx - fx) * eased),
+      Math.round(fy + (ty - fy) * eased),
+      tileW, i,
+    )
+  }
+
+  // Gems: one per CYCLE_MS, flying in from sides and falling to centre.
+  // Scale shrinks from 125% of tileW down to 10% as the gem arrives.
+  const loopT = elapsed % LOOP_MS
+  for (const track of GEM_TRACKS) {
+    const trackT = (loopT - track.phase + LOOP_MS) % LOOP_MS
+    if (trackT >= TRAVEL_MS + LINGER_MS) continue
+
+    const p  = Math.min(1, trackT / TRAVEL_MS)
+    const gx = size * (track.fx + (0.5 - track.fx) * p)
+    const gy = size * (track.fy + (0.5 - track.fy) * p * p)
+
+    const gemW     = tileW * (2.0 - 1.5 * p)                // 200% → 50% of tileW
+    const nCols    = GEM_ART[track.type][0].length
+    const gemScale = Math.max(0.5, gemW / nCols)
+
+    const fadeIn  = Math.min(1, p / 0.18)
+    const fadeOut = trackT < TRAVEL_MS ? 1.0 : 1.0 - (trackT - TRAVEL_MS) / LINGER_MS
+
+    ctx.globalAlpha = Math.max(0, fadeIn * fadeOut)
+    drawGem(ctx, gx, gy, track.type, gemScale)
+  }
+  ctx.globalAlpha = 1
+}
+
+// ── Live preview ──────────────────────────────────────────────────────────────
+
+const canvases = [
+  { el: document.getElementById('c64'),  size: 64  },
+  { el: document.getElementById('c128'), size: 128 },
+  { el: document.getElementById('c256'), size: 256 },
+].map(c => ({ ctx: c.el.getContext('2d'), size: c.size }))
+
+const t0 = performance.now()
+;(function loop() {
+  const elapsed = (performance.now() - t0) % LOOP_MS
+  for (const { ctx, size } of canvases) renderFrame(ctx, size, elapsed)
+  requestAnimationFrame(loop)
+})()
+
+// ── GIF encoder ───────────────────────────────────────────────────────────────
+
+// LZW compress a flat array of palette indices.
+function lzwEncode(indices, minCodeSize) {
+  const clearCode = 1 << minCodeSize
+  const eofCode   = clearCode + 1
+
+  const bytes = []
+  let bitBuf = 0, bitLen = 0
+  const emit = (code, bits) => {
+    bitBuf |= code << bitLen
+    bitLen += bits
+    while (bitLen >= 8) { bytes.push(bitBuf & 0xff); bitBuf >>>= 8; bitLen -= 8 }
+  }
+
+  let table = new Map()
+  let nextCode = eofCode + 1
+  let codeSize = minCodeSize + 1
+
+  const reset = () => {
+    emit(clearCode, codeSize)
+    table = new Map()
+    nextCode = eofCode + 1
+    codeSize = minCodeSize + 1
+  }
+
+  // Initial clear code
+  emit(clearCode, codeSize)
+
+  let str = indices[0]
+  for (let i = 1; i < indices.length; i++) {
+    const k   = indices[i]
+    const key = (str << 8) | k
+    if (table.has(key)) {
+      str = table.get(key)
+    } else {
+      emit(str, codeSize)
+      if (nextCode <= 0xfff) {
+        table.set(key, nextCode++)
+        if (nextCode > (1 << codeSize) && codeSize < 12) codeSize++
+      } else {
+        reset()
+      }
+      str = k
+    }
+  }
+  emit(str, codeSize)
+  emit(eofCode, codeSize)
+  if (bitLen > 0) bytes.push(bitBuf & 0xff)
+  return bytes
+}
+
+// Build a GIF89a binary from palette + indexed frames.
+function buildGIF(palette, indexedFrames, width, height, delayCs) {
+  const out = []
+  const w8  = b   => out.push(b & 0xff)
+  const w16 = n   => { w8(n); w8(n >> 8) }
+  const wBuf = buf => { for (const b of buf) w8(b) }
+  const wStr = s   => { for (let i = 0; i < s.length; i++) w8(s.charCodeAt(i)) }
+
+  // Palette must be a power-of-2 size
+  const palBits = Math.max(1, Math.ceil(Math.log2(palette.length)))
+  const palSize = 1 << palBits
+  const minCode = Math.max(2, palBits)
+
+  // Header + Logical Screen Descriptor
+  wStr('GIF89a')
+  w16(width); w16(height)
+  w8(0x80 | (palBits - 1))   // GCT present, size
+  w8(0x00)                   // background index
+  w8(0x00)                   // pixel aspect ratio
+
+  // Global Color Table
+  for (let i = 0; i < palSize; i++) {
+    const c = i < palette.length ? palette[i] : [0, 0, 0]
+    w8(c[0]); w8(c[1]); w8(c[2])
+  }
+
+  // Netscape extension → loop forever
+  w8(0x21); w8(0xff); w8(0x0b)
+  wStr('NETSCAPE2.0')
+  w8(0x03); w8(0x01); w16(0); w8(0x00)
+
+  for (const indices of indexedFrames) {
+    // Graphic Control Extension
+    w8(0x21); w8(0xf9); w8(0x04)
+    w8(0x00)          // disposal: do not dispose
+    w16(delayCs)      // frame delay in 1/100 s
+    w8(0x00); w8(0x00)
+
+    // Image Descriptor
+    w8(0x2c)
+    w16(0); w16(0); w16(width); w16(height)
+    w8(0x00)          // no local color table
+
+    // LZW compressed image data in ≤255-byte sub-blocks
+    w8(minCode)
+    const lzw = lzwEncode(indices, minCode)
+    for (let i = 0; i < lzw.length; i += 255) {
+      const chunk = lzw.slice(i, i + 255)
+      w8(chunk.length)
+      wBuf(chunk)
+    }
+    w8(0x00)          // block terminator
+  }
+
+  w8(0x3b)            // GIF trailer
+  return new Uint8Array(out)
+}
+
+// Popularity quantizer: collect colour frequencies (rounded to nearest 8),
+// pick the top maxColors, then find nearest palette entry per pixel.
+function quantize(rawFrames, maxColors) {
+  const freq = new Map()
+  for (const data of rawFrames) {
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i]   & 0xf8
+      const g = data[i+1] & 0xf8
+      const b = data[i+2] & 0xf8
+      const k = (r << 16) | (g << 8) | b
+      freq.set(k, (freq.get(k) || 0) + 1)
+    }
+  }
+
+  const sorted  = [...freq.entries()].sort((a, b) => b[1] - a[1])
+  const palette  = sorted.slice(0, maxColors).map(([k]) => [(k >> 16) & 0xff, (k >> 8) & 0xff, k & 0xff])
+
+  // Cached nearest-palette lookup (cache key = rounded colour)
+  const cache = new Map()
+  const nearest = (r, g, b) => {
+    const ck = (r & 0xf8) << 16 | (g & 0xf8) << 8 | (b & 0xf8)
+    if (cache.has(ck)) return cache.get(ck)
+    let best = 0, bestD = Infinity
+    for (let i = 0; i < palette.length; i++) {
+      const dr = r - palette[i][0], dg = g - palette[i][1], db = b - palette[i][2]
+      const d  = dr*dr + dg*dg + db*db
+      if (d < bestD) { bestD = d; best = i }
+    }
+    cache.set(ck, best)
+    return best
+  }
+
+  const indexed = rawFrames.map(data => {
+    const idx = new Uint8Array(data.length >> 2)
+    for (let i = 0; i < idx.length; i++)
+      idx[i] = nearest(data[i*4], data[i*4+1], data[i*4+2])
+    return idx
+  })
+
+  return { palette, indexed }
+}
+
+// ── Export handler ────────────────────────────────────────────────────────────
+
+const status   = document.getElementById('status')
+const paramsEl = document.getElementById('params')
+const btn      = document.getElementById('exportBtn')
+const btnAll   = document.getElementById('exportAllBtn')
+
+const FRAME_DELAY = 9  // centiseconds (90ms ≈ 11 fps)
+const N_FRAMES    = Math.round(LOOP_MS / (FRAME_DELAY * 10))
+
+async function renderGIF(size, phaseOffset, label) {
+  const off = document.createElement('canvas')
+  off.width = off.height = size
+  const ctx = off.getContext('2d')
+
+  const rawFrames = []
+  for (let i = 0; i < N_FRAMES; i++) {
+    status.textContent = `${label} — rendering frame ${i + 1} / ${N_FRAMES}…`
+    renderFrame(ctx, size, phaseOffset + (i / N_FRAMES) * LOOP_MS)
+    rawFrames.push(new Uint8ClampedArray(ctx.getImageData(0, 0, size, size).data))
+    await new Promise(r => setTimeout(r, 0))
+  }
+
+  status.textContent = `${label} — quantizing…`
+  await new Promise(r => setTimeout(r, 0))
+  const { palette, indexed } = quantize(rawFrames, 256)
+
+  status.textContent = `${label} — encoding (${palette.length} colours)…`
+  await new Promise(r => setTimeout(r, 0))
+  return buildGIF(palette, indexed, size, size, FRAME_DELAY)
+}
+
+function download(gif, filename) {
+  const url  = URL.createObjectURL(new Blob([gif], { type: 'image/gif' }))
+  const link = document.createElement('a')
+  link.href = url; link.download = filename; link.click()
+  URL.revokeObjectURL(url)
+}
+
+btn.addEventListener('click', async () => {
+  btn.disabled = btnAll.disabled = true
+  const size = parseInt(document.getElementById('sizeSelect').value)
+  paramsEl.textContent = `${size}×${size} · ${N_FRAMES} frames · ${FRAME_DELAY * 10}ms/frame · ${(LOOP_MS/1000).toFixed(2)}s loop`
+  const gif = await renderGIF(size, 0, 'GIF')
+  download(gif, `biome-loading-${size}.gif`)
+  status.textContent = `Done — ${(gif.length / 1024).toFixed(1)} KB`
+  btn.disabled = btnAll.disabled = false
+})
+
+btnAll.addEventListener('click', async () => {
+  btn.disabled = btnAll.disabled = true
+  const size    = parseInt(document.getElementById('sizeSelect').value)
+  const N_GIFS  = 5
+  paramsEl.textContent = `${size}×${size} · ${N_GIFS} GIFs · ${N_FRAMES} frames each · phases evenly spread over ${(LOOP_MS/1000).toFixed(2)}s loop`
+
+  let totalKB = 0
+  for (let g = 0; g < N_GIFS; g++) {
+    const phase = (g / N_GIFS) * LOOP_MS
+    const gif   = await renderGIF(size, phase, `GIF ${g + 1}/${N_GIFS}`)
+    download(gif, `biome-loading-${size}-${g}.gif`)
+    totalKB += gif.length / 1024
+    // Small pause between downloads so the browser doesn't batch them
+    await new Promise(r => setTimeout(r, 300))
+  }
+
+  status.textContent = `Done — 5 GIFs, ${totalKB.toFixed(1)} KB total`
+  btn.disabled = btnAll.disabled = false
+})
+</script>
+</body>
+</html>
