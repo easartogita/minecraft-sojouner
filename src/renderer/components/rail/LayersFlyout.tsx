@@ -1,6 +1,7 @@
 import React from 'react'
 import { useApp } from '../../App'
 import { MC_VERSIONS, CAVE_MODE_MIN_ZOOM, CAVE_MODE_MAX_ZOOM } from '../../lib/constants'
+import { ORE_FEATURE_DEFS } from '../../lib/oreFeatures'
 
 const SCAN_LOW_MIN  = -80
 const SCAN_HIGH_MAX =  20
@@ -65,6 +66,8 @@ export default function LayersFlyout() {
 
       <div className="flyout-body">
 
+        <div className="flyout-section-label">Surface</div>
+
         {/* Chunk Data */}
         {state.worldDir && (
           <div className="flyout-layer-group">
@@ -78,25 +81,29 @@ export default function LayersFlyout() {
                 hotkeyTitle="Toggle chunk data"
               />
             </label>
-            <div className="chunk-mode-row">
-              <label className={`chunk-mode-option${state.hideWater ? ' active' : ''}`}>
-                <input type="checkbox" checked={state.hideWater}
-                  onChange={() => dispatch({ type: 'TOGGLE_HIDE_WATER' } as never)} />
-                Hide Water <kbd className="shortcut-key" title="Toggle hide water">H</kbd>
-              </label>
-              <label className={`chunk-mode-option${state.caveMode ? ' active' : ''}${state.seedData?.playerY == null ? ' disabled' : ''}`}
-                title={state.seedData?.playerY == null ? 'Open a world with a player position to use Cave Mode' : undefined}>
-                <input type="checkbox" checked={state.caveMode}
-                  disabled={state.seedData?.playerY == null}
-                  onChange={() => dispatch({ type: 'TOGGLE_CAVE_MODE' } as never)} />
-                Cave Mode <kbd className="shortcut-key" title="Toggle cave mode">C</kbd>
-                {state.caveMode && playerY != null && (
-                  <span style={{ color: 'var(--text-muted)', marginLeft: 2 }}>Y={playerY}</span>
-                )}
-              </label>
-            </div>
-            <OpacityRow label="Opacity" value={state.chunkOpacity}
-              onChange={v => dispatch({ type: 'SET_CHUNK_OPACITY', opacity: v } as never)} />
+            {state.showChunkData && (
+              <>
+                <div className="chunk-mode-row">
+                  <label className={`chunk-mode-option${state.hideWater ? ' active' : ''}`}>
+                    <input type="checkbox" checked={state.hideWater}
+                      onChange={() => dispatch({ type: 'TOGGLE_HIDE_WATER' } as never)} />
+                    Hide Water <kbd className="shortcut-key" title="Toggle hide water">H</kbd>
+                  </label>
+                  <label className={`chunk-mode-option${state.caveMode ? ' active' : ''}${state.seedData?.playerY == null ? ' disabled' : ''}`}
+                    title={state.seedData?.playerY == null ? 'Open a world with a player position to use Cave Mode' : undefined}>
+                    <input type="checkbox" checked={state.caveMode}
+                      disabled={state.seedData?.playerY == null}
+                      onChange={() => dispatch({ type: 'TOGGLE_CAVE_MODE' } as never)} />
+                    Cave Mode <kbd className="shortcut-key" title="Toggle cave mode">C</kbd>
+                    {state.caveMode && playerY != null && (
+                      <span style={{ color: 'var(--text-muted)', marginLeft: 2 }}>Y={playerY}</span>
+                    )}
+                  </label>
+                </div>
+                <OpacityRow label="Opacity" value={state.chunkOpacity}
+                  onChange={v => dispatch({ type: 'SET_CHUNK_OPACITY', opacity: v } as never)} />
+              </>
+            )}
           </div>
         )}
 
@@ -161,9 +168,33 @@ export default function LayersFlyout() {
               ))}
             </div>
           )}
-          <OpacityRow label="Opacity" value={state.biomeOpacity}
-            onChange={v => dispatch({ type: 'SET_BIOME_OPACITY', opacity: v } as never)} />
+          {state.showBiomes && (
+            <OpacityRow label="Opacity" value={state.biomeOpacity}
+              onChange={v => dispatch({ type: 'SET_BIOME_OPACITY', opacity: v } as never)} />
+          )}
         </div>
+
+        {/* Terrain relief */}
+        {state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
+          <div className="flyout-layer-group">
+            <label className="overlay-toggle">
+              <input type="checkbox" checked={state.showTerrain}
+                onChange={() => dispatch({ type: 'TOGGLE_TERRAIN' } as never)} />
+              <LayerLabel
+                name="Terrain Relief"
+                info="Hillshade from real surface heights — overworld, 1.18+, high zoom only"
+              />
+            </label>
+            {state.showTerrain && (
+              <OpacityRow label="Opacity" value={state.terrainOpacity}
+                onChange={v => dispatch({ type: 'SET_TERRAIN_OPACITY', opacity: v } as never)} />
+            )}
+          </div>
+        )}
+
+        {state.dimension === 'overworld' && (
+          <div className="flyout-section-label flyout-section-label--spaced">Underground</div>
+        )}
 
         {/* Slime chunks */}
         {state.dimension === 'overworld' && (
@@ -178,8 +209,10 @@ export default function LayersFlyout() {
                 hotkeyTitle="Toggle slime chunks"
               />
             </label>
-            <OpacityRow label="Opacity" value={state.slimeOpacity}
-              onChange={v => dispatch({ type: 'SET_SLIME_OPACITY', opacity: v } as never)} />
+            {state.showSlimeChunks && (
+              <OpacityRow label="Opacity" value={state.slimeOpacity}
+                onChange={v => dispatch({ type: 'SET_SLIME_OPACITY', opacity: v } as never)} />
+            )}
           </div>
         )}
 
@@ -197,21 +230,79 @@ export default function LayersFlyout() {
               />
             </label>
             {state.showOreVeins && (
-              <div className="sub-toggles">
-                <label className="overlay-toggle sub-toggle">
-                  <input type="checkbox" checked={state.showCopperVeins}
-                    onChange={() => dispatch({ type: 'TOGGLE_COPPER_VEINS' } as never)} />
-                  <span className="overlay-label" style={{ color: 'rgb(210,140,60)' }}>Copper</span>
-                </label>
-                <label className="overlay-toggle sub-toggle">
-                  <input type="checkbox" checked={state.showIronVeins}
-                    onChange={() => dispatch({ type: 'TOGGLE_IRON_VEINS' } as never)} />
-                  <span className="overlay-label" style={{ color: 'rgb(180,180,180)' }}>Iron</span>
-                </label>
+              <>
+                <div className="biome-mode-radio">
+                  {(['density', 'footprint'] as const).map(m => (
+                    <label key={m} className={`biome-mode-option${state.oreVeinMode === m ? ' active' : ''}`}>
+                      <input type="radio" name="oreVeinMode" value={m} checked={state.oreVeinMode === m}
+                        onChange={() => dispatch({ type: 'SET_ORE_VEIN_MODE', mode: m } as never)} />
+                      {m === 'density' ? 'Density' : 'Footprint'}
+                    </label>
+                  ))}
+                </div>
+                <div className="sub-toggles">
+                  <label className="overlay-toggle sub-toggle">
+                    <input type="checkbox" checked={state.showCopperVeins}
+                      onChange={() => dispatch({ type: 'TOGGLE_COPPER_VEINS' } as never)} />
+                    <span className="overlay-label" style={{ color: 'rgb(210,140,60)' }}>Copper</span>
+                  </label>
+                  <label className="overlay-toggle sub-toggle">
+                    <input type="checkbox" checked={state.showIronVeins}
+                      onChange={() => dispatch({ type: 'TOGGLE_IRON_VEINS' } as never)} />
+                    <span className="overlay-label" style={{ color: 'rgb(180,180,180)' }}>Iron</span>
+                  </label>
+                </div>
+                <OpacityRow label="Opacity" value={state.oreOpacity}
+                  onChange={v => dispatch({ type: 'SET_ORE_OPACITY', opacity: v } as never)} />
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Ore deposits (individual ore blobs) */}
+        {state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
+          <div className="flyout-layer-group">
+            <label className="overlay-toggle">
+              <input type="checkbox" checked={state.showOreFeatures}
+                onChange={() => dispatch({ type: 'TOGGLE_ORE_FEATURES' } as never)} />
+              <LayerLabel
+                name="Ore Deposits"
+                info="Individual ore blobs (diamond, gold, redstone, …) from worldgen — overworld, 1.18+, high zoom only"
+              />
+            </label>
+            {state.showOreFeatures && (
+              <div className="sub-toggles sub-toggles-grid">
+                {ORE_FEATURE_DEFS.map(ore => (
+                  <label key={ore.id} className="overlay-toggle sub-toggle">
+                    <input type="checkbox" checked={state.oreFeatureTypes.includes(ore.id)}
+                      onChange={() => {
+                        const set = new Set(state.oreFeatureTypes)
+                        if (set.has(ore.id)) set.delete(ore.id); else set.add(ore.id)
+                        dispatch({ type: 'SET_ORE_FEATURE_TYPES', ids: [...set] } as never)
+                      }} />
+                    <span className="overlay-label" style={{ color: `rgb(${ore.color[0]},${ore.color[1]},${ore.color[2]})` }}>{ore.label}</span>
+                  </label>
+                ))}
               </div>
             )}
-            <OpacityRow label="Opacity" value={state.oreOpacity}
-              onChange={v => dispatch({ type: 'SET_ORE_OPACITY', opacity: v } as never)} />
+          </div>
+        )}
+
+        {/* Carvers (caves / ravines / canyons) */}
+        {state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
+          <div className="flyout-layer-group">
+            <label className="overlay-toggle">
+              <input type="checkbox" checked={state.showCarvers}
+                onChange={() => dispatch({ type: 'TOGGLE_CARVERS' } as never)} />
+              <LayerLabel
+                name="Caves & Ravines"
+                info="Carver coverage (caves, ravines, canyons) — overworld, 1.18+"
+              />
+            </label>
+            {state.showCarvers && (
+              <OpacityRow label="Opacity" value={state.carverOpacity}
+                onChange={v => dispatch({ type: 'SET_CARVER_OPACITY', opacity: v } as never)} />
+            )}
           </div>
         )}
 
@@ -233,19 +324,7 @@ export default function LayersFlyout() {
           </div>
         )}
 
-        {/* Local difficulty */}
-        {state.worldDir && state.seedData?.worldTime != null && (
-          <div className="flyout-layer-group">
-            <label className="overlay-toggle">
-              <input type="checkbox" checked={state.showLocalDifficulty}
-                onChange={() => dispatch({ type: 'TOGGLE_LOCAL_DIFFICULTY' } as never)} />
-              <LayerLabel
-                name="Local Difficulty"
-                info="Regional difficulty (0–6.75) shown on hover — based on world time and chunk inhabitation"
-              />
-            </label>
-          </div>
-        )}
+        <div className="flyout-section-label flyout-section-label--spaced">Grids &amp; Reference</div>
 
         {/* Grids + spawn radius */}
         <div className="flyout-layer-group">
@@ -276,6 +355,20 @@ export default function LayersFlyout() {
             </label>
           )}
         </div>
+
+        {/* Local difficulty */}
+        {state.worldDir && state.seedData?.worldTime != null && (
+          <div className="flyout-layer-group">
+            <label className="overlay-toggle">
+              <input type="checkbox" checked={state.showLocalDifficulty}
+                onChange={() => dispatch({ type: 'TOGGLE_LOCAL_DIFFICULTY' } as never)} />
+              <LayerLabel
+                name="Local Difficulty"
+                info="Regional difficulty (0–6.75) shown on hover — based on world time and chunk inhabitation"
+              />
+            </label>
+          </div>
+        )}
 
       </div>
     </div>

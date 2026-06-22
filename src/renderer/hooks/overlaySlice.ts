@@ -1,5 +1,8 @@
 import { DEFAULT_CHUNK_DATA_MIN_ZOOM } from '../lib/constants'
 import { CustomMarkerGroup, DEFAULT_MARKER_GROUPS } from '../lib/markerFilters'
+import { ORE_FEATURE_DEFS } from '../lib/oreFeatures'
+
+const ALL_ORE_FEATURE_IDS = ORE_FEATURE_DEFS.map(d => d.id)
 
 export interface OverlayState {
   showBiomes: boolean
@@ -12,7 +15,14 @@ export interface OverlayState {
   showOreVeins: boolean
   showCopperVeins: boolean
   showIronVeins: boolean
+  oreVeinMode: 'density' | 'footprint'
   oreOpacity: number
+  showOreFeatures: boolean
+  oreFeatureTypes: string[]
+  showCarvers: boolean
+  carverOpacity: number
+  showTerrain: boolean
+  terrainOpacity: number
   hideWater: boolean
   showChunkGrid: boolean
   showRegionGrid: boolean
@@ -31,7 +41,9 @@ export interface OverlayState {
   showLocalDifficulty: boolean
   biomeMode: 'surface' | 'underground' | 'deep'
   tileCacheVersion: number
+  overlayCacheVersion: number
   structureRevision: number
+  debugOverlayOpen: boolean
   zoom: number
   uiScale: number
   rulerActive: boolean
@@ -49,7 +61,14 @@ export type OverlayAction =
   | { type: 'TOGGLE_ORE_VEINS' }
   | { type: 'TOGGLE_COPPER_VEINS' }
   | { type: 'TOGGLE_IRON_VEINS' }
+  | { type: 'SET_ORE_VEIN_MODE'; mode: 'density' | 'footprint' }
   | { type: 'SET_ORE_OPACITY'; opacity: number }
+  | { type: 'TOGGLE_ORE_FEATURES' }
+  | { type: 'SET_ORE_FEATURE_TYPES'; ids: string[] }
+  | { type: 'TOGGLE_CARVERS' }
+  | { type: 'SET_CARVER_OPACITY'; opacity: number }
+  | { type: 'TOGGLE_TERRAIN' }
+  | { type: 'SET_TERRAIN_OPACITY'; opacity: number }
   | { type: 'TOGGLE_HIDE_WATER' }
   | { type: 'TOGGLE_CHUNK_GRID' }
   | { type: 'TOGGLE_REGION_GRID' }
@@ -70,7 +89,9 @@ export type OverlayAction =
   | { type: 'TOGGLE_LOCAL_DIFFICULTY' }
   | { type: 'SET_BIOME_MODE'; mode: 'surface' | 'underground' | 'deep' }
   | { type: 'CLEAR_TILE_CACHE' }
+  | { type: 'CLEAR_OVERLAY_CACHE' }
   | { type: 'CLEAR_STRUCTURE_CACHE' }
+  | { type: 'TOGGLE_DEBUG_OVERLAY' }
   | { type: 'RESET_OVERLAYS' }
   | { type: 'SET_ZOOM'; zoom: number }
   | { type: 'SET_UI_SCALE'; scale: number }
@@ -91,6 +112,10 @@ export interface OverlaySession {
   showSlimeChunks?: boolean
   showCopperVeins?: boolean
   showIronVeins?: boolean
+  oreVeinMode?: 'density' | 'footprint'
+  oreFeatureTypes?: string[]
+  carverOpacity?: number
+  terrainOpacity?: number
   showChunkData?: boolean
   chunkDataMinZoom?: number
   showChunkGrid?: boolean
@@ -134,6 +159,10 @@ export function saveOverlaySession(
     showSlimeChunks:         state.showSlimeChunks,
     showCopperVeins:         state.showCopperVeins,
     showIronVeins:           state.showIronVeins,
+    oreVeinMode:             state.oreVeinMode,
+    oreFeatureTypes:         state.oreFeatureTypes,
+    carverOpacity:           state.carverOpacity,
+    terrainOpacity:          state.terrainOpacity,
     showChunkData:           state.showChunkData,
     chunkDataMinZoom:        state.chunkDataMinZoom,
     showChunkGrid:           state.showChunkGrid,
@@ -169,7 +198,14 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
     showOreVeins:            false,
     showCopperVeins:         s.showCopperVeins           ?? true,
     showIronVeins:           s.showIronVeins             ?? true,
+    oreVeinMode:             s.oreVeinMode               ?? 'density',
     oreOpacity:              s.oreOpacity               ?? 1,
+    showOreFeatures:         false,
+    oreFeatureTypes:         s.oreFeatureTypes           ?? ALL_ORE_FEATURE_IDS,
+    showCarvers:             false,
+    carverOpacity:           s.carverOpacity             ?? 1,
+    showTerrain:             false,
+    terrainOpacity:          s.terrainOpacity            ?? 0.6,
     hideWater:               s.hideWater                ?? false,
     showChunkGrid:           s.showChunkGrid             ?? false,
     showRegionGrid:          s.showRegionGrid            ?? false,
@@ -192,7 +228,9 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
     showLocalDifficulty:     s.showLocalDifficulty       ?? false,
     biomeMode:               s.biomeMode                 ?? 'surface',
     tileCacheVersion:        0,
+    overlayCacheVersion:     0,
     structureRevision:       0,
+    debugOverlayOpen:        false,
     zoom:                    s.zoom                     ?? 2,
     uiScale:                 s.uiScale                  ?? 1,
     rulerActive:             false,
@@ -206,6 +244,9 @@ const RESET: OverlayState = {
   showBiomes: true, biomeOpacity: 1, chunkOpacity: 1, slimeOpacity: 1, oreOpacity: 1,
   showChunkData: true, chunkDataMinZoom: DEFAULT_CHUNK_DATA_MIN_ZOOM,
   showSlimeChunks: false, showOreVeins: false, showCopperVeins: true, showIronVeins: true,
+  oreVeinMode: 'density',
+  showOreFeatures: false, oreFeatureTypes: ALL_ORE_FEATURE_IDS,
+  showCarvers: false, carverOpacity: 1, showTerrain: false, terrainOpacity: 0.6,
   hideWater: false, showChunkGrid: false, showRegionGrid: false, showSpawnRadius: false,
   showStructures: true,
   showMarkers: false,
@@ -216,7 +257,7 @@ const RESET: OverlayState = {
   showCaveEntrances: false, caveEntranceOpacity: 0.7,
   showLocalDifficulty: false,
   biomeMode: 'surface',
-  tileCacheVersion: 0, structureRevision: 0, zoom: 2, uiScale: 1,
+  tileCacheVersion: 0, overlayCacheVersion: 0, structureRevision: 0, debugOverlayOpen: false, zoom: 2, uiScale: 1,
   rulerActive: false, rulerWaypoints: [],
 }
 
@@ -250,9 +291,31 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
       return { ...state, showCopperVeins: !state.showCopperVeins }
     case 'TOGGLE_IRON_VEINS':
       return { ...state, showIronVeins: !state.showIronVeins }
+    case 'SET_ORE_VEIN_MODE': {
+      const a = action as OverlayAction & { type: 'SET_ORE_VEIN_MODE' }
+      return { ...state, oreVeinMode: a.mode }
+    }
     case 'SET_ORE_OPACITY': {
       const a = action as OverlayAction & { type: 'SET_ORE_OPACITY' }
       return { ...state, oreOpacity: a.opacity }
+    }
+    case 'TOGGLE_ORE_FEATURES':
+      return { ...state, showOreFeatures: !state.showOreFeatures }
+    case 'SET_ORE_FEATURE_TYPES': {
+      const a = action as OverlayAction & { type: 'SET_ORE_FEATURE_TYPES' }
+      return { ...state, oreFeatureTypes: a.ids }
+    }
+    case 'TOGGLE_CARVERS':
+      return { ...state, showCarvers: !state.showCarvers }
+    case 'SET_CARVER_OPACITY': {
+      const a = action as OverlayAction & { type: 'SET_CARVER_OPACITY' }
+      return { ...state, carverOpacity: a.opacity }
+    }
+    case 'TOGGLE_TERRAIN':
+      return { ...state, showTerrain: !state.showTerrain }
+    case 'SET_TERRAIN_OPACITY': {
+      const a = action as OverlayAction & { type: 'SET_TERRAIN_OPACITY' }
+      return { ...state, terrainOpacity: a.opacity }
     }
     case 'TOGGLE_HIDE_WATER':
       return { ...state, hideWater: !state.hideWater }
@@ -333,10 +396,14 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
     }
     case 'CLEAR_TILE_CACHE':
       return { ...state, tileCacheVersion: state.tileCacheVersion + 1 }
+    case 'CLEAR_OVERLAY_CACHE':
+      return { ...state, overlayCacheVersion: state.overlayCacheVersion + 1 }
+    case 'TOGGLE_DEBUG_OVERLAY':
+      return { ...state, debugOverlayOpen: !state.debugOverlayOpen }
     case 'CLEAR_STRUCTURE_CACHE':
       return { ...state, structureRevision: state.structureRevision + 1 }
     case 'RESET_OVERLAYS':
-      return { ...state, ...RESET, tileCacheVersion: state.tileCacheVersion, zoom: state.zoom, uiScale: state.uiScale }
+      return { ...state, ...RESET, tileCacheVersion: state.tileCacheVersion, overlayCacheVersion: state.overlayCacheVersion, debugOverlayOpen: state.debugOverlayOpen, zoom: state.zoom, uiScale: state.uiScale }
     case 'SET_ZOOM': {
       const a = action as OverlayAction & { type: 'SET_ZOOM' }
       return { ...state, zoom: a.zoom }

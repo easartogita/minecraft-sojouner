@@ -9,12 +9,16 @@ export const MC_VERSIONS = {
   'MC_1_21_1': 26,   // 1.21 – 1.21.1
   'MC_1_21_3': 27,   // 1.21.2 – 1.21.4
   'MC_1_21': 28,     // MC_1_21_WD / 1.21.5
+  'MC_26_1': 33,     // 26.0 – 26.1
+  'MC_26_2': 34,     // 26.2 (Chaos Cubed) — adds sulfur_caves
 } as const
 
 export type MCVersionKey = keyof typeof MC_VERSIONS
 
 export const MC_VERSION_LABELS: { key: MCVersionKey; label: string; minDataVersion: number }[] = [
-  { key: 'MC_1_21',   label: '1.21.5 / 26.x',   minDataVersion: 4786 },
+  { key: 'MC_26_2',   label: '26.2 (Chaos Cubed)', minDataVersion: 4903 },
+  { key: 'MC_26_1',   label: '26.0 – 26.1',     minDataVersion: 4787 },
+  { key: 'MC_1_21',   label: '1.21.5',          minDataVersion: 4786 },
   { key: 'MC_1_21_3', label: '1.21.2 – 1.21.4', minDataVersion: 4080 },
   { key: 'MC_1_21_1', label: '1.21 – 1.21.1',   minDataVersion: 3953 },
   { key: 'MC_1_20',   label: '1.20',             minDataVersion: 3218 },
@@ -25,10 +29,12 @@ export const MC_VERSION_LABELS: { key: MCVersionKey; label: string; minDataVersi
 ]
 
 // Data version thresholds from VERSION_MAP in nbt_reader.rs.
-// cubiomes support ends at MC_1_21_WD (1.21.5 / data version 4786).
-// 26.x and later map to MC_1_21 as the closest available approximation.
+// cubiomes (xpple fork) supports through 26.2 (MC_26_2); sulfur_caves (biome
+// 187) requires MC_26_2. Older 26.x worlds use MC_26_1 as the closest match.
 export function dataVersionToMCVersionKey(dataVersion: number): MCVersionKey {
-  if (dataVersion >= 4786) return 'MC_1_21'    // 1.21.5 (WD) and 26.x+
+  if (dataVersion >= 4903) return 'MC_26_2'    // 26.2 (Chaos Cubed) — sulfur caves
+  if (dataVersion >= 4787) return 'MC_26_1'    // 26.0 – 26.1
+  if (dataVersion >= 4786) return 'MC_1_21'    // 1.21.5 (WD)
   if (dataVersion >= 4080) return 'MC_1_21_3'  // 1.21.2 – 1.21.4
   if (dataVersion >= 3953) return 'MC_1_21_1'  // 1.21 – 1.21.1
   if (dataVersion >= 3218) return 'MC_1_20'

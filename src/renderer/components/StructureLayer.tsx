@@ -8,6 +8,65 @@ import { setupDebouncedMapListeners } from '../lib/mapListeners'
 import { minecraftToLeaflet } from '../lib/tileCoords'
 import { BASE_BLOCKS_PER_PIXEL, MC_VERSIONS } from '../lib/constants'
 import { attachMarkerContextMenu } from '../lib/contextMenuBus'
+import * as api from '../lib/tauriAPI'
+
+// Structure types whose pieces/loot the backend can generate (cubiomes
+// StructureType enum ids). Markers of these types get a chest-loot list and
+// piece footprints. Must match a structure handled by getStructurePieces in
+// the cubiomes fork *and* have a loot table in cubiomes/loot/loot_tables/.
+const STRUCT_PIECE_ID: Partial<Record<StructureType, number>> = {
+  desert_temple:        1,
+  jungle_temple:        2,
+  igloo:                4,
+  shipwreck:            7,
+  outpost:              10,
+  ruined_portal:        11,
+  ruined_portal_nether: 12,
+  buried_treasure:      14,
+  fortress:             18,
+  bastion:              19,
+  end_city:             20,
+  stronghold:           25,
+}
+
+// Marker loot badges: a fixed vertical column of slots on the marker's right
+// edge, one per possible chest kind, ordered top→bottom. A slot lights up if
+// that loot table is present in this particular instance; absent slots render
+// as invisible spacers so present ones keep their fixed position (a shipwreck
+// with only treasure+supply shows T at top and S at bottom, the map slot blank).
+// `match` is a substring of the cubiomes loot-table name for that chest kind.
+interface BadgeSlot { letter: string; match: string; color: string; title: string }
+
+const STRUCT_BADGES: Partial<Record<StructureType, BadgeSlot[]>> = {
+  shipwreck: [
+    { letter: 'T', match: 'treasure', color: '#ffd700', title: 'Treasure chest (loot map ingredients, gold, emeralds)' },
+    { letter: 'M', match: 'map',      color: '#4aa3df', title: 'Map chest (buried-treasure map, compass)' },
+    { letter: 'S', match: 'supply',   color: '#7ec850', title: 'Supply chest (food, wheat, gunpowder)' },
+  ],
+  stronghold: [
+    { letter: 'L', match: 'library',  color: '#ffd700', title: 'Library chest (enchanted book)' },
+    { letter: 'X', match: 'crossing', color: '#9ca3af', title: 'Crossing chest' },
+    { letter: 'C', match: 'corridor', color: '#cd7f32', title: 'Corridor chest' },
+  ],
+}
+
+// Build the badge column HTML for a structure given the loot tables present.
+function badgeColumnHTML(slots: BadgeSlot[], presentTables: string[]): string {
+  const chips = slots.map(s => {
+    const present = presentTables.some(t => t.includes(s.match))
+    return present
+      ? `<span class="sb-chip" style="background:${s.color}" title="${s.title}">${s.letter}</span>`
+      : `<span class="sb-chip sb-empty"></span>`
+  }).join('')
+  return `<span class="struct-badges">${chips}</span>`
+}
+
+// Human label for a chest given its loot-table name, e.g.
+// "shipwreck_treasure" → "Treasure chest", "stronghold_library" → "Library chest".
+function chestKindLabel(table: string): string {
+  const kind = table.split('_').pop() ?? table
+  return `${kind.charAt(0).toUpperCase()}${kind.slice(1)} chest`
+}
 
 const VARIANT_ABBREV: Record<string, string> = {
   basement:    'B',
@@ -164,7 +223,8 @@ function createMarkerIcon(
   color: string,
   label: string,
   summary: string,
-  variant?: { tag: string; color: string } | null
+  variant?: { tag: string; color: string } | null,
+  badgesHTML = ''
 ): L.DivIcon {
   const shapeHTML = getStructureShapeHTML(type)
   const badge = variant
@@ -178,6 +238,7 @@ function createMarkerIcon(
         ${shapeHTML}
       </svg>
       ${badge}
+      ${badgesHTML}
     </div>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11],
@@ -210,7 +271,7 @@ function saveDismissed(seed: bigint, dismissed: Set<string>): void {
   localStorage.setItem(dismissedStorageKey(seed), JSON.stringify([...dismissed]))
 }
 
-function StructureLayer({ map }: { map: L.Map }) {
+function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
   const { state } = useApp()
   const layerGroupRef = useRef<L.LayerGroup | null>(null)
   // Pool lives as a ref so it survives re-renders — zoom changes don't blow it away.
@@ -290,8 +351,9 @@ function StructureLayer({ map }: { map: L.Map }) {
           const variant = pos.variantTag ? { tag: pos.variantTag, color: pos.variantColor ?? cfg.color } : null
           const color   = variant?.color ?? cfg.color
           const summary = (variant && cfg.variantSummary?.[variant.tag]) ?? cfg.summary
-          const markerIcon = createMarkerIcon(structType, color, cfg.label, summary, variant)
-          const marker = L.marker(latlng, { icon: markerIcon })
+          const buildIcon = (badgesHTML = '') =>
+            createMarkerIcon(structType, color, cfg.label, summary, variant, badgesHTML)
+          const marker = L.marker(latlng, { icon: buildIcon() })
           attachMarkerContextMenu(marker, () => ({
             blockX: pos.x, blockZ: pos.z, blockY: null,
             kind:   'structure',
@@ -303,25 +365,65 @@ function StructureLayer({ map }: { map: L.Map }) {
                  <span class="struct-variant-pill" style="background:${variant.color}">${variant.tag}</span>
                </div>`
             : ''
+          const pieceId = STRUCT_PIECE_ID[structType]
+          const lootSection = pieceId != null
+            ? `<div class="struct-loot" data-loot-key="${key}"><div class="struct-loot-loading">Loading loot…</div></div>`
+            : ''
           marker.bindPopup(
             `<div class="popup-content">
               <div class="popup-title">${cfg.label}</div>
               ${variantRow}
               <div class="popup-coords">X: ${pos.x}, Z: ${pos.z}</div>
+              ${lootSection}
               <label class="popup-dismiss">
                 <input type="checkbox" data-dismiss-key="${key}"> Mark as useless
               </label>
             </div>`
           )
 
-          let dismissListenerAttached = false
+          let lootItems: api.LootItem[] | null = null
+
+          // Chest kind per position (e.g. "shipwreck_treasure"), for structures
+          // that get loot badges. Drives both the marker badges and the chest
+          // headings in the loot popup. Fetched eagerly (cheap — no loot roll).
+          let chestKindByPos: Map<string, string> | null = null
+          const badgeSlots = STRUCT_BADGES[structType]
+          if (badgeSlots && pieceId != null && slot != null && slot >= 0) {
+            api.getStructureChests(slot, pieceId, pos.x, pos.z).then(chests => {
+              if (!chests.length) return
+              chestKindByPos = new Map(chests.map(c => [`${c.chestX},${c.chestZ}`, c.table]))
+              marker.setIcon(buildIcon(badgeColumnHTML(badgeSlots, chests.map(c => c.table))))
+            }).catch(() => {})
+          }
+
+          // Paint cached loot into the popup's loot div. Leaflet rebuilds the
+          // popup DOM on every open, so this must run each time — not once.
+          const renderLoot = () => {
+            const div = marker.getPopup()?.getElement()
+              ?.querySelector<HTMLElement>(`.struct-loot[data-loot-key="${CSS.escape(key)}"]`)
+            if (!div || !lootItems) return
+            if (!lootItems.length) { div.innerHTML = '<div class="struct-loot-empty">No chest loot</div>'; return }
+            const byChest = new Map<string, api.LootItem[]>()
+            for (const it of lootItems) {
+              const k = `${it.chestX},${it.chestZ}`
+              const arr = byChest.get(k); if (arr) arr.push(it); else byChest.set(k, [it])
+            }
+            let n = 0
+            div.innerHTML = [...byChest.entries()].map(([posKey, its]) => {
+              const table = chestKindByPos?.get(posKey)
+              const heading = table ? chestKindLabel(table) : `Chest ${++n}`
+              return `<div class="struct-loot-chest">${heading}</div>` +
+                its.map(it => `<div class="struct-loot-row">${it.count}× ${it.item.replace('minecraft:', '').replace(/_/g, ' ')}</div>`).join('')
+            }).join('')
+          }
+
           marker.on('popupopen', () => {
-            if (dismissListenerAttached) return
-            dismissListenerAttached = true
+            // Leaflet rebuilds the popup DOM from the bound string on every
+            // open, wiping listeners — so re-attach the dismiss handler each
+            // time, not once.
             const input = marker.getPopup()?.getElement()
               ?.querySelector<HTMLInputElement>(`input[data-dismiss-key="${CSS.escape(key)}"]`)
-            if (!input) return
-            input.addEventListener('change', () => {
+            input?.addEventListener('change', () => {
               if (!input.checked) return
               dismissedRef.current.add(key)
               saveDismissed(BigInt(seed!), dismissedRef.current)
@@ -333,6 +435,18 @@ function StructureLayer({ map }: { map: L.Map }) {
                 pool.delete(key)
               }
             })
+
+            if (pieceId == null || slot == null || slot < 0) return
+
+            // Chest loot — fetch once, then re-render on every open.
+            if (lootItems) {
+              renderLoot()
+            } else {
+              api.getStructureLoot(slot, pieceId, pos.x, pos.z, mcVersion).then(items => {
+                lootItems = items
+                renderLoot()
+              }).catch(() => {})
+            }
           })
 
           group.addLayer(marker)
@@ -399,7 +513,7 @@ function StructureLayer({ map }: { map: L.Map }) {
     }
     // zoom intentionally omitted: read via map.getZoom() inside updateStructures.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, seed, dimension, selectedVersion, worldType, enabledStructures, showStructures, structureRevision])
+  }, [map, slot, seed, dimension, selectedVersion, worldType, enabledStructures, showStructures, structureRevision])
 
   return null
 }

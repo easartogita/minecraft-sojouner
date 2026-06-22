@@ -229,6 +229,17 @@ fn lookup(name: &str) -> Option<&'static [u8; 3]> {
         "cactus" => &[80, 130, 50],
         "bamboo" => &[85, 150, 32],
         "dripstone_block" | "pointed_dripstone" => &[130, 115, 108],
+        // Sulfur caves (26.2) — sulfur is bright yellow, cinnabar is vermilion red
+        "sulfur" | "polished_sulfur" | "sulfur_bricks" | "chiseled_sulfur"
+            | "sulfur_slab" | "sulfur_stairs" | "sulfur_wall"
+            | "sulfur_brick_slab" | "sulfur_brick_stairs" | "sulfur_brick_wall"
+            | "polished_sulfur_slab" | "polished_sulfur_stairs" | "polished_sulfur_wall" => &[224, 206, 78],
+        "potent_sulfur" => &[236, 198, 40],
+        "sulfur_spike" => &[214, 192, 64],
+        "cinnabar" | "polished_cinnabar" | "cinnabar_bricks" | "chiseled_cinnabar"
+            | "cinnabar_slab" | "cinnabar_stairs" | "cinnabar_wall"
+            | "cinnabar_brick_slab" | "cinnabar_brick_stairs" | "cinnabar_brick_wall"
+            | "polished_cinnabar_slab" | "polished_cinnabar_stairs" | "polished_cinnabar_wall" => &[176, 48, 42],
         _ => return None,
     })
 }

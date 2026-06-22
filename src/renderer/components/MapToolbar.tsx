@@ -107,7 +107,10 @@ export default function MapToolbar() {
       <div className="map-toolbar-toggles">
         {!isBedrockWorld && (
           <ToolbarToggle label="Biomes" title="Toggle biome map (B)"
-            active={state.showBiomes} onClick={() => dispatch({ type: 'TOGGLE_BIOMES' } as never)} />
+            active={state.showBiomes} onClick={() => dispatch({ type: 'TOGGLE_BIOMES' } as never)}
+            mode={state.showBiomes && state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18']
+              ? (state.biomeMode === 'surface' ? 'Surface' : state.biomeMode === 'underground' ? 'Cave' : 'Deep')
+              : undefined} />
         )}
         {state.worldDir && (
           <ToolbarToggle label="Chunk Data" title="Toggle real block colors from .mca files (D)"
@@ -119,7 +122,8 @@ export default function MapToolbar() {
         )}
         {!isBedrockWorld && state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
           <ToolbarToggle label="Ore Veins" title="Toggle ore vein probability overlay (V)"
-            active={state.showOreVeins} onClick={() => dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)} />
+            active={state.showOreVeins} onClick={() => dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)}
+            mode={state.showOreVeins ? (state.oreVeinMode === 'density' ? 'Density' : 'Footprint') : undefined} />
         )}
         <ToolbarToggle label="Ruler" title="Measure distances between points (R)"
           active={state.rulerActive} onClick={() => dispatch({ type: 'RULER_TOGGLE' } as never)} />
@@ -189,12 +193,13 @@ export default function MapToolbar() {
   )
 }
 
-function ToolbarToggle({ label, title, active, onClick }: {
-  label: string; title: string; active: boolean; onClick: () => void
+function ToolbarToggle({ label, title, active, onClick, mode }: {
+  label: string; title: string; active: boolean; onClick: () => void; mode?: string
 }) {
   return (
     <button className={`toolbar-toggle${active ? ' active' : ''}`} onClick={onClick} title={title}>
       {label}
+      {mode && <span className="toolbar-toggle-mode"> · {mode}</span>}
     </button>
   )
 }

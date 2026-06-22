@@ -55,9 +55,13 @@ export type WorldAction =
 
 // ── Pin storage — world-scoped ────────────────────────────────────────────────
 
-export function pinWorldKey(levelDatPath: string | null, seed: string | null, version: MCVersionKey): string | null {
+// Pins are user data, not a regenerable cache — their storage key must stay
+// stable when a world is upgraded. So key on the save itself (level.dat path),
+// never the worldgen version. The `version` param is kept only to recover pins
+// written by older builds that baked it into the seed key (see migration below).
+export function pinWorldKey(levelDatPath: string | null, seed: string | null, _version?: MCVersionKey): string | null {
   if (levelDatPath) return levelDatPath
-  if (seed) return `seed:${seed}:${version}`
+  if (seed) return `seed:${seed}`
   return null
 }
 
@@ -67,7 +71,23 @@ function loadAllPins(): Record<string, Pin[]> {
     if (!raw) return {}
     const parsed = JSON.parse(raw)
     if (Array.isArray(parsed)) return {}   // old flat format — discard
-    return parsed as Record<string, Pin[]>
+    const all = parsed as Record<string, Pin[]>
+
+    // Migrate legacy version-suffixed seed keys (`seed:<seed>:<MC_VERSION>`) to
+    // the version-independent `seed:<seed>`, merging if several versions exist.
+    let migrated = false
+    for (const k of Object.keys(all)) {
+      const m = /^(seed:-?\d+):[A-Z0-9_]+$/.exec(k)
+      if (!m) continue
+      const target = m[1]
+      const existing = all[target] ?? []
+      const seen = new Set(existing.map(p => `${p.x},${p.z},${p.dimension ?? 'overworld'}`))
+      all[target] = existing.concat((all[k] ?? []).filter(p => !seen.has(`${p.x},${p.z},${p.dimension ?? 'overworld'}`)))
+      delete all[k]
+      migrated = true
+    }
+    if (migrated) localStorage.setItem('mcmap:pins', JSON.stringify(all))
+    return all
   } catch { return {} }
 }
 

@@ -26,6 +26,9 @@ export interface TileJob {
   priority: number   // squared tile-distance from map centre; lower = sooner
   status:   'pending' | 'active' | 'cancelled'
   run:      () => void
+  // Abort an already-running fetch (e.g. signal the Rust side to bail). Set by
+  // the consumer after enqueue. The job still calls release() when it settles.
+  abort?:   () => void
 }
 
 export class TileJobQueue {
@@ -54,7 +57,14 @@ export class TileJobQueue {
   get size() { return this.activeJobs + this.queue.length }
 
   cancel(job: TileJob) {
-    if (job.status !== 'pending') return
+    if (job.status === 'cancelled') return
+    if (job.status === 'active') {
+      // Already running: ask it to bail. It still calls release() when it settles,
+      // so activeJobs accounting stays correct — just mark it so we don't re-run.
+      job.status = 'cancelled'
+      job.abort?.()
+      return
+    }
     job.status = 'cancelled'
     const idx = this.queue.indexOf(job)
     if (idx >= 0) this.queue.splice(idx, 1)

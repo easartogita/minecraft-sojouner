@@ -229,10 +229,14 @@ fn extract_surface(
         return vec![];
     };
 
-    let status = get(root, "Status").and_then(as_str).unwrap_or("");
-    if !status.contains("full") && status != "minecraft:full" {
-        return vec![];
-    }
+    // Gate on terrain presence, not the Status string. A chunk is renderable as
+    // soon as it has a populated surface heightmap — true for `features`,
+    // `initialize_light`, `light` and `full`. The old `== "full"` check needlessly
+    // blanked ~thousands of fully-terrained proto-chunks (e.g. initialize_light)
+    // at the frontier of explored area, leaving the biome layer showing through.
+    // Earlier stages (structure_starts, biomes, surface, carvers, noise) have no
+    // usable heightmap and fall through to the empty return below — there is no
+    // terrain on disk to draw, so the biome layer is the correct fallback there.
 
     // Heightmap — MOTION_BLOCKING for normal, OCEAN_FLOOR when hiding water
     let hm = get(root, "Heightmaps");
@@ -249,6 +253,12 @@ fn extract_surface(
         })
         .and_then(as_long_array)
         .unwrap_or(&[]);
+
+    // A full heightmap is 37 packed longs (256 columns × 9 bits). Anything shorter
+    // means the chunk hasn't been terrained yet — skip it (biome layer shows).
+    if hm_longs.len() < 37 {
+        return vec![];
+    }
 
     let y_pos: i32 = get(root, "yPos").and_then(as_i32).unwrap_or(-4);
     let min_y = y_pos * 16;

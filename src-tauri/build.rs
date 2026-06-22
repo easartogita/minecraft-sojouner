@@ -1,5 +1,19 @@
 use std::env;
 
+/// Recursively collect every `.c` file under `dir`.
+fn collect_c_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_c_files(&path, out);
+        } else if path.extension().is_some_and(|x| x == "c") {
+            println!("cargo:rerun-if-changed={}", path.display());
+            out.push(path);
+        }
+    }
+}
+
 fn main() {
     tauri_build::build();
 
@@ -9,18 +23,40 @@ fn main() {
     let cubiomes = "../cubiomes";
     let asan = env::var("CUBIOMES_ASAN").is_ok();
 
+    let cubiomes_sources = [
+        "biomenoise.c", "biomes.c", "finders.c", "generator.c",
+        "layers.c", "noise.c", "quadbase.c", "util.c",
+        // terrain heightmaps; stronghold pieces/loot (pulled in by getStructurePieces)
+        "terrainnoise.c", "features/stronghold.c",
+    ];
+
+    // Recompile when the submodule sources or headers change (e.g. after a
+    // `git submodule update`); the btree tables live in tables/*.h.
+    for src in cubiomes_sources {
+        println!("cargo:rerun-if-changed={cubiomes}/{src}");
+    }
+    println!("cargo:rerun-if-changed={cubiomes}/biomes.h");
+    println!("cargo:rerun-if-changed={cubiomes}/biomenoise.h");
+    println!("cargo:rerun-if-changed={cubiomes}/finders.h");
+    println!("cargo:rerun-if-changed={cubiomes}/generator.h");
+    println!("cargo:rerun-if-changed={cubiomes}/tables");
+    println!("cargo:rerun-if-changed={cubiomes}/loot");
+    println!("cargo:rerun-if-changed={cubiomes}/features");
+
     let mut build = cc::Build::new();
-    build
-        .include(cubiomes)
-        .file("cubiomes_bridge.c")
-        .file(format!("{cubiomes}/biomenoise.c"))
-        .file(format!("{cubiomes}/biomes.c"))
-        .file(format!("{cubiomes}/finders.c"))
-        .file(format!("{cubiomes}/generator.c"))
-        .file(format!("{cubiomes}/layers.c"))
-        .file(format!("{cubiomes}/noise.c"))
-        .file(format!("{cubiomes}/quadbase.c"))
-        .file(format!("{cubiomes}/util.c"));
+    build.include(cubiomes).file("cubiomes_bridge.c");
+    for src in cubiomes_sources {
+        build.file(format!("{cubiomes}/{src}"));
+    }
+
+    // Loot library (cJSON + per-structure loot tables) — required by
+    // getStrongholdLoot / getStructurePieces / the loot preview commands.
+    // Compile every .c under loot/ (recursively: cjson/ and loot_tables/).
+    let mut loot_sources = Vec::new();
+    collect_c_files(std::path::Path::new(&format!("{cubiomes}/loot")), &mut loot_sources);
+    for f in &loot_sources {
+        build.file(f);
+    }
 
     if asan {
         build.opt_level(1)

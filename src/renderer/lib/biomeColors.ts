@@ -116,6 +116,8 @@ export const BIOME_COLORS: Record<number, RGB> = {
   185: [225, 100, 160],   // cherry_grove
   // 1.21
   186: [195, 205, 180],   // pale_garden
+  // 26.2 (Chaos Cubed)
+  187: [200, 180, 60],    // sulfur_caves
 }
 
 export function biomeToRGB(biomeId: number): RGB {
@@ -176,4 +178,6 @@ export const BIOME_NAMES: Record<number, string> = {
   185: 'Cherry Grove',
   // 1.21
   186: 'Pale Garden',
+  // 26.2 (Chaos Cubed)
+  187: 'Sulfur Caves',
 }

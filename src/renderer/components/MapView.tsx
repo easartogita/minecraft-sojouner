@@ -15,6 +15,9 @@ import ChunkOverlayLayer from './ChunkOverlayLayer'
 import ChunkGridLayer from './ChunkGridLayer'
 import SlimeChunkLayer from './SlimeChunkLayer'
 import OreVeinLayer from './OreVeinLayer'
+import OreFeatureLayer from './OreFeatureLayer'
+import CarverLayer from './CarverLayer'
+import TerrainLayer from './TerrainLayer'
 import CaveEntranceLayer from './CaveEntranceLayer'
 import LocalDifficultyLayer from './LocalDifficultyLayer'
 import StructureLayer from './StructureLayer'
@@ -464,7 +467,16 @@ export default function MapView() {
               <SlimeChunkLayer map={map} />
             )}
             {state.showOreVeins && !isBedrockWorld && state.dimension === 'overworld' && generatorSlot != null && (
-              <OreVeinLayer map={map} />
+              <OreVeinLayer map={map} slot={generatorSlot} />
+            )}
+            {state.showOreFeatures && !isBedrockWorld && state.dimension === 'overworld' && generatorSlot != null && (
+              <OreFeatureLayer map={map} slot={generatorSlot} />
+            )}
+            {state.showTerrain && !isBedrockWorld && state.dimension === 'overworld' && generatorSlot != null && (
+              <TerrainLayer map={map} slot={generatorSlot} />
+            )}
+            {state.showCarvers && !isBedrockWorld && state.dimension === 'overworld' && generatorSlot != null && (
+              <CarverLayer map={map} slot={generatorSlot} />
             )}
             {state.showCaveEntrances && !isBedrockWorld && state.worldDir && state.dimension === 'overworld' && (
               <CaveEntranceLayer map={map} />
@@ -472,7 +484,7 @@ export default function MapView() {
             {state.showLocalDifficulty && state.worldDir && (
               <LocalDifficultyLayer map={map} />
             )}
-            {!isBedrockWorld && <StructureLayer map={map} />}
+            {!isBedrockWorld && <StructureLayer map={map} slot={generatorSlot} />}
             {state.showMarkers && state.worldDir && <BlockEntityLayer map={map} />}
             {state.showMarkers && state.worldDir && <EntityLayer map={map} />}
             {state.showMarkers && state.worldDir && <PoiLayer map={map} />}

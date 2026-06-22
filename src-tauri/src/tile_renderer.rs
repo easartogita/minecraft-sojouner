@@ -9,7 +9,9 @@ const TILE_SIZE:         usize = 128;
 const BIOME_TILE_SIZE:   usize = 128;
 const BASE_BLOCKS_PER_PIXEL: f64 = 16.0;
 const CHUNK:             usize = 16;
-pub const CACHE_VERSION: u32   = 2;
+// Bump on any change to render output. v3: render terrained proto-chunks
+// (heightmap-gated, not Status=="full"); capture .mca mtime before the read.
+pub const CACHE_VERSION: u32   = 3;
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -168,24 +170,40 @@ pub fn max_mca_mtime(world_dir: &str, dimension: &str, min_cx: i32, max_cx: i32,
         .unwrap_or(0)
 }
 
+/// Chunk-coordinate span covered by a tile. Shared by the renderer and the
+/// standalone mtime probe so both agree on which region files feed a tile.
+pub fn tile_chunk_bounds(tile_x: i32, tile_y: i32, zoom: i32) -> (i32, i32, i32, i32) {
+    let blocks_per_pixel = BASE_BLOCKS_PER_PIXEL / 2f64.powi(zoom);
+    let block_x = (tile_x as f64 * TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
+    let block_z = (tile_y as f64 * TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
+    let min_cx = block_x.div_euclid(CHUNK as i32);
+    let max_cx = ((block_x as f64 + TILE_SIZE as f64 * blocks_per_pixel - 1.0) as i32)
+        .div_euclid(CHUNK as i32);
+    let min_cz = block_z.div_euclid(CHUNK as i32);
+    let max_cz = ((block_z as f64 + TILE_SIZE as f64 * blocks_per_pixel - 1.0) as i32)
+        .div_euclid(CHUNK as i32);
+    (min_cx, max_cx, min_cz, max_cz)
+}
+
 /// Closure-based freshness check, shared by Java and Bedrock paths.
-fn tile_is_fresh_fn(
+/// Returns the tile's stored mca-mtime when it is still fresh, else None.
+fn fresh_tile_mtime(
     png_data: &[u8],
     min_cx: i32, max_cx: i32,
     min_cz: i32, max_cz: i32,
     mtime_fn: &dyn Fn(i32, i32, i32, i32) -> u64,
-) -> bool {
+) -> Option<u64> {
     let decoder = png::Decoder::new(std::io::Cursor::new(png_data));
-    let Ok(reader) = decoder.read_info() else { return false };
+    let reader = decoder.read_info().ok()?;
     let stored: u64 = reader.info()
         .uncompressed_latin1_text
         .iter()
         .find(|t| t.keyword == "mca-mtime")
         .and_then(|t| t.text.parse().ok())
         .unwrap_or(0);
-    if stored == 0 { return false; }
+    if stored == 0 { return None; }
     let current = mtime_fn(min_cx, max_cx, min_cz, max_cz);
-    current > 0 && current <= stored
+    (current > 0 && current <= stored).then_some(stored)
 }
 
 // ── Tile renderer ─────────────────────────────────────────────────────────────
@@ -208,28 +226,24 @@ pub fn get_or_render_tile(
     mtime_fn: impl Fn(i32, i32, i32, i32) -> u64,
     // Closure that fetches chunk colors for a slice of ChunkRequests.
     chunk_colors_fn: impl Fn(&[ChunkRequest]) -> Vec<ChunkResult>,
-) -> Option<String> {
+) -> Option<(String, u64)> {
     let p = tile_path(
         cache_root, world_dir, dimension, hide_water,
         zoom, tile_x, tile_y, cave_y, cave_scan_low, cave_scan_high,
     );
 
-    // ── Compute tile's block/chunk bounds (needed by both cache check and render) ──
+    // ── Tile's chunk bounds (needed by both cache check and render) ──
     let blocks_per_pixel = BASE_BLOCKS_PER_PIXEL / 2f64.powi(zoom);
     let block_x = (tile_x as f64 * TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
     let block_z = (tile_y as f64 * TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
+    let (min_cx, max_cx, min_cz, max_cz) = tile_chunk_bounds(tile_x, tile_y, zoom);
 
-    let min_cx = block_x.div_euclid(CHUNK as i32);
-    let max_cx = ((block_x as f64 + TILE_SIZE as f64 * blocks_per_pixel - 1.0) as i32)
-        .div_euclid(CHUNK as i32);
-    let min_cz = block_z.div_euclid(CHUNK as i32);
-    let max_cz = ((block_z as f64 + TILE_SIZE as f64 * blocks_per_pixel - 1.0) as i32)
-        .div_euclid(CHUNK as i32);
-
-    // Disk cache hit — validate freshness via injected mtime function
+    // Disk cache hit — validate freshness via injected mtime function. The
+    // returned mtime is the tile's validity baseline, handed to the in-memory
+    // cache so it can detect the same staleness without re-reading the PNG.
     if let Ok(cached_png) = std::fs::read(&p) {
-        if tile_is_fresh_fn(&cached_png, min_cx, max_cx, min_cz, max_cz, &mtime_fn) {
-            return Some(p.to_string_lossy().into_owned());
+        if let Some(stored) = fresh_tile_mtime(&cached_png, min_cx, max_cx, min_cz, max_cz, &mtime_fn) {
+            return Some((p.to_string_lossy().into_owned(), stored));
         }
         let _ = std::fs::remove_file(&p);
     }
@@ -240,6 +254,14 @@ pub fn get_or_render_tile(
             to_fetch.push(ChunkRequest { cx, cz });
         }
     }
+
+    // Snapshot the source mtime *before* reading the .mca data. If Minecraft's
+    // worldgen rewrites the region while (or after) we parse it, we may render a
+    // torn/partial chunk read — but the tile gets stamped with this pre-read
+    // mtime, which is < the completed write's mtime, so the freshness check
+    // marks it stale and re-renders. Capturing the mtime *after* the read would
+    // stamp the tile with the newer write and freeze the partial render forever.
+    let data_mtime = mtime_fn(min_cx, max_cx, min_cz, max_cz);
 
     let chunk_results = chunk_colors_fn(&to_fetch);
 
@@ -367,9 +389,8 @@ pub fn get_or_render_tile(
     if let Some(parent) = p.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let mtime = mtime_fn(min_cx, max_cx, min_cz, max_cz);
-    std::fs::write(&p, encode_tile_png(&pixels, mtime)).ok()?;
-    Some(p.to_string_lossy().into_owned())
+    std::fs::write(&p, encode_tile_png(&pixels, data_mtime)).ok()?;
+    Some((p.to_string_lossy().into_owned(), data_mtime))
 }
 
 // ── Biome tile renderer ───────────────────────────────────────────────────────

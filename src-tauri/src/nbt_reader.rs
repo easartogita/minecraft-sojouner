@@ -15,8 +15,19 @@ pub enum WorldEdition {
     Bedrock,
 }
 
-// ── Public output type ────────────────────────────────────────────────────────
-// Field names match the existing TS SeedData interface (camelCase over the wire).
+// ── Public output types ───────────────────────────────────────────────────────
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerInfo {
+    pub uuid:      String,
+    pub name:      String,   // empty if not found in usercache.json
+    pub x:         f64,
+    pub y:         f64,
+    pub z:         f64,
+    pub dimension: String,
+    pub is_host:   bool,
+}
 
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +48,7 @@ pub struct SeedData {
     pub difficulty: i32,        // 0=Peaceful 1=Easy 2=Normal 3=Hard
     pub world_time: Option<i64>, // Data.Time — total ticks elapsed (for totalDays + moon phase)
     pub edition: WorldEdition,
+    pub players: Vec<PlayerInfo>,
 }
 
 type Result<T> = std::result::Result<T, String>;
@@ -70,6 +82,25 @@ pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
     let (player_x, player_y, player_z, player_dimension) =
         read_player_pos(data, world_dir, data_version);
 
+    let mut players = read_all_players(data, world_dir, data_version);
+    // Fallback for very old worlds without a playerdata/ dir (inline Data.Player only).
+    if players.is_empty() {
+        if let (Some(x), Some(y), Some(z)) = (player_x, player_y, player_z) {
+            players.push(PlayerInfo {
+                uuid: get(data, "singleplayer_uuid")
+                    .and_then(as_int_array)
+                    .map(uuid_from_int_array)
+                    .unwrap_or_default(),
+                name: String::new(),
+                x,
+                y,
+                z,
+                dimension: player_dimension.clone().unwrap_or_else(|| "minecraft:overworld".to_string()),
+                is_host: true,
+            });
+        }
+    }
+
     Ok(SeedData {
         seed: seed.to_string(),
         data_version,
@@ -87,6 +118,7 @@ pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
         difficulty,
         world_time,
         edition: WorldEdition::Java,
+        players,
     })
 }
 
@@ -271,7 +303,10 @@ fn read_player_pos(
 // ── Version name table ────────────────────────────────────────────────────────
 
 const VERSION_MAP: &[(i32, &str)] = &[
-    (4787, "26.x"),   // new versioning scheme — cubiomes support unavailable, using 1.21.5 approximation
+    // 26.x uses a new versioning scheme. cubiomes support (xpple fork) covers
+    // these via MC_26_x; see dataVersionToMCVersionKey in constants.ts.
+    (4903, "26.2"),
+    (4787, "26.x"),
     (4786, "1.21.5"),
     (4189, "1.21.4"),
     (4080, "1.21.2"),
@@ -292,6 +327,77 @@ fn data_version_to_name(v: i32) -> &'static str {
         }
     }
     if v >= 2566 { "1.16+" } else { "pre-1.16" }
+}
+
+// ── Multi-player enumeration ──────────────────────────────────────────────────
+
+fn load_usercache(world_dir: &Path) -> HashMap<String, String> {
+    // Standard singleplayer: world is in .minecraft/saves/Name/ → usercache two levels up.
+    // Dedicated server: world is in server/world/ → usercache one level up.
+    let candidates = [
+        world_dir.join("..").join("usercache.json"),
+        world_dir.join("..").join("..").join("usercache.json"),
+    ];
+    for path in &candidates {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let Ok(arr) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else { continue };
+        let map: HashMap<String, String> = arr.iter().filter_map(|entry| {
+            let name = entry.get("name")?.as_str()?.to_string();
+            let uuid = entry.get("uuid")?.as_str()?.to_lowercase();
+            Some((uuid, name))
+        }).collect();
+        if !map.is_empty() { return map; }
+    }
+    HashMap::new()
+}
+
+fn read_player_dat(path: &Path) -> Option<(f64, f64, f64, String)> {
+    let nbt = read_gz_nbt(path).ok()?;
+    let pos = get(&nbt, "Pos").and_then(as_double_list)?;
+    if pos.len() < 3 { return None; }
+    let dim = get(&nbt, "Dimension")
+        .map(normalize_dimension)
+        .unwrap_or_else(|| "minecraft:overworld".to_string());
+    Some((pos[0], pos[1], pos[2], dim))
+}
+
+fn read_all_players(data: &Value, world_dir: &Path, _data_version: i32) -> Vec<PlayerInfo> {
+    let host_uuid = get(data, "singleplayer_uuid")
+        .and_then(as_int_array)
+        .map(uuid_from_int_array);
+
+    let usercache = load_usercache(world_dir);
+
+    let dirs = [
+        world_dir.join("playerdata"),
+        world_dir.join("players").join("data"),
+    ];
+
+    let mut players: Vec<PlayerInfo> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for dir in &dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(true, |e| e != "dat") { continue; }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            // Only process files whose names are a valid UUID (8-4-4-4-12).
+            if stem.len() != 36 || stem.chars().filter(|&c| c == '-').count() != 4 { continue; }
+            let uuid = stem.to_lowercase();
+            if !seen.insert(uuid.clone()) { continue; }
+            let Some((x, y, z, dimension)) = read_player_dat(&path) else { continue };
+            let is_host = host_uuid.as_deref() == Some(uuid.as_str());
+            let name = usercache.get(&uuid).cloned().unwrap_or_default();
+            players.push(PlayerInfo { uuid, name, x, y, z, dimension, is_host });
+        }
+    }
+
+    // Host first, then by name so order is deterministic.
+    players.sort_by(|a, b| {
+        b.is_host.cmp(&a.is_host).then_with(|| a.name.cmp(&b.name))
+    });
+    players
 }
 
 // ── NBT / GZ helpers ──────────────────────────────────────────────────────────

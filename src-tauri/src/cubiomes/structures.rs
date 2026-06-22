@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     CUBIOMES_LOCK,
     cm_setup_generator, cm_find_structures, cm_get_strongholds, cm_free_results,
+    cm_get_structure_loot, cm_get_structure_chests, cm_free_string, cm_item_name,
     seed_parts,
 };
 
@@ -293,4 +294,89 @@ pub fn find_all_structures_cached(
 pub fn clear_structure_cache(cache_root: &Path, seed_low: i32, seed_high: i32) {
     let dir = cache_root.join("structures").join(seed_hex(seed_low, seed_high));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// One generated loot item in a structure chest, with the item name resolved.
+#[derive(Serialize)]
+pub struct LootItem {
+    pub chest_x: i32,
+    pub chest_z: i32,
+    pub item:    String,
+    pub count:   i32,
+}
+
+/// Roll the chest loot for a structure at `(pos_x, pos_z)` using the generator
+/// already set up at `slot`. Returns one entry per generated item stack.
+/// `mc_version` is used to resolve item ids to names.
+#[tauri::command]
+pub async fn cubiomes_get_structure_loot(
+    slot: i32, struct_type: i32, pos_x: i32, pos_z: i32, mc_version: i32,
+) -> Vec<LootItem> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // The loot library is not thread-safe; hold the lock across the call.
+        let _guard = CUBIOMES_LOCK.lock().unwrap();
+        let ptr = unsafe { cm_get_structure_loot(slot, struct_type, pos_x, pos_z) };
+        if ptr.is_null() { return Vec::new(); }
+        let mut items = Vec::new();
+        unsafe {
+            let count = (*ptr).max(0) as usize;
+            for i in 0..count {
+                let base = 1 + i * 4;
+                let id = *ptr.add(base + 2);
+                let name_ptr = cm_item_name(id, mc_version);
+                let item = if name_ptr.is_null() {
+                    format!("item_{id}")
+                } else {
+                    std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+                };
+                items.push(LootItem {
+                    chest_x: *ptr.add(base),
+                    chest_z: *ptr.add(base + 1),
+                    item,
+                    count: *ptr.add(base + 3),
+                });
+            }
+            cm_free_results(ptr);
+        }
+        items
+    }).await.unwrap_or_default()
+}
+
+/// One chest slot in a structure, identified by its loot table (e.g.
+/// `shipwreck_treasure`) — without rolling the loot. Used to badge map markers
+/// by which chest kinds a given instance actually has.
+#[derive(Serialize)]
+pub struct ChestSlot {
+    pub chest_x: i32,
+    pub chest_z: i32,
+    pub table:   String,
+}
+
+/// Report the chest composition of a structure at `(pos_x, pos_z)`: one entry
+/// per chest, tagged with its loot table. Cheaper than `get_structure_loot`
+/// because it stops before rolling the loot, so it is safe to call eagerly for
+/// every visible marker.
+#[tauri::command]
+pub async fn cubiomes_get_structure_chests(
+    slot: i32, struct_type: i32, pos_x: i32, pos_z: i32,
+) -> Vec<ChestSlot> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = CUBIOMES_LOCK.lock().unwrap();
+        let ptr = unsafe { cm_get_structure_chests(slot, struct_type, pos_x, pos_z) };
+        if ptr.is_null() { return Vec::new(); }
+        let mut slots = Vec::new();
+        unsafe {
+            let text = std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned();
+            cm_free_string(ptr);
+            for line in text.lines() {
+                let mut f = line.split('\t');
+                if let (Some(x), Some(z), Some(table)) = (f.next(), f.next(), f.next()) {
+                    if let (Ok(chest_x), Ok(chest_z)) = (x.parse(), z.parse()) {
+                        slots.push(ChestSlot { chest_x, chest_z, table: table.to_string() });
+                    }
+                }
+            }
+        }
+        slots
+    }).await.unwrap_or_default()
 }

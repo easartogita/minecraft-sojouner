@@ -122,7 +122,7 @@ pub async fn cubiomes_get_biomes_at(
 /// Any other mode (nether, end, etc.) → 2D query.
 #[tauri::command]
 pub async fn cubiomes_get_hover_biome(slot: i32, x: i32, z: i32, mode: String) -> i32 {
-    const CAVE_BIOMES: &[i32] = &[174, 175, 183]; // dripstone_caves, lush_caves, deep_dark
+    const CAVE_BIOMES: &[i32] = &[174, 175, 183, 187]; // dripstone_caves, lush_caves, deep_dark, sulfur_caves
     tauri::async_runtime::spawn_blocking(move || {
         match mode.as_str() {
             "underground" => {

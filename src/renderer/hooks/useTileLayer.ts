@@ -15,7 +15,9 @@ export interface UseTileLayerOptions {
   maxCache?: number
   cacheKeyFn?: (coords: L.Coords) => string
   skip?: (coords: L.Coords) => boolean
-  fetch: (coords: L.Coords) => Promise<ImageData | string | null>
+  // `signal` aborts when the tile is scrolled out of view while the fetch is in
+  // flight — heavy fetches should pass a cancel token to the backend on abort.
+  fetch: (coords: L.Coords, signal?: AbortSignal) => Promise<ImageData | string | null>
   onCleanup?: () => void
   loadingAnimation?: (ctx: CanvasRenderingContext2D, size: number, elapsed: number) => void
   loadingGifs?: string[]   // if set, show a randomly-picked GIF while fetching (no JS animation loop)
@@ -66,6 +68,8 @@ export function useTileLayer({
   nativeZoom,
 }: UseTileLayerOptions): React.RefObject<L.GridLayer | null> {
   const layerRef = useRef<L.GridLayer | null>(null)
+  const maxCacheRef = useRef(maxCache)
+  maxCacheRef.current = maxCache
 
   useEffect(() => {
     layerRef.current?.setOpacity(opacity)
@@ -146,7 +150,7 @@ export function useTileLayer({
                 .then(result => {
                   queue.release()
                   if (stale || !wrap.isConnected || !result) return
-                  if (cacheKey && cache) { cache.set(cacheKey, result); evictCache(cache, maxCache) }
+                  if (cacheKey && cache) { cache.set(cacheKey, result); evictCache(cache, maxCacheRef.current) }
                   if (typeof result === 'string') {
                     const img = document.createElement('img')
                     img.src = result
@@ -206,7 +210,7 @@ export function useTileLayer({
             if (stale || !canvas.isConnected) { done(undefined, canvas); return }
             const scaled = nearestNeighborScale(parent, upscale, subX, subY, tileSize)
             ctx.putImageData(scaled, 0, 0)
-            if (cacheKey && cache) { cache.set(cacheKey, scaled); evictCache(cache, maxCache) }
+            if (cacheKey && cache) { cache.set(cacheKey, scaled); evictCache(cache, maxCacheRef.current) }
             done(undefined, canvas)
           }
 
@@ -236,7 +240,7 @@ export function useTileLayer({
                   const imageData = typeof parent === 'string'
                     ? await urlToImageData(parent, tileSize)
                     : parent
-                  if (parentKey && cache) { cache.set(parentKey, imageData); evictCache(cache, maxCache) }
+                  if (parentKey && cache) { cache.set(parentKey, imageData); evictCache(cache, maxCacheRef.current) }
                   applyScale(imageData)
                 })
                 .catch(() => { queue.release(); if (!stale) done(undefined, canvas) })
@@ -252,6 +256,7 @@ export function useTileLayer({
           const dy = coords.y + 0.5 - centre.y / tileSize
           const priority = dx * dx + dy * dy
 
+          const controller = new AbortController()
           const job = queue.enqueue(priority, () => {
             if (!canvas.isConnected || stale) { queue.release(); done(undefined, canvas); return }
 
@@ -272,7 +277,7 @@ export function useTileLayer({
               requestAnimationFrame(animate)
             }
 
-            fetch(coords)
+            fetch(coords, controller.signal)
               .then(result => {
                 animating = false
                 queue.release()
@@ -281,7 +286,7 @@ export function useTileLayer({
                 ctx.putImageData(result, 0, 0)
                 if (cacheKey && cache) {
                   cache.set(cacheKey, result)
-                  evictCache(cache, maxCache)
+                  evictCache(cache, maxCacheRef.current)
                 }
                 if (!loadingAnimation) done(undefined, canvas)
               })
@@ -292,6 +297,7 @@ export function useTileLayer({
                 if (!loadingAnimation) done(err as Error, canvas)
               })
           })
+          job.abort = () => controller.abort()
           ;(canvas as any)._tileJob = job
         })
 

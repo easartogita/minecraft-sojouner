@@ -1,6 +1,6 @@
 use super::{
-    CUBIOMES_LOCK,
-    cm_get_ore_veins_at2,
+    CUBIOMES_LOCK, take_cancelled,
+    cm_get_ore_veins_at2, cm_generate_ore_features, cm_get_ore_vein_columns, cm_free_results,
     seed_parts, seed_from_parts,
 };
 
@@ -36,6 +36,66 @@ pub async fn cubiomes_get_ore_veins_at(
         let (copper_y, copper_sz, iron_y, iron_sz) = get_ore_veins_at(seed, cx, cz);
         [copper_y, copper_sz, iron_y, iron_sz]
     }).await.unwrap_or([i32::MIN, 0, i32::MIN, 0])
+}
+
+/// Generate ore-feature positions (normal ore blobs) for the given `Ores` enum
+/// types over a chunk range, using the generator already set up at `slot`.
+/// Returns a flat array `[oreType, x, y, z, ...]` (block coordinates).
+#[tauri::command]
+pub async fn cubiomes_generate_ore_features(
+    slot: i32, ore_types: Vec<i32>,
+    cx0: i32, cz0: i32, cx1: i32, cz1: i32, req_id: u64,
+) -> Vec<i32> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Hold the lock across the whole call so the generator slot can't be recycled.
+        let _guard = CUBIOMES_LOCK.lock().unwrap();
+        // Bail if the tile was abandoned while we waited for the lock.
+        if take_cancelled(req_id) { return Vec::new(); }
+        let ptr = unsafe {
+            cm_generate_ore_features(
+                slot, ore_types.as_ptr(), ore_types.len() as i32, cx0, cz0, cx1, cz1,
+            )
+        };
+        if ptr.is_null() { return Vec::new(); }
+        let v = unsafe {
+            let count = (*ptr).max(0) as usize;
+            let out = std::slice::from_raw_parts(ptr.add(1), count * 4).to_vec();
+            cm_free_results(ptr);
+            out
+        };
+        take_cancelled(req_id); // clear any late cancel so the set stays bounded
+        v
+    }).await.unwrap_or_default()
+}
+
+/// Per-column ore-vein footprint for a chunk range, using the generator already
+/// set up at `slot`. The cave-layer analogue of `cubiomes_get_carved_columns`.
+///
+/// Returns `[nx, nz, then nx*nz * 256 * 2 ints]`: a 16x16 grid of per-column
+/// (copper_count, iron_count) of vein-affected blocks per chunk (column index
+/// `localZ*16 + localX`), chunks in row-major order. Overworld only.
+#[tauri::command]
+pub async fn cubiomes_get_ore_vein_columns(
+    slot: i32, cx0: i32, cz0: i32, cx1: i32, cz1: i32, req_id: u64,
+) -> Vec<i32> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Hold the lock across the whole call so the generator slot can't be recycled.
+        let _guard = CUBIOMES_LOCK.lock().unwrap();
+        // Bail if the tile was abandoned while we waited for the lock.
+        if take_cancelled(req_id) { return Vec::new(); }
+        let ptr = unsafe { cm_get_ore_vein_columns(slot, cx0, cz0, cx1, cz1) };
+        if ptr.is_null() { return Vec::new(); }
+        let v = unsafe {
+            let nx = (*ptr).max(0) as usize;
+            let nz = (*ptr.add(1)).max(0) as usize;
+            let total = 2 + nx * nz * 512;
+            let out = std::slice::from_raw_parts(ptr, total).to_vec();
+            cm_free_results(ptr);
+            out
+        };
+        take_cancelled(req_id); // clear any late cancel so the set stays bounded
+        v
+    }).await.unwrap_or_default()
 }
 
 /// Returns a flat array [copper_y, copper_size, iron_y, iron_size, ...] per chunk.

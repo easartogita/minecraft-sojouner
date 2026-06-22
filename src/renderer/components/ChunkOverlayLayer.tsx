@@ -66,7 +66,11 @@ function tileOverlapsRegions(tileX: number, tileY: number, zoom: number, regions
 // ── In-memory tile cache ──────────────────────────────────────────────────────
 // Keeps recently-rendered tiles as ImageData so panning revisits are instant.
 
-const tileCache = new Map<string, ImageData>()
+// Each entry carries the source .mca mtime it was rendered from, so a memory hit
+// can be re-validated against a live region rewrite (the disk cache self-heals
+// via mtime; without this the decoded-ImageData cache would serve a stale tile).
+interface CachedTile { data: ImageData; mtime: number }
+const tileCache = new Map<string, CachedTile>()
 const MAX_CACHE = 1600
 
 export function getChunkCacheSize() { return tileCache.size }
@@ -100,6 +104,12 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
   const caveScanLow      = state.caveScanLow
   const caveScanHigh     = state.caveScanHigh
 
+  // Only revalidate in-memory tiles against the disk source while a live world is
+  // being watched — offline worlds never change, so the cache is trusted as-is.
+  // A ref so the watch state is read live without rebuilding the tile layer.
+  const watchingRef = useRef(state.isWatching)
+  watchingRef.current = state.isWatching
+
   useEffect(() => {
     layerRef.current?.setOpacity(chunkOpacity)
   }, [chunkOpacity])
@@ -119,14 +129,17 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
   // worldLoadCount gives us a reliable trigger even for same-path reloads.
   // Skip disk cache clearing for unlimited-cache worlds — those tiles are
   // deliberately preserved across reloads.
+  const unlimitedCacheRef = useRef(unlimitedCache)
+  unlimitedCacheRef.current = unlimitedCache
+
   const prevLoadCountRef = useRef(0)
   useEffect(() => {
     if (state.worldLoadCount === prevLoadCountRef.current) return
     prevLoadCountRef.current = state.worldLoadCount
     if (!worldDir) return
     tileCache.clear()
-    if (!unlimitedCache) api.clearTilePng(worldDir)
-  }, [state.worldLoadCount, worldDir, unlimitedCache])
+    if (!unlimitedCacheRef.current) api.clearTilePng(worldDir)
+  }, [state.worldLoadCount, worldDir])
 
   const prevHideWaterRef = useRef(hideWater)
   useEffect(() => {
@@ -183,15 +196,15 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
         const dy = coords.y + 0.5 - centre.y / CHUNK_TILE_SIZE
         queue.enqueue(dx * dx + dy * dy, () => {
           api.renderTile(worldDir, edition, dimension, coords.x, coords.y, coords.z, hideWater, caveY, caveScanLow, caveScanHigh)
-            .then(async path => {
+            .then(async rt => {
               queue.release()
-              if (!path || !canvas.isConnected) return
-              const imageData = await loadTileImageData(path)
+              if (!rt || !canvas.isConnected) return
+              const imageData = await loadTileImageData(rt.path)
               if (!imageData || !canvas.isConnected) return
               ctx.clearRect(0, 0, CHUNK_TILE_SIZE, CHUNK_TILE_SIZE)
               ctx.putImageData(imageData, 0, 0)
-              tileCache.set(cacheKey, imageData)
-              if (!capturedUnlimitedCache) evictCache(tileCache, MAX_CACHE)
+              tileCache.set(cacheKey, { data: imageData, mtime: rt.mtime })
+              if (!unlimitedCacheRef.current) evictCache(tileCache, MAX_CACHE)
             })
             .catch(() => queue.release())
         })
@@ -239,7 +252,61 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
     const capturedCaveY         = caveY
     const capturedCaveScanLow   = caveScanLow
     const capturedCaveScanHigh  = caveScanHigh
-    const capturedUnlimitedCache = unlimitedCache
+    const capturedUnlimitedCache = unlimitedCacheRef.current
+
+    // Re-render one tile in place — native, or upscaled from its zoom-4 parent —
+    // repainting the canvas and refreshing the cache. Heals a stale in-memory tile.
+    const repaintStaleTile = (coords: L.Coords, canvas: HTMLCanvasElement, key: string, caveTag: string) => {
+      const ctx = canvas.getContext('2d'); if (!ctx) return
+      const upscale = coords.z > CHUNK_NATIVE_ZOOM ? (1 << (coords.z - CHUNK_NATIVE_ZOOM)) : 1
+      const renderZ = coords.z > CHUNK_NATIVE_ZOOM ? CHUNK_NATIVE_ZOOM : coords.z
+      const rx = Math.floor(coords.x / upscale)
+      const ry = Math.floor(coords.y / upscale)
+      const parentKey = `C:${capturedWorldDir}:${capturedDimension}:${caveTag}:${rx}:${ry}:${CHUNK_NATIVE_ZOOM}`
+      const centre = map.project(map.getCenter(), renderZ)
+      const dx = rx + 0.5 - centre.x / CHUNK_TILE_SIZE
+      const dy = ry + 0.5 - centre.y / CHUNK_TILE_SIZE
+      queue.enqueue(dx * dx + dy * dy, () => {
+        if (stale || !canvas.isConnected) { queue.release(); return }
+        api.renderTile(
+          capturedWorldDir, capturedEdition, capturedDimension,
+          rx, ry, renderZ, capturedHideWater, capturedCaveY, capturedCaveScanLow, capturedCaveScanHigh,
+        ).then(async rt => {
+          queue.release()
+          if (stale || !rt || !canvas.isConnected) return
+          const parentData = await loadTileImageData(rt.path)
+          if (stale || !parentData || !canvas.isConnected) return
+          let imageData = parentData
+          if (coords.z > CHUNK_NATIVE_ZOOM) {
+            tileCache.set(parentKey, { data: parentData, mtime: rt.mtime })
+            const subSize = CHUNK_TILE_SIZE / upscale
+            const subX = (coords.x - rx * upscale) * subSize
+            const subY = (coords.y - ry * upscale) * subSize
+            imageData = nearestNeighborScale(parentData, upscale, subX, subY, CHUNK_TILE_SIZE)
+          }
+          ctx.clearRect(0, 0, CHUNK_TILE_SIZE, CHUNK_TILE_SIZE)
+          ctx.putImageData(imageData, 0, 0)
+          tileCache.set(key, { data: imageData, mtime: rt.mtime })
+          if (!capturedUnlimitedCache) evictCache(tileCache, MAX_CACHE)
+        }).catch(() => queue.release())
+      })
+    }
+
+    // On an in-memory hit while watching a live world, confirm the tile's source
+    // hasn't been rewritten since render. The disk cache self-heals via mtime; this
+    // gives the decoded-ImageData cache the same guarantee even if the file watcher
+    // missed the change. No-op for offline worlds (files never change).
+    const revalidateTile = (coords: L.Coords, canvas: HTMLCanvasElement, key: string, caveTag: string) => {
+      if (!watchingRef.current) return
+      api.tileSourceMtime(capturedWorldDir, capturedEdition, capturedDimension, coords.x, coords.y, coords.z)
+        .then(current => {
+          if (stale || !canvas.isConnected) return
+          const entry = tileCache.get(key)                 // compare live; another path may have refreshed it
+          if (!entry || current <= 0 || current <= entry.mtime) return
+          tileCache.delete(key)
+          repaintStaleTile(coords, canvas, key, caveTag)
+        }).catch(() => {})
+    }
 
     const ChunkLayer = L.GridLayer.extend({
       _initTile(tile: HTMLElement) {
@@ -258,12 +325,13 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
         const caveTag = capturedCaveY != null ? `${capturedCaveY}_${capturedCaveScanLow}_${capturedCaveScanHigh}` : 's'
         const key = `C:${capturedWorldDir}:${capturedDimension}:${caveTag}:${coords.x}:${coords.y}:${coords.z}`
 
-        // In-memory hit — draw immediately
+        // In-memory hit — draw immediately, then revalidate against the source.
         const cached = tileCache.get(key)
         if (cached) {
-          ctx.putImageData(cached, 0, 0)
+          ctx.putImageData(cached.data, 0, 0)
           if (!stale) tileStats.mcaCacheHit()
           queueMicrotask(() => done(undefined, canvas))
+          revalidateTile(coords, canvas, key, caveTag)
           return canvas
         }
 
@@ -278,11 +346,11 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
           const subX = (coords.x - parentX * upscale) * subSize
           const subY = (coords.y - parentY * upscale) * subSize
 
-          const applyScale = (parent: ImageData) => {
+          const applyScale = (parent: ImageData, mtime: number) => {
             if (!canvas.isConnected) return
             const imageData = nearestNeighborScale(parent, upscale, subX, subY, CHUNK_TILE_SIZE)
             ctx.putImageData(imageData, 0, 0)
-            tileCache.set(key, imageData)
+            tileCache.set(key, { data: imageData, mtime })
             if (!capturedUnlimitedCache) evictCache(tileCache, MAX_CACHE)
             done(undefined, canvas)
           }
@@ -290,7 +358,10 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
           const parentCached = tileCache.get(parentKey)
           if (parentCached) {
             if (!stale) tileStats.mcaCacheHit()
-            queueMicrotask(() => applyScale(parentCached))
+            queueMicrotask(() => applyScale(parentCached.data, parentCached.mtime))
+            // A child inherits its parent's mtime; revalidate so a parent rewrite
+            // refreshes the upscaled child too (runs after applyScale caches it).
+            revalidateTile(coords, canvas, key, caveTag)
             return canvas
           }
 
@@ -308,16 +379,16 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
                 parentX, parentY, CHUNK_NATIVE_ZOOM,
                 capturedHideWater, capturedCaveY,
                 capturedCaveScanLow, capturedCaveScanHigh
-              ).then(async path => {
+              ).then(async rt => {
                 queue.release()
                 if (stale) { done(undefined, canvas); return }
-                if (!path) { tileStats.mcaLoadingDone(Math.round(performance.now() - t0)); done(undefined, canvas); return }
-                const parentData = await loadTileImageData(path)
+                if (!rt) { tileStats.mcaLoadingDone(Math.round(performance.now() - t0)); done(undefined, canvas); return }
+                const parentData = await loadTileImageData(rt.path)
                 tileStats.mcaLoadingDone(Math.round(performance.now() - t0))
                 if (stale || !parentData) { done(undefined, canvas); return }
-                tileCache.set(parentKey, parentData)
+                tileCache.set(parentKey, { data: parentData, mtime: rt.mtime })
                 if (!capturedUnlimitedCache) evictCache(tileCache, MAX_CACHE)
-                applyScale(parentData)
+                applyScale(parentData, rt.mtime)
               }).catch(err => {
                 queue.release()
                 if (stale) { done(undefined, canvas); return }
@@ -352,15 +423,15 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
             coords.x, coords.y, coords.z,
             capturedHideWater, capturedCaveY,
             capturedCaveScanLow, capturedCaveScanHigh
-          ).then(async path => {
+          ).then(async rt => {
             queue.release()
             if (stale) { done(undefined, canvas); return }
-            if (!path || !canvas.isConnected) { tileStats.mcaLoadingDone(Math.round(performance.now() - t0)); done(undefined, canvas); return }
-            const imageData = await loadTileImageData(path)
+            if (!rt || !canvas.isConnected) { tileStats.mcaLoadingDone(Math.round(performance.now() - t0)); done(undefined, canvas); return }
+            const imageData = await loadTileImageData(rt.path)
             tileStats.mcaLoadingDone(Math.round(performance.now() - t0))
             if (stale || !imageData || !canvas.isConnected) { done(undefined, canvas); return }
             ctx.putImageData(imageData, 0, 0)
-            tileCache.set(key, imageData)
+            tileCache.set(key, { data: imageData, mtime: rt.mtime })
             if (!capturedUnlimitedCache) evictCache(tileCache, MAX_CACHE)
             done(undefined, canvas)
           }).catch(err => {
@@ -423,7 +494,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
       // Zero out in-flight counter so the UI doesn't show stale "Loading N tiles"
       tileStats.resetMcaLoading()
     }
-  }, [map, worldDir, dimension, hideWater, chunkDataMinZoom, tileCacheVersion, caveY, caveScanLow, caveScanHigh, unlimitedCache])
+  }, [map, worldDir, dimension, hideWater, chunkDataMinZoom, tileCacheVersion, caveY, caveScanLow, caveScanHigh])
 
   return null
 }

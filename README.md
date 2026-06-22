@@ -48,12 +48,15 @@ All cubiomes-supported structures with labels, loot summaries, and variant annot
 Structures are sorted by distance from the viewport center; click any to fly to it.
 
 ### Overlays
+- **Terrain relief** — hillshade relief computed from cubiomes surface heights, with adjustable opacity
 - **Slime chunks** — Overworld slime chunk grid
 - **Ore veins** — copper and iron ore vein probability per chunk (1.18+)
-- **Cave entrances** — marks chunk columns with significant cave openings
+- **Ore features** — individual ore deposits (diamond, gold, redstone, and others) plotted from accurate worldgen; high zoom only
+- **Cave entrances** — marks chunk columns with significant cave openings, ravines, and overhangs
 - **Local difficulty** — per-chunk special difficulty multiplier based on inhabited time, world time, and game difficulty
 - **Chunk grid** — 16×16 chunk boundary overlay
 - **Inhabited time** — color-coded per-chunk inhabited time
+- **Generated regions** — outlines which region files actually exist on disk, i.e. where the world has been explored
 
 ### Markers
 - **Block entities** — chests (with loot tier badges), spawners, signs, beehives, beacons, banners, and more; visible at zoom ≥ 5
@@ -69,6 +72,41 @@ Structures are sorted by distance from the viewport center; click any to fly to 
 - **Day/Night bar** — sky-color gradient showing the current in-game time of day
 - **TIFF export** — full-resolution world map rendered directly from world files; configurable blocks-per-pixel
 - **Cursor info bar** — block name, biome, Y coordinate, and local difficulty at the cursor
+
+---
+
+## Multiplayer proxy *(planned — not yet implemented)*
+
+> **Status:** This section describes a design for a future feature. None of it is implemented yet — there is no proxy code, no sidebar panel, and no live multiplayer support in the current build. It is documented here as a roadmap and security model, not as shipping functionality.
+
+The planned **Proxy** panel would let Sojourner observe a live multiplayer session — showing chat, player positions, and chunk data in real time — by acting as a local relay between your Minecraft client and a remote server.
+
+### How it would work
+
+There are three separate network legs:
+
+**1. Your Minecraft client → Sojourner (loopback only)**
+Your client connects to `127.0.0.1:<listen port>` — a port on your own machine. This traffic never leaves your computer. There is no TLS here because none is needed: loopback traffic is not reachable from the network.
+
+**2. Sojourner → the real Minecraft server**
+Sojourner opens a second TCP connection to the server you configured. For offline-mode and LAN servers this is plain TCP (Minecraft's own wire protocol). For online-mode servers, Minecraft uses its own AES-128/CFB8 stream encryption — not TLS — once the login handshake completes. Online-mode support is not yet implemented; the proxy disconnects with a clear error message if it encounters an encrypted server.
+
+**3. Sojourner → Microsoft / Mojang (HTTPS only)**
+When online-mode support is enabled in a future update, Sojourner will need to authenticate on your behalf. Those calls — OAuth token exchange, Xbox Live, and the Minecraft session server — go over standard HTTPS. Your credentials and tokens are only ever sent over encrypted connections to Microsoft's and Mojang's own endpoints. They are never sent through the proxy connection, never written to disk unencrypted, and never transmitted to any Sojourner-controlled server. There is no Sojourner server. The app is entirely local.
+
+### What Sojourner does with packet data
+
+Sojourner reads packets as they pass through and emits app events (player positions, chat lines, chunk coordinates). It does **not** modify packets — every byte is forwarded to your client unchanged. The server cannot tell a proxy is in the path.
+
+### What Sojourner does not do
+
+- It does not log your session to disk.
+- It does not send any game data to external services.
+- It does not store your Microsoft account password. The OAuth device-code flow (when implemented) opens a browser window on Microsoft's own site; Sojourner only ever sees the short-lived access token that Microsoft returns.
+
+### Current status
+
+Not implemented. Nothing in the multiplayer-proxy design above ships in the current build — the entire feature is on the roadmap. When built, offline-mode and LAN servers are the first target; online-mode (servers with `online-mode=true`) would follow once the encryption handshake is implemented.
 
 ---
 

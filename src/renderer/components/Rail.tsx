@@ -18,7 +18,6 @@ const CLOSE_MS       = 200   // must match CSS transition duration
 
 export default function Rail() {
   const { state } = useApp()
-
   // active drives the CSS width (0 or panelWidth).
   // renderTarget lags on close so content stays visible during the collapse.
   const [active,       setActive]       = useState<ActivePanel>(null)
@@ -124,12 +123,16 @@ export default function Rail() {
   )
 }
 
-function RailBtn({ icon, label, active, onClick }: {
+function RailBtn({ icon, label, active, onClick, indicator }: {
   icon: string; label: string; active: boolean; onClick: () => void
+  indicator?: 'green' | 'red'
 }) {
   return (
     <button className={`rail-btn${active ? ' active' : ''}`} onClick={onClick} title={label}>
-      <span className="rail-btn-icon">{icon}</span>
+      <span className="rail-btn-icon">
+        {icon}
+        {indicator && <span className={`rail-btn-indicator rail-btn-indicator--${indicator}`} />}
+      </span>
       <span className="rail-btn-label">{label}</span>
     </button>
   )

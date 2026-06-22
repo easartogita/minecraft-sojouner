@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useApp } from '../App'
 import { useTileStats } from '../hooks/useTileStats'
-import { resetAllStats } from '../lib/tileStats'
+import { resetAllStats, getOverlays, overlayQueueSize, overlayCacheSize, clearOverlayCaches } from '../lib/tileStats'
 import { getBiomeCacheSize, clearBiomeCache, getBiomeQueue } from './BiomeTileLayer'
 import { getChunkCacheSize, clearChunkCache, getChunkQueue } from './ChunkOverlayLayer'
 import { getBELayerStats, resetBELayerStats, type BELayerStats } from './BlockEntityLayer'
 import { getEntityLayerStats, resetEntityLayerStats } from './EntityLayer'
 import * as api from '../lib/tauriAPI'
 
-type FlashKey = 'biome' | 'chunk' | 'world' | 'stats' | 'struct' | 'all'
+type FlashKey = 'biome' | 'chunk' | 'world' | 'stats' | 'struct' | 'overlay' | 'all'
 
 interface PollSnapshot {
   be: BELayerStats
@@ -29,7 +29,7 @@ function hitPct(hits: number, misses: number) {
 export default function DebugOverlay() {
   const { state, dispatch } = useApp()
   const ts = useTileStats()
-  const [visible, setVisible] = useState(false)
+  const visible = state.debugOverlayOpen
   const [flash, setFlash] = useState<FlashKey | null>(null)
   const [poll, setPoll] = useState<PollSnapshot | null>(null)
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -37,11 +37,11 @@ export default function DebugOverlay() {
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'F3') { e.preventDefault(); setVisible(v => !v) }
+      if (e.key === 'F3') { e.preventDefault(); dispatch({ type: 'TOGGLE_DEBUG_OVERLAY' } as never) }
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [])
+  }, [dispatch])
 
   useEffect(() => {
     if (!visible) { clearInterval(pollTimer.current ?? undefined); return }
@@ -65,6 +65,7 @@ export default function DebugOverlay() {
   const chunkMissed  = mcaTilesLoaded   > 0
   const be  = poll?.be
   const ent = poll?.entity
+  const overlays = getOverlays()
 
   const doFlash = (key: FlashKey) => {
     setFlash(key)
@@ -91,6 +92,11 @@ export default function DebugOverlay() {
     dispatch({ type: 'CLEAR_STRUCTURE_CACHE' } as never)
     doFlash('struct')
   }
+  const handleClearOverlays = () => {
+    clearOverlayCaches()
+    dispatch({ type: 'CLEAR_OVERLAY_CACHE' } as never)
+    doFlash('overlay')
+  }
   const handleReloadWorld = async () => {
     clearChunkCache()
     if (state.worldDir) {
@@ -111,7 +117,7 @@ export default function DebugOverlay() {
     doFlash('stats')
   }
   const handleClearAll = async () => {
-    clearBiomeCache(); clearChunkCache()
+    clearBiomeCache(); clearChunkCache(); clearOverlayCaches()
     const clears: Promise<void>[] = []
     if (state.seedData?.seed != null) {
       const s = BigInt(state.seedData.seed)
@@ -121,6 +127,7 @@ export default function DebugOverlay() {
     if (state.worldDir) clears.push(api.invalidateChunks(state.worldDir))
     await Promise.all(clears)
     dispatch({ type: 'CLEAR_TILE_CACHE' } as never)
+    dispatch({ type: 'CLEAR_OVERLAY_CACHE' } as never)
     dispatch({ type: 'CLEAR_STRUCTURE_CACHE' } as never)
     resetAllStats()
     resetBELayerStats(); resetEntityLayerStats()
@@ -202,11 +209,37 @@ export default function DebugOverlay() {
           </div>
         )}
 
+        {/* Overlays (ore veins, ore features, carvers, terrain) */}
+        {overlays.map(o => {
+          const queued = overlayQueueSize(o)
+          if (queued === 0 && o.stat.tilesLoaded === 0) return null
+          return (
+            <div className="debug-sb-section" key={o.key}>
+              <div className={`debug-sb-title debug-sb-title--${o.className}`}>
+                {o.label}{queued > 0 ? ` · ${queued} queued` : ''}
+              </div>
+              {o.stat.tilesLoaded > 0 ? (
+                <>
+                  <div className="debug-sb-row"><span>Rendered</span><span>{o.stat.tilesLoaded}</span></div>
+                  <div className="debug-sb-row"><span>Avg / peak</span><span>{ap(o.stat.totalMs, o.stat.tilesLoaded, o.stat.peakMs)}</span></div>
+                </>
+              ) : (
+                <div className="debug-sb-empty">Rendering…</div>
+              )}
+            </div>
+          )
+        })}
+
         {/* Memory */}
         <div className="debug-sb-section">
           <div className="debug-sb-title">Memory</div>
           <div className="debug-sb-row"><span>Biome cache</span><span>{getBiomeCacheSize()} / 1600</span></div>
           <div className="debug-sb-row"><span>Chunk cache</span><span>{getChunkCacheSize()} / 1600</span></div>
+          {overlays.map(o => {
+            const size = overlayCacheSize(o)
+            if (size === 0) return null
+            return <div className="debug-sb-row" key={o.key}><span>{o.label} cache</span><span>{size}</span></div>
+          })}
         </div>
 
         {/* Actions */}
@@ -215,6 +248,7 @@ export default function DebugOverlay() {
           <button className="btn-sm" onClick={handleClearBiome}>{lbl('biome', 'Clear biome')}</button>
           <button className="btn-sm" onClick={handleClearChunk}>{lbl('chunk', 'Clear chunk')}</button>
           <button className="btn-sm" onClick={handleClearStructures}>{lbl('struct', 'Clear structs')}</button>
+          <button className="btn-sm" onClick={handleClearOverlays}>{lbl('overlay', 'Clear overlays')}</button>
           {state.worldDir && <button className="btn-sm" onClick={handleReloadWorld}>{lbl('world', 'Reload world')}</button>}
           <button className="btn-sm f3-btn-danger" onClick={handleClearAll}>{lbl('all', 'Clear all')}</button>
         </div>

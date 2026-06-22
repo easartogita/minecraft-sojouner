@@ -132,6 +132,7 @@ export type EntityFilterGroup =
   | 'bosses'
   | 'containers'
   | 'named_mobs'
+  | 'uncategorized'
 
 export interface EntityGroupDef {
   label: string
@@ -145,11 +146,12 @@ export const ENTITY_GROUP_DEFS: Record<EntityFilterGroup, EntityGroupDef> = {
   armor_stands: { label: 'Armor Stands',       color: '#6b7280', description: 'Armor stands with their equipped items' },
   mounts:       { label: 'Mounts',             color: '#d97706', description: 'Horses, donkeys, mules, skeleton/zombie horses, llamas, trader llamas, camels, happy ghasts' },
   pets:         { label: 'Pets & Companions',  color: '#ec4899', description: 'Wolves, cats, parrots (tamed or named), allays (carrying item or named)' },
-  animals:      { label: 'Animals',            color: '#84cc16', description: 'Goats, axolotls, saddled striders, player-built iron/copper golems, shulkers, snow golems, phantoms' },
+  animals:      { label: 'Animals',            color: '#84cc16', description: 'Goats, axolotls, saddled striders, player-built iron/copper golems, shulkers, snow golems, phantoms, sulfur cubes' },
   livestock:    { label: 'Livestock',          color: '#a3803a', description: 'Cows, pigs, chickens, sheep, mooshrooms, rabbits, frogs, turtles, sniffers, armadillos, foxes, pandas, bees, tropical fish' },
   bosses:       { label: 'Bosses & Threats',   color: '#7e22ce', description: 'Ender dragon, wither, elder guardians, wardens, creakings, end crystals' },
   containers:   { label: 'Container Entities', color: '#a0522d', description: 'Chest minecarts, hopper minecarts, chest boats' },
-  named_mobs:   { label: 'Named Mobs',         color: '#f97316', description: 'Any mob with a custom name tag (not otherwise categorized)' },
+  named_mobs:   { label: 'Named Mobs',         color: '#facc15', description: 'Any entity with a custom name tag (e.g. Harold), regardless of type — so you can find named mobs that wander off' },
+  uncategorized: { label: 'Uncategorized',     color: '#f97316', description: 'Any entity whose type is not otherwise categorized (hostiles, new/unknown mobs, sulfur cubes…), shown by its internal Minecraft name' },
 }
 
 // ── Entity type → render group ────────────────────────────────────────────────
@@ -162,7 +164,7 @@ export const ENTITY_TYPE_TO_GROUP: Record<string, EntityFilterGroup> = {
   skeleton_horse: 'mounts', llama: 'mounts', trader_llama: 'mounts', camel: 'mounts', happy_ghast: 'mounts',
   wolf: 'pets', cat: 'pets', parrot: 'pets', allay: 'pets',
   strider: 'animals', goat: 'animals', axolotl: 'animals', iron_golem: 'animals', copper_golem: 'animals',
-  shulker: 'animals', snow_golem: 'animals', phantom: 'animals',
+  shulker: 'animals', snow_golem: 'animals', phantom: 'animals', sulfur_cube: 'animals',
   cow: 'livestock', pig: 'livestock', chicken: 'livestock', sheep: 'livestock',
   mooshroom: 'livestock', rabbit: 'livestock', frog: 'livestock', turtle: 'livestock',
   sniffer: 'livestock', armadillo: 'livestock', fox: 'livestock', panda: 'livestock',
@@ -173,10 +175,12 @@ export const ENTITY_TYPE_TO_GROUP: Record<string, EntityFilterGroup> = {
 }
 
 // ── Entity type definitions for the editor dialog ─────────────────────────────
-// 'named_mobs' is a pseudo-type: matches any entity not in ENTITY_TYPE_TO_GROUP.
+// Pseudo-types: 'named_mobs' matches any entity with a custom name; 'uncategorized'
+// matches any entity whose type is not in ENTITY_TYPE_TO_GROUP. An entity can match
+// both these and its normal type group (see buildEntityGroupLookup usage).
 
 export interface EntityTypeDef {
-  type: string             // raw entity type OR 'named_mobs'
+  type: string             // raw entity type OR 'named_mobs'/'uncategorized'
   group: EntityFilterGroup
   label: string
 }
@@ -217,6 +221,7 @@ export const ENTITY_TYPE_DEFS: EntityTypeDef[] = [
   { type: 'shulker',           group: 'animals',      label: 'Shulker' },
   { type: 'snow_golem',        group: 'animals',      label: 'Snow Golem' },
   { type: 'phantom',           group: 'animals',      label: 'Phantom' },
+  { type: 'sulfur_cube',       group: 'animals',      label: 'Sulfur Cube' },
   // livestock
   { type: 'cow',               group: 'livestock',    label: 'Cow' },
   { type: 'pig',               group: 'livestock',    label: 'Pig' },
@@ -246,7 +251,8 @@ export const ENTITY_TYPE_DEFS: EntityTypeDef[] = [
   { type: 'hopper_minecart',   group: 'containers',   label: 'Hopper Minecart' },
   { type: 'chest_boat',        group: 'containers',   label: 'Chest Boat' },
   // catch-all
-  { type: 'named_mobs',        group: 'named_mobs',   label: 'Named Mobs (other)' },
+  { type: 'named_mobs',        group: 'named_mobs',    label: 'Named Mobs (any named)' },
+  { type: 'uncategorized',     group: 'uncategorized', label: 'Uncategorized (other)' },
 ]
 
 // ── Custom marker group definition ───────────────────────────────────────────
@@ -256,7 +262,7 @@ export interface CustomMarkerGroup {
   name: string
   color: string
   beTypes: string[]      // normalized BE type keys (from BE_TYPE_DEFS) + 'jobsite'/'nether_portal'/'lodestone' pseudo-types
-  entityTypes: string[]  // raw entity type keys (from ENTITY_TYPE_DEFS) + 'named_mobs'
+  entityTypes: string[]  // raw entity type keys (from ENTITY_TYPE_DEFS) + 'named_mobs'/'uncategorized'
 }
 
 export const DEFAULT_MARKER_GROUPS: CustomMarkerGroup[] = [
@@ -281,10 +287,9 @@ export const DEFAULT_MARKER_GROUPS: CustomMarkerGroup[] = [
     entityTypes: [
       'horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse', 'llama', 'trader_llama', 'camel', 'happy_ghast',
       'wolf', 'cat', 'parrot', 'allay',
-      'strider', 'goat', 'axolotl', 'iron_golem', 'copper_golem', 'shulker', 'snow_golem', 'phantom',
+      'strider', 'goat', 'axolotl', 'iron_golem', 'copper_golem', 'shulker', 'snow_golem', 'phantom', 'sulfur_cube',
       'cow', 'pig', 'chicken', 'sheep', 'mooshroom', 'rabbit', 'frog', 'turtle',
       'sniffer', 'armadillo', 'fox', 'panda', 'bee', 'tropical_fish', 'salmon', 'cod',
-      'named_mobs',
     ],
   },
   {
@@ -309,6 +314,16 @@ export const DEFAULT_MARKER_GROUPS: CustomMarkerGroup[] = [
       'lodestone',
     ],
     entityTypes: [],
+  },
+  {
+    id: 'named_mobs', name: 'Named Mobs', color: '#facc15',
+    beTypes: [],
+    entityTypes: ['named_mobs'],
+  },
+  {
+    id: 'uncategorized', name: 'Uncategorized', color: '#f97316',
+    beTypes: [],
+    entityTypes: ['uncategorized'],
   },
 ]
 

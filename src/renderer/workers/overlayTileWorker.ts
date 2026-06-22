@@ -2,6 +2,7 @@
 // Receives pre-computed data buffers from the main thread (transferred zero-copy),
 // fills a pixel array, and transfers it back. No IPC or WASM here.
 import { biomeToRGB } from '../lib/biomeColors'
+import { ORE_TYPE_COLOR } from '../lib/oreFeatures'
 
 const TILE_SIZE  = 256
 const CHUNK_SIZE = 16
@@ -23,6 +24,10 @@ type InMsg =
   | { type: 'local-difficulty';  id: number; chunkColor: ArrayBuffer; chunkAlpha: ArrayBuffer; chunkValid: ArrayBuffer; cx0: number; cz0: number; width: number; originX: number; originZ: number; blocksPerPixel: number }
   | { type: 'ore-vein';          id: number; data: ArrayBuffer; qx0: number; qz0: number; qw: number; cx0: number; cz0: number; originX: number; originZ: number; blocksPerPixel: number; doCopper: boolean; doIron: boolean }
   | { type: 'underground-biome'; id: number; ugBiomes: ArrayBuffer; surfBiomes: ArrayBuffer; queryW: number; queryH: number; blocksPerPixel: number; biomeScale: number }
+  | { type: 'ore-feature';       id: number; data: ArrayBuffer; originX: number; originZ: number; blocksPerPixel: number }
+  | { type: 'carver';            id: number; data: ArrayBuffer; cx0: number; cz0: number; originX: number; originZ: number; blocksPerPixel: number }
+  | { type: 'ore-vein-columns';  id: number; data: ArrayBuffer; cx0: number; cz0: number; originX: number; originZ: number; blocksPerPixel: number; doCopper: boolean; doIron: boolean }
+  | { type: 'terrain-shade';     id: number; heights: ArrayBuffer; gridW: number; samplesPerTile: number }
 
 self.onmessage = (e: MessageEvent<InMsg>) => {
   const msg = e.data
@@ -31,7 +36,131 @@ self.onmessage = (e: MessageEvent<InMsg>) => {
     case 'local-difficulty':  handleLocalDifficulty(msg);  break
     case 'ore-vein':          handleOreVein(msg);          break
     case 'underground-biome': handleUndergroundBiome(msg); break
+    case 'ore-feature':       handleOreFeature(msg);       break
+    case 'carver':            handleCarver(msg);           break
+    case 'ore-vein-columns':  handleOreVeinColumns(msg);   break
+    case 'terrain-shade':     handleTerrain(msg);          break
   }
+}
+
+// ── Carver coverage (cave/ravine density, top-down) ───────────────────────────
+
+const CARVE_RGB: [number, number, number] = [56, 132, 156]
+
+function handleCarver(msg: Extract<InMsg, { type: 'carver' }>) {
+  const { id, data: buf, cx0, cz0, originX, originZ, blocksPerPixel } = msg
+  const arr    = new Int32Array(buf)
+  const nx     = arr[0], nz = arr[1]
+  const pixels = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
+
+  for (let py = 0; py < TILE_SIZE; py++) {
+    for (let px = 0; px < TILE_SIZE; px++) {
+      const bx = Math.floor(originX + (px + 0.5) * blocksPerPixel)
+      const bz = Math.floor(originZ + (py + 0.5) * blocksPerPixel)
+      const ci = Math.floor(bx / CHUNK_SIZE) - cx0
+      const cj = Math.floor(bz / CHUNK_SIZE) - cz0
+      if (ci < 0 || ci >= nx || cj < 0 || cj >= nz) continue
+      const lx = ((bx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE
+      const lz = ((bz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE
+      const count = arr[2 + (cj * nx + ci) * 256 + lz * 16 + lx]
+      if (count <= 0) continue
+      const off = (py * TILE_SIZE + px) * 4
+      pixels[off]     = CARVE_RGB[0]
+      pixels[off + 1] = CARVE_RGB[1]
+      pixels[off + 2] = CARVE_RGB[2]
+      pixels[off + 3] = Math.min(70 + count * 10, 220)
+    }
+  }
+  reply(id, pixels)
+}
+
+// ── Ore-vein footprint (per-column, drawn like carved caves) ──────────────────
+
+const COPPER_VEIN_RGB: [number, number, number] = [210, 120, 30]
+const IRON_VEIN_RGB:   [number, number, number] = [165, 165, 170]
+
+function handleOreVeinColumns(msg: Extract<InMsg, { type: 'ore-vein-columns' }>) {
+  const { id, data: buf, cx0, cz0, originX, originZ, blocksPerPixel, doCopper, doIron } = msg
+  const arr    = new Int32Array(buf)
+  const nx     = arr[0], nz = arr[1]
+  const pixels = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
+
+  for (let py = 0; py < TILE_SIZE; py++) {
+    for (let px = 0; px < TILE_SIZE; px++) {
+      const bx = Math.floor(originX + (px + 0.5) * blocksPerPixel)
+      const bz = Math.floor(originZ + (py + 0.5) * blocksPerPixel)
+      const ci = Math.floor(bx / CHUNK_SIZE) - cx0
+      const cj = Math.floor(bz / CHUNK_SIZE) - cz0
+      if (ci < 0 || ci >= nx || cj < 0 || cj >= nz) continue
+      const lx = ((bx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE
+      const lz = ((bz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE
+      const base   = 2 + ((cj * nx + ci) * 256 + lz * 16 + lx) * 2
+      const copper = doCopper ? arr[base]     : 0
+      const iron   = doIron   ? arr[base + 1] : 0
+      if (copper === 0 && iron === 0) continue
+      // Whichever ore has the thicker column at this point wins the pixel.
+      const [rgb, count] = copper >= iron
+        ? [COPPER_VEIN_RGB, copper] as const
+        : [IRON_VEIN_RGB,   iron]   as const
+      const off = (py * TILE_SIZE + px) * 4
+      pixels[off]     = rgb[0]
+      pixels[off + 1] = rgb[1]
+      pixels[off + 2] = rgb[2]
+      pixels[off + 3] = Math.min(80 + count * 14, 235)
+    }
+  }
+  reply(id, pixels)
+}
+
+// ── Terrain hillshade (relief from real surface heights) ──────────────────────
+
+function handleTerrain(msg: Extract<InMsg, { type: 'terrain-shade' }>) {
+  const { id, heights: buf, gridW, samplesPerTile } = msg
+  const H      = new Int32Array(buf)
+  const pixels = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
+  const scale  = samplesPerTile / TILE_SIZE   // tile px → coarse grid cell
+
+  for (let py = 0; py < TILE_SIZE; py++) {
+    const gz = Math.min(gridW - 2, Math.floor(py * scale))
+    for (let px = 0; px < TILE_SIZE; px++) {
+      const gx = Math.min(gridW - 2, Math.floor(px * scale))
+      const i  = gz * gridW + gx
+      const z0 = H[i]
+      const slope = (H[i + 1] - z0) + (H[i + gridW] - z0)  // NW light → positive slope brightens
+      const shade = Math.max(45, Math.min(235, 150 + slope * 4))
+      const off   = (py * TILE_SIZE + px) * 4
+      pixels[off] = shade; pixels[off + 1] = shade; pixels[off + 2] = shade; pixels[off + 3] = 150
+    }
+  }
+  reply(id, pixels)
+}
+
+// ── Ore-feature placement (individual ore blocks, coloured per ore) ───────────
+
+function handleOreFeature(msg: Extract<InMsg, { type: 'ore-feature' }>) {
+  const { id, data: buf, originX, originZ, blocksPerPixel } = msg
+  const data   = new Int32Array(buf)
+  const pixels = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
+  const r = blocksPerPixel <= 1 ? 1 : 0  // dot half-size in px (bigger when very zoomed in)
+  const count = (data.length / 4) | 0
+
+  for (let i = 0; i < count; i++) {
+    const c = ORE_TYPE_COLOR[data[i * 4]]
+    if (!c) continue
+    const cpx = Math.floor((data[i * 4 + 1] - originX) / blocksPerPixel) // x
+    const cpz = Math.floor((data[i * 4 + 3] - originZ) / blocksPerPixel) // z
+    for (let dy = -r; dy <= r; dy++) {
+      const py = cpz + dy
+      if (py < 0 || py >= TILE_SIZE) continue
+      for (let dx = -r; dx <= r; dx++) {
+        const px = cpx + dx
+        if (px < 0 || px >= TILE_SIZE) continue
+        const off = (py * TILE_SIZE + px) * 4
+        pixels[off] = c[0]; pixels[off + 1] = c[1]; pixels[off + 2] = c[2]; pixels[off + 3] = 255
+      }
+    }
+  }
+  reply(id, pixels)
 }
 
 function reply(id: number, pixels: Uint8ClampedArray) {
@@ -162,7 +291,7 @@ function handleOreVein(msg: Extract<InMsg, { type: 'ore-vein' }>) {
 
 // ── Underground biome ─────────────────────────────────────────────────────────
 
-const CAVE_BIOME_IDS = new Set([174, 175, 183]) // dripstone_caves, lush_caves, deep_dark
+const CAVE_BIOME_IDS = new Set([174, 175, 183, 187]) // dripstone_caves, lush_caves, deep_dark, sulfur_caves
 
 function handleUndergroundBiome(msg: Extract<InMsg, { type: 'underground-biome' }>) {
   const { id, ugBiomes: ub, surfBiomes: sb, queryW, queryH, blocksPerPixel, biomeScale } = msg

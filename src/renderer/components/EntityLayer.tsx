@@ -46,10 +46,14 @@ function EntityLayer({ map }: { map: L.Map }) {
       const wanted = new Set<string>()
       for (const e of entities) {
         if (e.y < yMin || e.y > yMax) continue
-        const entityLookupKey = e.type === 'zombie_villager'
+        const typeKey = e.type === 'zombie_villager'
           ? ((e.conversionTime ?? -1) > 0 ? 'zombie_villager_curing' : 'zombie_villager')
-          : ENTITY_TYPE_TO_GROUP[e.type] ? e.type : 'named_mobs'
-        if (!isGroupVisible(entityGroupLookup.get(entityLookupKey), enabledMarkerGroups)) continue
+          : ENTITY_TYPE_TO_GROUP[e.type] ? e.type : 'uncategorized'
+        // An entity matches its type group, plus 'named_mobs' if it has a custom name
+        // (so a named cow shows under both Livestock and Named Mobs).
+        const lookupKeys = e.customName ? [typeKey, 'named_mobs'] : [typeKey]
+        const groupIds = lookupKeys.flatMap(k => entityGroupLookup.get(k) ?? [])
+        if (!isGroupVisible(groupIds, enabledMarkerGroups)) continue
 
         const key = `${e.x}:${e.y}:${e.z}:${e.type}`
         wanted.add(key)

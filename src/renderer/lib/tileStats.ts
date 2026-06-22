@@ -4,6 +4,8 @@
 // don't cause app-wide re-renders.
 // Only TileLoadingHud and DebugOverlay subscribe.
 
+import type { TileJobQueue } from './tileJobQueue'
+
 export interface TileStats {
   mcaLoadingCount:    number
   mcaTilesLoaded:     number
@@ -104,6 +106,79 @@ export function resetBiomeLoading() {
   notify()
 }
 
+// ── Generic overlay layers (ore veins, ore features, carvers, terrain) ────────
+// These all share the useTileLayer + TileJobQueue pattern, so instead of a
+// hand-written counter set per layer they self-register here at module load.
+// queues drive the "loading" indicators; caches drive the Memory readout; stat
+// accumulates completed-render timings. TileLoadingHud and DebugOverlay read
+// these via getOverlays().
+
+export interface OverlayStat {
+  tilesLoaded: number
+  totalMs:     number
+  peakMs:      number
+}
+
+export interface OverlayInfo {
+  key:       string                          // stable id, e.g. 'orevein'
+  label:     string                          // human label, e.g. 'Ore veins'
+  className: string                          // css colour suffix (.f3-hud-dot--<className>)
+  queues:    TileJobQueue[]                  // one or more (OreVein has blob + footprint)
+  caches:    Map<string, ImageData | string>[]
+  stat:      OverlayStat
+}
+
+const overlays = new Map<string, OverlayInfo>()
+
+export function registerOverlay(opts: {
+  key: string; label: string; className: string
+  queues: TileJobQueue[]; caches: Map<string, ImageData | string>[]
+}): OverlayInfo {
+  let info = overlays.get(opts.key)
+  if (!info) {
+    info = { ...opts, stat: { tilesLoaded: 0, totalMs: 0, peakMs: 0 } }
+    overlays.set(opts.key, info)
+  }
+  return info
+}
+
+export function getOverlays(): OverlayInfo[] { return [...overlays.values()] }
+
+export function overlayQueueSize(o: OverlayInfo) {
+  return o.queues.reduce((n, q) => n + q.size, 0)
+}
+export function overlayCacheSize(o: OverlayInfo) {
+  return o.caches.reduce((n, c) => n + c.size, 0)
+}
+
+// Record a completed tile render (skipped / aborted tiles don't call this).
+export function overlayRender(key: string, ms: number) {
+  const o = overlays.get(key)
+  if (!o) return
+  o.stat.tilesLoaded++
+  o.stat.totalMs += ms
+  if (ms > o.stat.peakMs) o.stat.peakMs = ms
+  notify()
+}
+
+// Drop cached tiles for one overlay (or all). The owning layer also re-clears on
+// its deps bump, but doing it here makes the Memory readout update immediately.
+export function clearOverlayCaches(key?: string) {
+  for (const o of overlays.values()) {
+    if (key && o.key !== key) continue
+    o.caches.forEach(c => c.clear())
+  }
+  notify()
+}
+
+function resetOverlayStats() {
+  for (const o of overlays.values()) {
+    o.stat.tilesLoaded = 0
+    o.stat.totalMs = 0
+    o.stat.peakMs = 0
+  }
+}
+
 // ── Tauri push metrics (called from useSeed.ts event handler) ─────────────────
 // No notify — DebugOverlay polls every 2 s and these don't affect ChunkDataOverlay.
 
@@ -123,5 +198,6 @@ export function resetAllStats() {
   stats.biomeTilesLoaded  = 0; stats.biomeTotalMs     = 0; stats.biomePeakMs = 0
   stats.pngDecodeTotalMs  = 0; stats.pngDecodePeakMs  = 0
   stats.mcaColorCacheHits = 0; stats.mcaColorCacheMisses = 0; stats.mcaPngCacheHits = 0
+  resetOverlayStats()
   notify()
 }

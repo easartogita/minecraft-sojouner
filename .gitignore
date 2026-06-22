@@ -5,3 +5,5 @@ src-tauri/target/
 *.tsbuildinfo
 .claude/
 src-tauri/*.tiff
+release/
+logs/

@@ -70,6 +70,7 @@ pub fn read_bedrock_level_dat(level_dat_path: &str) -> Result<SeedData> {
         difficulty,
         world_time,
         edition: WorldEdition::Bedrock,
+        players: vec![],
     })
 }
 

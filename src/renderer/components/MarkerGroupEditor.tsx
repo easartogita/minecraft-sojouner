@@ -31,7 +31,7 @@ const BE_TYPES_BY_GROUP = new Map<BEFilterGroup, typeof BE_TYPE_DEFS>(
 
 const ENTITY_GROUPS_ORDER: EntityFilterGroup[] = [
   'villagers', 'mounts', 'pets', 'animals', 'livestock',
-  'bosses', 'frames', 'armor_stands', 'containers', 'named_mobs',
+  'bosses', 'frames', 'armor_stands', 'containers', 'named_mobs', 'uncategorized',
 ]
 
 const ENTITY_TYPES_BY_GROUP = new Map<EntityFilterGroup, typeof ENTITY_TYPE_DEFS>(

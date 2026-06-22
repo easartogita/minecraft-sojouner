@@ -80,6 +80,7 @@ export const ENTITY_CONFIG: Record<string, EntityConfig> = {
   copper_golem:     { color: '#cf8344', initial: 'C', label: 'Copper Golem' },
   happy_ghast:      { color: '#94d9f5', initial: 'G', label: 'Happy Ghast' },
   creaking:         { color: '#5a4a3a', initial: 'C', label: 'Creaking' },
+  sulfur_cube:      { color: '#d6c546', initial: 'S', label: 'Sulfur Cube' },
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

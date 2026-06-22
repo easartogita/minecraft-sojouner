@@ -403,6 +403,19 @@ fn parse_villager_trade(r: &HashMap<String, Value>) -> Option<VillagerTrade> {
 
 // ── Entity extractor ──────────────────────────────────────────────────────────
 
+/// Ephemeral / "noise" entity types that aren't useful as map markers: projectiles,
+/// dropped items, XP orbs, particle-like, and display/marker entities. These are
+/// dropped (unless custom-named); everything else is shown (default-allow).
+const EPHEMERAL_ENTITIES: &[&str] = &[
+    "item", "experience_orb", "arrow", "spectral_arrow", "trident",
+    "snowball", "egg", "ender_pearl", "eye_of_ender", "fireball",
+    "small_fireball", "dragon_fireball", "wither_skull", "llama_spit",
+    "shulker_bullet", "fishing_bobber", "fishing_hook", "firework_rocket",
+    "potion", "experience_bottle", "falling_block", "tnt", "area_effect_cloud",
+    "leash_knot", "evoker_fangs", "lightning_bolt", "marker",
+    "interaction", "block_display", "item_display", "text_display",
+];
+
 fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
     let raw_id = map_str(e, "id");
     if raw_id.is_empty() { return None; }
@@ -837,10 +850,14 @@ fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
         return Some(entity);
     }
 
-    // Any other entity with a custom name is worth showing
-    if custom_name.is_some() { return Some(entity); }
-
-    None
+    // Default-allow: any remaining entity is shown — the frontend handles grouping
+    // and filtering (e.g. the "Named Mobs" and "Uncategorized" groups). Known
+    // ephemeral "noise" types — projectiles, dropped items, XP orbs, particle-like
+    // and display/marker entities — are dropped unless they carry a custom name.
+    if custom_name.is_none() && EPHEMERAL_ENTITIES.contains(&kind.as_str()) {
+        return None;
+    }
+    Some(entity)
 }
 
 // ── Default impl for GameEntity ───────────────────────────────────────────────

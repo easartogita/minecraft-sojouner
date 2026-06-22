@@ -7,6 +7,16 @@ declare module '*?worker' {
 
 type WorldType = 'default' | 'large_biomes' | 'amplified' | 'flat' | 'single_biome' | 'custom'
 
+interface PlayerInfo {
+  uuid:      string
+  name:      string   // empty string if not in usercache.json
+  x:         number
+  y:         number
+  z:         number
+  dimension: string
+  isHost:    boolean
+}
+
 interface SeedData {
   seed: string
   dataVersion: number
@@ -23,6 +33,7 @@ interface SeedData {
   difficulty: number       // 0=Peaceful 1=Easy 2=Normal 3=Hard
   worldTime: number | null // total ticks elapsed (Data.Time)
   edition: 'java' | 'bedrock'
+  players: PlayerInfo[]
 }
 
 interface McaMetrics {

@@ -401,7 +401,7 @@ async fn render_tile(
     cave_y:         Option<i32>,
     cave_scan_low:  i32,
     cave_scan_high: i32,
-) -> Result<Option<String>, ()> {
+) -> Result<Option<(String, u64)>, ()> {
     let cache_root = app.path().app_cache_dir()
         .map(|p| p.join("tile-cache").join(format!("v{}", tile_renderer::CACHE_VERSION)))
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/msm-tile-cache"));
@@ -455,6 +455,28 @@ async fn render_tile(
                 ),
             )
         }).await.map_err(|_| ())
+    }
+}
+
+/// Cheap source-data freshness probe for a single tile: the max mtime (epoch
+/// secs) of the region/db files feeding it. The frontend's in-memory tile cache
+/// uses this to detect a live region rewrite without re-reading the PNG — closing
+/// the gap where the disk cache self-heals via mtime but the decoded-ImageData
+/// cache would otherwise keep serving a stale tile.
+#[tauri::command]
+fn tile_source_mtime(
+    world_dir: String,
+    edition:   String,
+    dimension: String,
+    tile_x:    i32,
+    tile_y:    i32,
+    zoom:      i32,
+) -> u64 {
+    if edition == "bedrock" {
+        bedrock::chunk_reader::max_ldb_mtime(&world_dir)
+    } else {
+        let (min_cx, max_cx, min_cz, max_cz) = tile_renderer::tile_chunk_bounds(tile_x, tile_y, zoom);
+        tile_renderer::max_mca_mtime(&world_dir, &dimension, min_cx, max_cx, min_cz, max_cz)
     }
 }
 
@@ -706,6 +728,7 @@ pub fn run() {
             // Tile cache
             render_biome_tile,
             render_tile,
+            tile_source_mtime,
             delete_tile_cache,
             clear_biome_tile_cache,
             invalidate_tile_cache,
@@ -732,6 +755,13 @@ pub fn run() {
             cubiomes::cubiomes_get_height_region,
             cubiomes::cubiomes_get_ore_veins_at,
             cubiomes::cubiomes_get_ore_veins_ex,
+            cubiomes::cubiomes_generate_ore_features,
+            cubiomes::cubiomes_get_carved_columns,
+            cubiomes::cubiomes_get_ore_vein_columns,
+            cubiomes::cubiomes_cancel_request,
+            cubiomes::structures::cubiomes_get_structure_loot,
+            cubiomes::structures::cubiomes_get_structure_chests,
+            cubiomes::cubiomes_get_surface_heights,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

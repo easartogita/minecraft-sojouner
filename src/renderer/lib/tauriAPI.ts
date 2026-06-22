@@ -77,15 +77,31 @@ export function renderBiomeTile(
   })
 }
 
+/** A rendered tile: disk path plus the source .mca mtime it is valid as of.
+ *  The mtime lets the in-memory tile cache detect a later region rewrite. */
+export interface RenderedTile { path: string; mtime: number }
+
 export function renderTile(
   worldDir: string, edition: string, dimension: string,
   tileX: number, tileY: number, zoom: number,
   hideWater: boolean, caveY: number | null,
   caveScanLow: number, caveScanHigh: number,
-): Promise<string | null> {
-  return invoke<string | null>('render_tile', {
+): Promise<RenderedTile | null> {
+  // Backend returns a (path, mtime) tuple, serialised as a 2-element array.
+  return invoke<[string, number] | null>('render_tile', {
     worldDir, edition, dimension, tileX, tileY, zoom,
     hideWater, caveY, caveScanLow, caveScanHigh,
+  }).then(res => res ? { path: res[0], mtime: res[1] } : null)
+}
+
+/** Cheap probe: max mtime (epoch secs) of the source files feeding a tile.
+ *  Used to revalidate in-memory cached tiles against live region rewrites. */
+export function tileSourceMtime(
+  worldDir: string, edition: string, dimension: string,
+  tileX: number, tileY: number, zoom: number,
+): Promise<number> {
+  return invoke<number>('tile_source_mtime', {
+    worldDir, edition, dimension, tileX, tileY, zoom,
   })
 }
 
@@ -429,6 +445,78 @@ export function getOreVeinsEx(
   const { seedLow, seedHigh } = splitSeed(seed)
   return invoke<number[]>('cubiomes_get_ore_veins_ex', { seedLow, seedHigh, cx0, cz0, cx1, cz1 })
     .then(arr => new Int32Array(arr))
+}
+
+// Monotonic ids tagging each heavy overlay tile fetch, so it can be cancelled
+// (cubiomesCancelRequest) when its tile is scrolled out of view. 0 = no token.
+let reqCounter = 0
+export function newRequestId(): number { return ++reqCounter }
+
+/** Cancel a heavy overlay computation tagged with `reqId`. The Rust side bails
+ *  as soon as it acquires the cubiomes lock, so abandoned tiles stop starving
+ *  the tiles still on screen. Fire-and-forget. */
+export function cubiomesCancelRequest(reqId: number): void {
+  invoke('cubiomes_cancel_request', { reqId }).catch(() => {})
+}
+
+/** Per-column ore-vein footprint for a chunk range, using generator `slot`.
+ *  The cave-layer analogue of getCarvedColumns: resolves each vein's true 3-D
+ *  shape. Returns [nx, nz, then nx*nz * 256 * 2 per-column (copper,iron) counts]. */
+export function getOreVeinColumns(
+  slot: number, cx0: number, cz0: number, cx1: number, cz1: number, reqId = 0,
+): Promise<Int32Array> {
+  return invoke<number[]>('cubiomes_get_ore_vein_columns', { slot, cx0, cz0, cx1, cz1, reqId })
+    .then(arr => new Int32Array(arr))
+}
+
+/** Ore-feature placement (normal ore blobs) for `oreTypes` over a chunk range,
+ *  using generator `slot`. Returns a flat Int32Array [oreType, x, y, z, ...]. */
+export function generateOreFeatures(
+  slot: number, oreTypes: number[], cx0: number, cz0: number, cx1: number, cz1: number, reqId = 0,
+): Promise<Int32Array> {
+  return invoke<number[]>('cubiomes_generate_ore_features', { slot, oreTypes, cx0, cz0, cx1, cz1, reqId })
+    .then(arr => new Int32Array(arr))
+}
+
+/** Carver (cave/ravine/canyon) coverage for a chunk range, using generator `slot`.
+ *  Returns [nx, nz, then nx*nz * 256 per-column carved-block counts]. */
+export function getCarvedColumns(
+  slot: number, cx0: number, cz0: number, cx1: number, cz1: number, reqId = 0,
+): Promise<Int32Array> {
+  return invoke<number[]>('cubiomes_get_carved_columns', { slot, cx0, cz0, cx1, cz1, reqId })
+    .then(arr => new Int32Array(arr))
+}
+
+/** Real preliminary surface heightmap: a w×h grid from (x0,z0), samples `stride`
+ *  blocks apart. Uses generator `slot`. Returns w*h surface Y values (row-major). */
+export function getSurfaceHeights(
+  slot: number, x0: number, z0: number, w: number, h: number, stride: number,
+): Promise<Int32Array> {
+  return invoke<number[]>('cubiomes_get_surface_heights', { slot, x0, z0, w, h, stride })
+    .then(arr => new Int32Array(arr))
+}
+
+export interface LootItem { chestX: number; chestZ: number; item: string; count: number }
+
+/** Rolled chest loot for a structure at (posX, posZ). */
+export function getStructureLoot(
+  slot: number, structType: number, posX: number, posZ: number, mcVersion: number,
+): Promise<LootItem[]> {
+  return invoke<{ chest_x: number; chest_z: number; item: string; count: number }[]>(
+    'cubiomes_get_structure_loot', { slot, structType, posX, posZ, mcVersion },
+  ).then(rows => rows.map(r => ({ chestX: r.chest_x, chestZ: r.chest_z, item: r.item, count: r.count })))
+}
+
+export interface ChestSlot { chestX: number; chestZ: number; table: string }
+
+/** Chest composition (loot tables present) for a structure at (posX, posZ),
+ *  without rolling the loot — cheap enough to call for every visible marker. */
+export function getStructureChests(
+  slot: number, structType: number, posX: number, posZ: number,
+): Promise<ChestSlot[]> {
+  return invoke<{ chest_x: number; chest_z: number; table: string }[]>(
+    'cubiomes_get_structure_chests', { slot, structType, posX, posZ },
+  ).then(rows => rows.map(r => ({ chestX: r.chest_x, chestZ: r.chest_z, table: r.table })))
 }
 
 export function getBiomeAt(slot: number, x: number, z: number): Promise<number> {
