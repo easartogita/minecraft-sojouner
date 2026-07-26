@@ -1,8 +1,10 @@
-# Minecraft Sojourner
+# Sojourner
 
-A desktop app that renders a live, interactive map of your Minecraft world — biomes, structures, real block colors, cave mode, ore veins, block entities, entities, and more — read directly from your world files. Supports both **Java** and **Bedrock** editions. The map refreshes automatically whenever the world saves.
+A desktop map viewer for Minecraft. Sojourner renders a live, interactive map of your world — biomes, structures, real block colors, cave mode, ore veins, block entities, entities, route planning, and more — read directly from your world files. Supports both **Java** and **Bedrock** editions. The map refreshes automatically whenever the world saves.
 
 Built with Tauri 2 + Rust + React + Leaflet. cubiomes is compiled as a native static library and called via Rust FFI. Bedrock worlds are read via LevelDB (Mojang fork) with Snappy decompression.
+
+> Sojourner is an unofficial, fan-made tool. It is **not** affiliated with, endorsed by, or associated with Mojang Studios or Microsoft. *Minecraft* is a trademark of Mojang Studios.
 
 ---
 
@@ -14,6 +16,21 @@ Bedrock support is functional for block rendering and markers, but two major fea
 - **Structures** — structure positions are predicted using Java Edition's placement logic. Bedrock uses different seeds and placement rules; most positions will be wrong.
 
 Everything else — block color tiles, cave mode, block entities, entities, POI, ore veins, slime chunks, TIFF export — works correctly for Bedrock.
+
+---
+
+## Interface
+
+The left edge is an icon **rail** with six collapsible panels:
+
+- **World** — open/recent worlds, seed, dimension, version, world settings, TIFF export
+- **Layers** — all map overlays, grouped into Surface and Underground, with per-layer opacity
+- **Structures** — a distance-sorted "nearby" list of every predicted structure; click to fly to one
+- **World Data** — entities, block entities, and POI (from the save), custom marker groups, and the marker/cave depth Y-window
+- **Saved** — dropped pins and saved routes
+- **Settings** — appearance, UI scale, and behavior
+
+The map itself has a right-click context menu (copy coords, copy `/tp`, cross-dimension coords, center here, drop a pin, start/extend a route, pin the best nearby copper/iron vein) and floating readouts: a cursor info bar, a day/night bar, and a vertical Y-range gauge.
 
 ---
 
@@ -32,43 +49,57 @@ Everything else — block color tiles, cave mode, block entities, entities, POI,
 - **Biome map** — cubiomes-generated biome colors at low zoom; Overworld, Nether, and End *(Java accurate; Bedrock approximate — see above)*
 - **Real block colors** — at zoom ≥ 3, reads actual surface blocks from `.mca` / LevelDB with hillshading and water depth tinting
 - **Cave mode** — underground block colors at a configurable Y depth with adjustable scan window
-- **Underground biomes** — biome colors for a subsurface Y slice
+- **Underground biomes** — biome colors for a subsurface Y slice (a mode of the biome layer)
 - **Tile cache** — rendered tiles cached to disk as PNGs; invalidated automatically on world save
 - **Tile pre-generation** — pre-render all tiles for a configurable radius around spawn so subsequent viewport loads are near-instant
 
 ### Structures *(Java accurate; Bedrock approximate — see above)*
 All cubiomes-supported structures with labels, loot summaries, and variant annotations:
 
-**Overworld** — Village, Stronghold, Woodland Mansion, Ocean Monument, Witch Hut, Pillager Outpost, Desert Temple, Jungle Temple, Igloo, Shipwreck, Ruined Portal, Ancient City, Trial Chambers, Trail Ruins, Ocean Ruins, Desert Well, Buried Treasure, Mineshaft, Amethyst Geode
+**Overworld** — Village, Stronghold, Woodland Mansion, Ocean Monument, Witch Hut, Pillager Outpost, Desert Temple, Jungle Temple, Igloo, Shipwreck, Ruined Portal, Ancient City, Trial Chambers, Trail Ruins, Abandoned Camp, Ocean Ruins, Desert Well, Buried Treasure, Mineshaft, Amethyst Geode
 
 **Nether** — Nether Fortress, Bastion Remnant, Ruined Portal
 
 **End** — End City, End Gateway, End Island
 
-Structures are sorted by distance from the viewport center; click any to fly to it.
+The Structures panel lists them sorted by distance from the player (or origin), grouped by type with per-variant filtering; click any to fly to it.
 
-### Overlays
-- **Terrain relief** — hillshade relief computed from cubiomes surface heights, with adjustable opacity
+All toggleable from the **Layers** panel, grouped Surface / Underground, each with adjustable opacity.
+
+- **Terrain relief** — hillshade relief computed from cubiomes surface heights
 - **Slime chunks** — Overworld slime chunk grid
-- **Ore veins** — copper and iron ore vein probability per chunk (1.18+)
-- **Ore features** — individual ore deposits (diamond, gold, redstone, and others) plotted from accurate worldgen; high zoom only
+- **Ore veins** — copper and iron ore vein probability per chunk (1.18+), in density or footprint mode
+- **Ore deposits** — individual ore deposits (diamond, gold, redstone, and others) plotted from accurate worldgen; high zoom only
+- **Caves & ravines** — carver footprints (cave and ravine columns) from worldgen
 - **Cave entrances** — marks chunk columns with significant cave openings, ravines, and overhangs
 - **Local difficulty** — per-chunk special difficulty multiplier based on inhabited time, world time, and game difficulty
-- **Chunk grid** — 16×16 chunk boundary overlay
-- **Inhabited time** — color-coded per-chunk inhabited time
-- **Generated regions** — outlines which region files actually exist on disk, i.e. where the world has been explored
+- **Chunk grid** — 16-block chunk boundary overlay
+- **Region grid** — 512-block region boundary overlay
+- **Spawn radius** — world-spawn radius overlay
+
+The **Chunk Data** (block-color) layer also outlines which region files actually exist on disk — i.e. where the world has been explored.
 
 ### Markers
-- **Block entities** — chests (with loot tier badges), spawners, signs, beehives, beacons, banners, and more; visible at zoom ≥ 5
-- **Entities** — villagers (with trades), horses, pets, bosses, container entities, and any named mob; visible at zoom ≥ 5
+
+Read from the save (in the **World Data** panel):
+- **Block entities** — chests (with loot tier badges), spawners, signs, beehives, beacons, banners, and more; visible at zoom ≥ 3 by default (adjustable in Settings)
+- **Entities** — villagers (with trades), horses, pets, bosses, container entities, and any named mob; visible at zoom ≥ 3 by default (adjustable in Settings)
 - **POI** — beds, workstations, bells, and other points of interest
-- **Pins** — drop custom markers with Ctrl+click; labels editable; optional cross-dimensional OW↔Nether projection per pin
+- **Custom marker groups** — define named, color-coded groups of block-entity and entity types to toggle together
+- **Y-window** — a vertical Y-range gauge scopes which save markers show by depth; can lock to live player Y or freeze at a chosen Y
+
+Placed by you (in the **Saved** panel):
+- **Pins** — drop custom markers with Ctrl+click or the right-click menu; labels editable; optional cross-dimensional OW↔Nether projection per pin
+- **Saved routes** — name and store planned routes to reload later
+
+Always on:
 - **Player marker** — last known in-game position; updates on world save
 - **Spawn marker** — world spawn point with optional spawn radius overlay
 
 ### Other
 - **Dimensions** — Overworld, Nether, End; Nether coordinates shown at 1:8 scale
-- **Ruler tool** — click two points to measure block distance
+- **Route planner** — chain waypoints into a route and read per-leg and total block distance, nether-equivalent distance, and estimated travel time. Each leg has a travel mode (on foot, boat, mounted, elytra, spectator, nether highway); on-foot and boat legs are auto-split by biome so open water and frozen/snowy terrain are timed at their real speeds. Routes can be saved and reloaded.
+- **Cave depth gauge** — floating vertical Y-range gauge controlling cave-mode scan depth and the marker Y-window, with a lock that follows the live player Y
 - **Day/Night bar** — sky-color gradient showing the current in-game time of day
 - **TIFF export** — full-resolution world map rendered directly from world files; configurable blocks-per-pixel
 - **Cursor info bar** — block name, biome, Y coordinate, and local difficulty at the cursor
@@ -152,8 +183,8 @@ For other distros see the [Tauri prerequisites guide](https://tauri.app/start/pr
 ## Installation
 
 ```bash
-git clone --recurse-submodules https://github.com/yourname/minecraft-sojourner.git
-cd minecraft-sojourner
+git clone --recurse-submodules https://github.com/easartogita/minecraft-sojouner.git
+cd minecraft-sojouner
 npm install
 ```
 
@@ -180,16 +211,20 @@ npm run build    # production build → src-tauri/target/release/bundle/
 | Pan | Click and drag |
 | Zoom | Scroll wheel |
 | Coordinates | Hover — shown bottom-right; click to copy X Z |
-| Copy seed | Click the seed value in the sidebar |
+| Context menu | Right-click the map or a marker |
+| Copy seed | Click the seed value in the World panel |
 | Jump to player | Press `P` or click **Go to player** |
-| Drop a pin | Ctrl+click on the map |
-| Rename a pin | Click the pin label in the Markers panel |
+| Drop a pin | Ctrl+click on the map, or right-click → **Add pin** |
+| Rename a pin | Click the pin label in the Saved panel |
 | Jump to coordinates | Type X/Z in the Go to Coordinates panel and press Enter |
 | Open world | Ctrl+O |
 | Toggle biome map | `B` |
 | Toggle hide water | `H` |
 | Toggle slime chunks | `S` (Overworld only) |
 | Toggle cave mode | `C` (requires open world with known player Y) |
+| Toggle chunk data | `D` |
+| Cycle ore veins | `V` (off → density → footprint; 1.18+ Overworld) |
+| Toggle route planner | `R` |
 | Focus coordinate input | `G` |
 
 ---
@@ -203,10 +238,10 @@ cubiomes is built via `build.rs` during `cargo build`. Check the Rust build outp
 Verify the app is watching the correct world. The file watcher uses a short debounce to wait for the game to finish writing.
 
 **Structures show wrong positions**
-For Java worlds: ensure the Minecraft version in the sidebar matches the world's actual version. For 1.21.5+ worlds, version detection is automatic. For Bedrock: expected — see the Bedrock limitations section above.
+For Java worlds: ensure the Minecraft version in the World panel matches the world's actual version. For 1.21.5+ worlds, version detection is automatic. For Bedrock: expected — see the Bedrock limitations section above.
 
 **Block entities / entities not showing**
-Only visible at zoom level 5 or higher. Requires an open world file (not seed-only mode).
+Only visible at zoom level 3 or higher by default (configurable in Settings). Requires an open world file (not seed-only mode).
 
 **Player marker not showing**
 Player position is saved in `level.dat` only on session end or auto-save. The marker only appears when the map dimension matches the player's current dimension.

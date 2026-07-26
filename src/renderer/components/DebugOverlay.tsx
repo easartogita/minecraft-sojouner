@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useApp } from '../App'
 import { useTileStats } from '../hooks/useTileStats'
 import { resetAllStats, getOverlays, overlayQueueSize, overlayCacheSize, clearOverlayCaches } from '../lib/tileStats'
+import { getAllQueues } from '../lib/tileJobQueue'
 import { getBiomeCacheSize, clearBiomeCache, getBiomeQueue } from './BiomeTileLayer'
 import { getChunkCacheSize, clearChunkCache, getChunkQueue } from './ChunkOverlayLayer'
 import { getBELayerStats, resetBELayerStats, type BELayerStats } from './BlockEntityLayer'
@@ -198,7 +199,7 @@ export default function DebugOverlay() {
                 <div className="debug-sb-row"><span>Load avg / peak</span><span>{ap(be.totalMs, be.loadCount, be.peakMs)}</span></div>
               </>
             ) : (
-              <div className="debug-sb-empty">{state.zoom >= 5 ? 'None loaded' : 'Zoom ≥ +5 to load'}</div>
+              <div className="debug-sb-empty">{state.zoom >= state.markerMinZoom ? 'None loaded' : `Zoom ≥ ${state.markerMinZoom >= 0 ? '+' : ''}${state.markerMinZoom} to load`}</div>
             )}
             {ent && ent.loadCount > 0 && (
               <>
@@ -229,6 +230,27 @@ export default function DebugOverlay() {
             </div>
           )
         })}
+
+        {/* Queues — every registered TileJobQueue, so a job that never cancels
+            shows up as active/pending sitting above zero with nothing on screen,
+            or `started` climbing while idle. */}
+        {(() => {
+          const snaps = getAllQueues().map(q => q.snapshot())
+          const live = snaps.filter(s => s.active > 0 || s.pending > 0)
+          const totalStarted = snaps.reduce((n, s) => n + s.started, 0)
+          if (live.length === 0 && totalStarted === 0) return null
+          return (
+            <div className="debug-sb-section">
+              <div className="debug-sb-title">Queues{live.length > 0 ? ` · ${live.length} active` : ''}</div>
+              {snaps.filter(s => s.active > 0 || s.pending > 0 || s.started > 0).map(s => (
+                <div className="debug-sb-row" key={s.name}>
+                  <span>{s.name}{s.paused ? ' ⏸' : ''}</span>
+                  <span>{s.active}▶ {s.pending}⏳ · {s.completed}/{s.started}{s.cancelled > 0 ? ` ·${s.cancelled}✕` : ''}</span>
+                </div>
+              ))}
+            </div>
+          )
+        })()}
 
         {/* Memory */}
         <div className="debug-sb-section">

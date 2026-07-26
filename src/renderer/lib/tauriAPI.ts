@@ -53,9 +53,14 @@ export function onSeedError(cb: (error: string) => void): () => void {
   return () => { unlisten?.() }
 }
 
-export function onRegionChanged(cb: (regions: [number, number][]) => void): () => void {
+/** A region-change notification: the affected dimension plus the changed region
+ *  coords. `dimension` is 'overworld'/'nether'/'end', a custom dim name, or '*'
+ *  (dimension unknown → full invalidation of the active view). */
+export interface RegionChange { dimension: string; regions: [number, number][] }
+
+export function onRegionChanged(cb: (change: RegionChange) => void): () => void {
   let unlisten: UnlistenFn | undefined
-  listen<[number, number][]>('region:changed', e => cb(e.payload)).then(fn => { unlisten = fn })
+  listen<RegionChange>('region:changed', e => cb(e.payload)).then(fn => { unlisten = fn })
   return () => { unlisten?.() }
 }
 
@@ -496,27 +501,55 @@ export function getSurfaceHeights(
     .then(arr => new Int32Array(arr))
 }
 
-export interface LootItem { chestX: number; chestZ: number; item: string; count: number }
+export interface EnchantmentInfo { name: string; level: number }
+
+export interface LootItem {
+  chestX: number; chestZ: number; item: string; count: number
+  /** e.g. "healing" — set when a set_potion loot function applied one. */
+  potion?: string
+  enchantments: EnchantmentInfo[]
+}
 
 /** Rolled chest loot for a structure at (posX, posZ). */
 export function getStructureLoot(
   slot: number, structType: number, posX: number, posZ: number, mcVersion: number,
 ): Promise<LootItem[]> {
-  return invoke<{ chest_x: number; chest_z: number; item: string; count: number }[]>(
+  return invoke<{
+    chest_x: number; chest_z: number; item: string; count: number
+    potion?: string; enchantments: { name: string; level: number }[]
+  }[]>(
     'cubiomes_get_structure_loot', { slot, structType, posX, posZ, mcVersion },
-  ).then(rows => rows.map(r => ({ chestX: r.chest_x, chestZ: r.chest_z, item: r.item, count: r.count })))
+  ).then(rows => rows.map(r => ({
+    chestX: r.chest_x, chestZ: r.chest_z, item: r.item, count: r.count,
+    potion: r.potion, enchantments: r.enchantments,
+  })))
 }
 
-export interface ChestSlot { chestX: number; chestZ: number; table: string }
+export interface ChestSlot { chestX: number; chestZ: number; table: string; isShip: boolean }
 
 /** Chest composition (loot tables present) for a structure at (posX, posZ),
- *  without rolling the loot — cheap enough to call for every visible marker. */
+ *  without rolling the loot — cheap enough to call for every visible marker.
+ *  `isShip` flags a chest on an End City's End Ship piece (better odds of an
+ *  Elytra) — the tower chests share the same loot table name, so this can't
+ *  be told apart from `table` alone. */
 export function getStructureChests(
   slot: number, structType: number, posX: number, posZ: number,
 ): Promise<ChestSlot[]> {
-  return invoke<{ chest_x: number; chest_z: number; table: string }[]>(
+  return invoke<{ chest_x: number; chest_z: number; table: string; is_ship: boolean }[]>(
     'cubiomes_get_structure_chests', { slot, structType, posX, posZ },
-  ).then(rows => rows.map(r => ({ chestX: r.chest_x, chestZ: r.chest_z, table: r.table })))
+  ).then(rows => rows.map(r => ({ chestX: r.chest_x, chestZ: r.chest_z, table: r.table, isShip: r.is_ship })))
+}
+
+export interface GatewayLink { srcX: number; srcZ: number; dstX: number; dstZ: number }
+
+/** The 20 End Gateways generated in a ring on the main End island the first
+ *  time the Ender Dragon is defeated, paired with each one's outer linked
+ *  destination — computed straight from the seed, so this is known even for
+ *  gateways nobody has visited. Empty outside the End dimension or MC < 1.13. */
+export function getEndGatewayLinks(slot: number): Promise<GatewayLink[]> {
+  return invoke<{ src_x: number; src_z: number; dst_x: number; dst_z: number }[]>(
+    'cubiomes_get_end_gateway_links', { slot },
+  ).then(rows => rows.map(r => ({ srcX: r.src_x, srcZ: r.src_z, dstX: r.dst_x, dstZ: r.dst_z })))
 }
 
 export function getBiomeAt(slot: number, x: number, z: number): Promise<number> {
@@ -535,4 +568,12 @@ export function getBiomeAtY(slot: number, x: number, z: number, y: number): Prom
  */
 export function getHoverBiome(slot: number, x: number, z: number, mode: string): Promise<number> {
   return invoke<number>('cubiomes_get_hover_biome', { slot, x, z, mode })
+}
+
+/** Batched surface-biome sampling for many points in one call — one CUBIOMES_LOCK
+ *  acquisition instead of one per point. Used to classify long map-drawn lines
+ *  (Route Planner boat legs) without N separate IPC round-trips. */
+export function getBiomesAlongLine(slot: number, points: { x: number; z: number }[]): Promise<Int32Array> {
+  return invoke<number[]>('cubiomes_get_biomes_along_line', { slot, points })
+    .then(ids => new Int32Array(ids))
 }

@@ -11,7 +11,58 @@ const BASE_BLOCKS_PER_PIXEL: f64 = 16.0;
 const CHUNK:             usize = 16;
 // Bump on any change to render output. v3: render terrained proto-chunks
 // (heightmap-gated, not Status=="full"); capture .mca mtime before the read.
-pub const CACHE_VERSION: u32   = 3;
+// v4: render terrained proto-chunks that have NO heightmap at all (e.g. `carvers`
+// frontier chunks) by scanning sections top-down — fixes blank seams.
+// v5: (reverted) hot/cold ms freshness pegged the backend CPU re-rendering every
+// hot tile every probe — reverted to whole-second file mtime.
+// v6: back to seconds mtime; drops the incompatible ms-stamped v5 tiles.
+// v7: torn-read gating — a tile with any mid-flush chunk is stamped mtime 0 (never
+// frozen); drops any partial tiles frozen by earlier versions.
+// v8: 26.3 block colors (poplar set, red shrub, shelf mushroom) — drops tiles
+// rendered with the grey-fallback for those blocks.
+// v9: per-biome grass/foliage tint from section biome palettes — drops tiles
+// rendered with the static single-green colors.
+// v10: per-biome water tint (swamp/mangrove/warm+cold+frozen ocean…) — drops
+// tiles rendered with the single depth-shaded default blue.
+pub const CACHE_VERSION: u32   = 10;
+
+// ── Torn-tile diagnostic tracing ────────────────────────────────────────────────
+// Env-gated (SOJOURNER_TILE_TRACE=1) so it's silent in normal runs. Used this
+// session to trace why region:changed / Clear Chunk don't heal frozen torn tiles:
+// correlates region:changed emits, invalidate_mca_tiles deletions, and per-tile
+// torn renders / stale-cache serves on one timeline. Grep the terminal for
+// `[tile-trace]`. Rip out once the heal path is understood.
+pub fn tile_trace() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SOJOURNER_TILE_TRACE").is_ok())
+}
+
+/// Append one timestamped trace line to /tmp/sojourner-tile-trace.log (a dedicated
+/// file so the trace is readable without scraping the noisy dev terminal). The log
+/// is truncated once per process launch, so each run is a clean timeline. No-op
+/// unless SOJOURNER_TILE_TRACE is set.
+pub fn trace_log(msg: &str) {
+    if !tile_trace() { return; }
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    static FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    let slot = FILE.get_or_init(|| {
+        std::fs::OpenOptions::new()
+            .create(true).write(true).truncate(true)
+            .open("/tmp/sojourner-tile-trace.log")
+            .ok()
+            .map(Mutex::new)
+    });
+    let Some(m) = slot else { return };
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut f) = m.lock() {
+        let _ = writeln!(f, "{ms} {msg}");
+    }
+}
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -115,7 +166,13 @@ pub fn invalidate_mca_tiles(
                 for tx in tx0..=tx1 {
                     for ty in ty0..=ty1 {
                         let file = zoom_path.join(format!("{tx}_{ty}.png"));
-                        let _ = std::fs::remove_file(file);
+                        let removed = std::fs::remove_file(&file).is_ok();
+                        // Only report actual deletions (existing PNGs) — a torn frozen
+                        // tile SHOULD show up here; its absence means the region→tile
+                        // mapping missed it.
+                        if removed {
+                            trace_log(&format!("invalidate del z={} tile={},{} (region {},{})", zoom, tx, ty, rx, rz));
+                        }
                     }
                 }
             }
@@ -154,8 +211,8 @@ fn encode_tile_png(pixels: &[u8], mca_mtime: u64) -> Vec<u8> {
     buf
 }
 
-/// Max mtime (seconds since Unix epoch) across all .mca files that contribute to a tile.
-/// Returns 0 when no region files are found (unvisited or deleted).
+/// Max mtime (seconds since Unix epoch) across all .mca files that contribute to a
+/// tile. Returns 0 when no region files are found (unvisited or deleted).
 pub fn max_mca_mtime(world_dir: &str, dimension: &str, min_cx: i32, max_cx: i32, min_cz: i32, max_cz: i32) -> u64 {
     let regions: std::collections::HashSet<(i32, i32)> = (min_cx..=max_cx)
         .flat_map(|cx| (min_cz..=max_cz).map(move |cz| (cx.div_euclid(32), cz.div_euclid(32))))
@@ -243,6 +300,13 @@ pub fn get_or_render_tile(
     // cache so it can detect the same staleness without re-reading the PNG.
     if let Ok(cached_png) = std::fs::read(&p) {
         if let Some(stored) = fresh_tile_mtime(&cached_png, min_cx, max_cx, min_cz, max_cz, &mtime_fn) {
+            if tile_trace() {
+                // The whole-second-freeze smoking gun: if a frozen torn tile is
+                // served here, stored == current (both the torn render's second)
+                // and we hand back the partial picture instead of re-reading.
+                let current = mtime_fn(min_cx, max_cx, min_cz, max_cz);
+                trace_log(&format!("serve-cached z={} tile={},{} stored={} current={}", zoom, tile_x, tile_y, stored, current));
+            }
             return Some((p.to_string_lossy().into_owned(), stored));
         }
         let _ = std::fs::remove_file(&p);
@@ -265,6 +329,19 @@ pub fn get_or_render_tile(
 
     let chunk_results = chunk_colors_fn(&to_fetch);
 
+    // If any contributing chunk read torn (Minecraft mid-flush), the render is
+    // incomplete. Stamp the tile mtime 0 below — fresh_tile_mtime treats 0 as
+    // always-stale, so this tile re-renders on its next access / region:changed once
+    // the file settles, instead of freezing a half-written picture. This is bounded
+    // to the few tiles actually being written, so no viewport-wide re-render storm.
+    let tile_torn = chunk_results.iter().any(|r| r.torn);
+
+    if tile_trace() {
+        let torn_n = chunk_results.iter().filter(|r| r.torn).count();
+        let total  = chunk_results.len();
+        trace_log(&format!("render z={} tile={},{} torn={}/{} data_mtime={}", zoom, tile_x, tile_y, torn_n, total, data_mtime));
+    }
+
     // Build lookup map
     let chunk_map: HashMap<(i32, i32), Vec<u8>> = chunk_results
         .into_iter()
@@ -274,6 +351,9 @@ pub fn get_or_render_tile(
     if chunk_map.is_empty() {
         return None;
     }
+
+    let _ = tile_torn; // torn distinction kept in ChunkParse; not acted on (CPU storm — see memory)
+    let stamp_mtime = data_mtime;
 
     // ── Pixel loop ───────────────────────────────────────────────────────────
     let mut pixels = vec![0u8; TILE_SIZE * TILE_SIZE * 4];
@@ -389,8 +469,8 @@ pub fn get_or_render_tile(
     if let Some(parent) = p.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    std::fs::write(&p, encode_tile_png(&pixels, data_mtime)).ok()?;
-    Some((p.to_string_lossy().into_owned(), data_mtime))
+    std::fs::write(&p, encode_tile_png(&pixels, stamp_mtime)).ok()?;
+    Some((p.to_string_lossy().into_owned(), stamp_mtime))
 }
 
 // ── Biome tile renderer ───────────────────────────────────────────────────────
@@ -574,6 +654,18 @@ pub fn render_biome_tile(
     // Disk cache hit — return path directly, no decode needed (tiles are deterministic)
     if p.exists() {
         return Some(p.to_string_lossy().into_owned());
+    }
+
+    // Generator slots are recycled round-robin by cm_setup_generator and the
+    // frontend holds a slot index across async renders, so a queued render can
+    // execute after the slot has been repointed — to another dimension, or to
+    // another world entirely when switching worlds (the new seed propagates to the
+    // tile layer before useGenerator finishes re-setting up the slot). Generating
+    // now would write the previous world's/dimension's biomes into this tile's
+    // (seed, dimension)-keyed cache path. Bail instead; the tile is retried once
+    // the correct generator is in place.
+    if !crate::cubiomes::slot_matches(slot, seed_low, seed_high, dim_to_cubiomes(dimension)) {
+        return None;
     }
 
     let blocks_per_pixel = BASE_BLOCKS_PER_PIXEL / (2f64).powi(zoom);

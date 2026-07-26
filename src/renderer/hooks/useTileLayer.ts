@@ -12,6 +12,13 @@ export interface UseTileLayerOptions {
   deps: React.DependencyList
   enabled?: boolean
   cache?: Map<string, ImageData | string>
+  // Which deps actually invalidate `cache`'s contents — e.g. a new seed/world,
+  // or an explicit force-refresh counter (tileCacheVersion/overlayCacheVersion).
+  // Defaults to `deps` (old behavior: clear on ANY dep change). Pass a narrower
+  // list when `cacheKeyFn` already encodes some of `deps` (e.g. dimension,
+  // biomeMode toggles) — those don't need a clear, since old entries just sit
+  // under keys that stop being read rather than colliding with new ones.
+  cacheEpochDeps?: React.DependencyList
   maxCache?: number
   cacheKeyFn?: (coords: L.Coords) => string
   skip?: (coords: L.Coords) => boolean
@@ -58,6 +65,7 @@ export function useTileLayer({
   deps,
   enabled = true,
   cache,
+  cacheEpochDeps,
   maxCache = 400,
   cacheKeyFn,
   skip,
@@ -70,6 +78,7 @@ export function useTileLayer({
   const layerRef = useRef<L.GridLayer | null>(null)
   const maxCacheRef = useRef(maxCache)
   maxCacheRef.current = maxCache
+  const epochRef = useRef<React.DependencyList | undefined>(undefined)
 
   useEffect(() => {
     layerRef.current?.setOpacity(opacity)
@@ -138,6 +147,7 @@ export function useTileLayer({
             const centre = map.project(map.getCenter(), coords.z)
             const dx = coords.x + 0.5 - centre.x / tileSize
             const dy = coords.y + 0.5 - centre.y / tileSize
+            const controller = new AbortController()
             const job = queue.enqueue(dx * dx + dy * dy, () => {
               if (!wrap.isConnected || stale) { queue.release(); return }
               // Only show animation once the job is actively running — not while queued.
@@ -146,7 +156,7 @@ export function useTileLayer({
               loadImg.src = loadingGifs[Math.floor(Math.random() * loadingGifs.length)]
               loadImg.style.cssText = `position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated`
               wrap.replaceChildren(loadImg)
-              fetch(coords)
+              fetch(coords, controller.signal)
                 .then(result => {
                   queue.release()
                   if (stale || !wrap.isConnected || !result) return
@@ -166,6 +176,7 @@ export function useTileLayer({
                 })
                 .catch(() => { queue.release() })
             })
+            job.abort = () => controller.abort()
             ;(wrap as any)._tileJob = job
           })
 
@@ -314,15 +325,29 @@ export function useTileLayer({
 
     layer.addTo(map)
     layerRef.current = layer
-    cache?.clear()
+
+    // Only clear the shared cache when a real epoch boundary was crossed (new
+    // world/seed, or an explicit force-refresh counter) — not on every dep
+    // change. Dep changes not in `cacheEpochDeps` (e.g. dimension, biomeMode)
+    // are assumed to already be encoded in `cacheKeyFn`, so old entries just
+    // sit unread rather than colliding with new ones.
+    const epoch = cacheEpochDeps ?? deps
+    const prevEpoch = epochRef.current
+    const epochChanged = !prevEpoch || prevEpoch.length !== epoch.length ||
+      epoch.some((v, i) => v !== prevEpoch[i])
+    if (epochChanged) cache?.clear()
+    epochRef.current = epoch
 
     return () => {
       stale = true
+      // Drop this layer's queued backlog and abort in-flight fetches so its jobs
+      // stop feeding the backend the moment it's removed — otherwise a large
+      // pending backlog keeps draining through cubiomes long after teardown.
+      queue.cancelAll()
       if (layerRef.current) {
         map.removeLayer(layerRef.current)
         layerRef.current = null
       }
-      cache?.clear()
       onCleanup?.()
     }
   }, deps)

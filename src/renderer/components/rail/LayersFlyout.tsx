@@ -1,11 +1,7 @@
 import React from 'react'
 import { useApp } from '../../App'
-import { MC_VERSIONS, CAVE_MODE_MIN_ZOOM, CAVE_MODE_MAX_ZOOM } from '../../lib/constants'
+import { MC_VERSIONS } from '../../lib/constants'
 import { ORE_FEATURE_DEFS } from '../../lib/oreFeatures'
-
-const SCAN_LOW_MIN  = -80
-const SCAN_HIGH_MAX =  20
-const STEP          =  10
 
 function OpacityRow({ label, value, onChange }: {
   label: React.ReactNode; value: number; onChange: (v: number) => void
@@ -27,31 +23,22 @@ function LayerLabel({ name, info, hotkey, hotkeyTitle }: {
   hotkeyTitle?: string
 }) {
   return (
-    <span className="overlay-label">
-      {name}
-      {info && <span className="layer-info-badge" title={info}>?</span>}
-      {hotkey && <kbd className="shortcut-key" title={hotkeyTitle}>{hotkey}</kbd>}
-    </span>
+    <>
+      <span className="overlay-label">{name}</span>
+      {(info || hotkey) && (
+        <span className="layer-label-meta">
+          {info && <span className="layer-info-badge" title={info}>?</span>}
+          {hotkey && <kbd className="shortcut-key" title={hotkeyTitle}>{hotkey}</kbd>}
+        </span>
+      )}
+    </>
   )
 }
 
 export default function LayersFlyout() {
-  const { state, dispatch, mapRef } = useApp()
+  const { state, dispatch } = useApp()
 
   const playerY = state.seedData?.playerY != null ? Math.floor(state.seedData.playerY) : null
-  const { caveScanLow, caveScanHigh, zoom } = state
-
-  const ceilingY = playerY != null ? playerY + caveScanHigh : null
-  const floorY   = playerY != null ? playerY + caveScanLow  : null
-
-  const setZoom = (z: number) => {
-    const clamped = Math.max(CAVE_MODE_MIN_ZOOM, Math.min(CAVE_MODE_MAX_ZOOM, z))
-    dispatch({ type: 'SET_ZOOM', zoom: clamped } as never)
-    mapRef.current?.setZoom(clamped)
-  }
-
-  const setRange = (low: number, high: number) =>
-    dispatch({ type: 'SET_CAVE_SCAN_RANGE', low, high } as never)
 
   return (
     <div className="flyout-panel">
@@ -76,7 +63,7 @@ export default function LayersFlyout() {
                 onChange={() => dispatch({ type: 'TOGGLE_CHUNK_DATA' } as never)} />
               <LayerLabel
                 name="Chunk Data"
-                info="Real block colors rendered from .mca region files — visible at close zoom (≥ 3)"
+                info="Your explored world: ghosted region outlines at low zoom, real block colors once past the chunk-data zoom threshold (see Settings)"
                 hotkey="D"
                 hotkeyTitle="Toggle chunk data"
               />
@@ -104,44 +91,6 @@ export default function LayersFlyout() {
                   onChange={v => dispatch({ type: 'SET_CHUNK_OPACITY', opacity: v } as never)} />
               </>
             )}
-          </div>
-        )}
-
-        {/* Cave scan controls — inline when cave mode is active */}
-        {state.caveMode && (
-          <div className="flyout-cave-scan">
-            <div className="cave-sb-zoom-row">
-              <span className="cave-sb-label">Cave Zoom</span>
-              <button className="btn-sm" onClick={() => setZoom(zoom - 1)} disabled={zoom <= CAVE_MODE_MIN_ZOOM}>−</button>
-              <span className="cave-sb-zoom-val">{zoom}</span>
-              <button className="btn-sm" onClick={() => setZoom(zoom + 1)} disabled={zoom >= CAVE_MODE_MAX_ZOOM}>+</button>
-            </div>
-            <div className="cave-sb-table">
-              <div className="cave-sb-row cave-sb-row--ceiling">
-                <span className="cave-sb-row-label">Ceiling</span>
-                <span className="cave-sb-y">{ceilingY != null ? `Y ${ceilingY}` : `+${caveScanHigh}`}</span>
-                <div className="cave-sb-btns">
-                  <button className="btn-sm" disabled={caveScanHigh >= SCAN_HIGH_MAX} title="Raise ceiling"
-                    onClick={() => setRange(caveScanLow, Math.min(SCAN_HIGH_MAX, caveScanHigh + STEP))}>▲</button>
-                  <button className="btn-sm" disabled={caveScanHigh <= caveScanLow + STEP} title="Lower ceiling"
-                    onClick={() => setRange(caveScanLow, Math.max(caveScanLow + STEP, caveScanHigh - STEP))}>▼</button>
-                </div>
-              </div>
-              <div className="cave-sb-row cave-sb-row--player">
-                <span className="cave-sb-row-label">Player</span>
-                <span className="cave-sb-y">{playerY != null ? `Y ${playerY}` : '—'}</span>
-              </div>
-              <div className="cave-sb-row cave-sb-row--floor">
-                <span className="cave-sb-row-label">Floor</span>
-                <span className="cave-sb-y">{floorY != null ? `Y ${floorY}` : `${caveScanLow}`}</span>
-                <div className="cave-sb-btns">
-                  <button className="btn-sm" disabled={caveScanLow >= caveScanHigh - STEP} title="Raise floor"
-                    onClick={() => setRange(Math.min(caveScanLow + STEP, caveScanHigh - STEP), caveScanHigh)}>▲</button>
-                  <button className="btn-sm" disabled={caveScanLow <= SCAN_LOW_MIN} title="Lower floor"
-                    onClick={() => setRange(Math.max(SCAN_LOW_MIN, caveScanLow - STEP), caveScanHigh)}>▼</button>
-                </div>
-              </div>
-            </div>
           </div>
         )}
 
@@ -174,15 +123,18 @@ export default function LayersFlyout() {
           )}
         </div>
 
-        {/* Terrain relief */}
-        {state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
+        {/* Terrain relief — overworld needs 1.18+ terrain noise; the End's
+            surface height (mapEndSurfaceHeight) has no such floor. */}
+        {(state.dimension === 'overworld'
+          ? MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18']
+          : state.dimension === 'end') && (
           <div className="flyout-layer-group">
             <label className="overlay-toggle">
               <input type="checkbox" checked={state.showTerrain}
                 onChange={() => dispatch({ type: 'TOGGLE_TERRAIN' } as never)} />
               <LayerLabel
                 name="Terrain Relief"
-                info="Hillshade from real surface heights — overworld, 1.18+, high zoom only"
+                info="Hillshade from real surface heights — overworld 1.18+, or the End; high zoom only"
               />
             </label>
             {state.showTerrain && (
@@ -192,7 +144,8 @@ export default function LayersFlyout() {
           </div>
         )}
 
-        {state.dimension === 'overworld' && (
+        {(state.dimension === 'overworld' ||
+          (state.dimension === 'nether' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'])) && (
           <div className="flyout-section-label flyout-section-label--spaced">Underground</div>
         )}
 
@@ -259,20 +212,20 @@ export default function LayersFlyout() {
           </div>
         )}
 
-        {/* Ore deposits (individual ore blobs) */}
-        {state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
+        {/* Ore deposits (individual ore blobs) — overworld ores + nether ancient debris */}
+        {state.dimension !== 'end' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
           <div className="flyout-layer-group">
             <label className="overlay-toggle">
               <input type="checkbox" checked={state.showOreFeatures}
                 onChange={() => dispatch({ type: 'TOGGLE_ORE_FEATURES' } as never)} />
               <LayerLabel
                 name="Ore Deposits"
-                info="Individual ore blobs (diamond, gold, redstone, …) from worldgen — overworld, 1.18+, high zoom only"
+                info="Individual ore blobs from worldgen — overworld ores and nether ancient debris, 1.18+, high zoom only"
               />
             </label>
             {state.showOreFeatures && (
               <div className="sub-toggles sub-toggles-grid">
-                {ORE_FEATURE_DEFS.map(ore => (
+                {ORE_FEATURE_DEFS.filter(ore => ore.dimension === state.dimension).map(ore => (
                   <label key={ore.id} className="overlay-toggle sub-toggle">
                     <input type="checkbox" checked={state.oreFeatureTypes.includes(ore.id)}
                       onChange={() => {
@@ -288,15 +241,15 @@ export default function LayersFlyout() {
           </div>
         )}
 
-        {/* Carvers (caves / ravines / canyons) */}
-        {state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
+        {/* Carvers (caves / ravines / canyons) — overworld + nether (End has none) */}
+        {state.dimension !== 'end' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
           <div className="flyout-layer-group">
             <label className="overlay-toggle">
               <input type="checkbox" checked={state.showCarvers}
                 onChange={() => dispatch({ type: 'TOGGLE_CARVERS' } as never)} />
               <LayerLabel
                 name="Caves & Ravines"
-                info="Carver coverage (caves, ravines, canyons) — overworld, 1.18+"
+                info="Carver coverage — overworld caves/ravines/canyons and nether caves, 1.18+"
               />
             </label>
             {state.showCarvers && (
@@ -350,7 +303,29 @@ export default function LayersFlyout() {
                 onChange={() => dispatch({ type: 'TOGGLE_SPAWN_RADIUS' } as never)} />
               <LayerLabel
                 name="Spawn Radius"
-                info="24-block no-spawn and 128-block despawn radius circles around the player"
+                info="24-block no-spawn (block-accurate) and 128-block despawn radius around the player"
+              />
+            </label>
+          )}
+          {state.worldDir && state.dimension === 'overworld' && (
+            <label className="overlay-toggle">
+              <input type="checkbox" checked={state.showSpawnChunks}
+                onChange={() => dispatch({ type: 'TOGGLE_SPAWN_CHUNKS' } as never)} />
+              <LayerLabel
+                name="Spawn Chunks"
+                info="Always-loaded chunks around world spawn — (2r+1)² from the spawnChunkRadius gamerule (default 2)"
+              />
+            </label>
+          )}
+          {/* 60,000,000 is vanilla's untouched default — not a real border, nothing to draw */}
+          {state.worldDir && state.dimension !== 'end' &&
+           (state.seedData?.borderSize ?? 60_000_000) < 60_000_000 && (
+            <label className="overlay-toggle">
+              <input type="checkbox" checked={state.showWorldBorder}
+                onChange={() => dispatch({ type: 'TOGGLE_WORLD_BORDER' } as never)} />
+              <LayerLabel
+                name="World Border"
+                info="The world border set for this save — enforced identically in Overworld and Nether block coordinates"
               />
             </label>
           )}

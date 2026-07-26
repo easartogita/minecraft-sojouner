@@ -61,6 +61,7 @@ pub fn read_bedrock_level_dat(level_dat_path: &str) -> Result<SeedData> {
         world_type,
         spawn_x,
         spawn_z,
+        spawn_chunk_radius: None, // Bedrock stores gamerules differently; not read
         player_x,
         player_y,
         player_z,
@@ -71,6 +72,11 @@ pub fn read_bedrock_level_dat(level_dat_path: &str) -> Result<SeedData> {
         world_time,
         edition: WorldEdition::Bedrock,
         players: vec![],
+        server_brands: vec![],       // Bedrock has no equivalent concept to read
+        border_center_x: 0.0,
+        border_center_z: 0.0,
+        border_size: 60_000_000.0,   // vanilla default — Bedrock border not read yet
+        game_rules: std::collections::HashMap::new(), // Bedrock stores gamerules differently; not read
     })
 }
 

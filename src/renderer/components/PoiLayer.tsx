@@ -6,6 +6,7 @@ import { buildBeGroupLookup, isGroupVisible } from '../lib/markerFilters'
 import * as api from '../lib/tauriAPI'
 import { useChunkMarkerLayer, type LayerStats, makeLayerStats, updateLayerStats, markerYBounds } from '../lib/chunkMarkerLayer'
 import { getPoiConfig, buildPopup, buildTooltip, createIcon } from '../lib/poiConfig'
+import { effectiveMarkerAnchorY } from '../hooks/overlaySlice'
 import { attachMarkerContextMenu } from '../lib/contextMenuBus'
 
 // ── Module-level stats ────────────────────────────────────────────────────────
@@ -19,9 +20,10 @@ export function resetPoiLayerStats(): void { _stats = makeLayerStats() }
 
 function PoiLayer({ map }: { map: L.Map }) {
   const { state } = useApp()
-  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, markerYFilterEnabled, markerYFilterRadius } = state
+  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, markerYLow, markerYHigh, markerMinZoom } = state
   const edition = state.seedData?.edition ?? 'java'
   const playerY = state.seedData?.playerY ?? null
+  const yAnchor = effectiveMarkerAnchorY(state, playerY)
 
   const beGroupLookup       = useMemo(() => buildBeGroupLookup(markerGroupDefs), [markerGroupDefs])
   const jobsiteVisible      = isGroupVisible(beGroupLookup.get('jobsite'),       enabledMarkerGroups)
@@ -32,6 +34,7 @@ function PoiLayer({ map }: { map: L.Map }) {
     worldDir,
     dimension,
     enabled: jobsiteVisible || netherPortalVisible || lodestoneVisible,
+    minZoom: markerMinZoom,
     onClear: () => { _stats.lastCount = 0 },
     onLoad: async (pool, group, bounds, isAborted) => {
       const { minCx, maxCx, minCz, maxCz } = bounds
@@ -45,7 +48,7 @@ function PoiLayer({ map }: { map: L.Map }) {
 
       if (isAborted()) return
 
-      const [yMin, yMax] = markerYBounds(markerYFilterEnabled, playerY, markerYFilterRadius)
+      const [yMin, yMax] = markerYBounds(yAnchor, markerYLow, markerYHigh)
 
       const wanted = new Set<string>()
       for (const rec of records) {
@@ -87,7 +90,7 @@ function PoiLayer({ map }: { map: L.Map }) {
   useEffect(() => {
     triggerLoad()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [markerYFilterEnabled, markerYFilterRadius, playerY])
+  }, [yAnchor, markerYLow, markerYHigh])
 
   return null
 }

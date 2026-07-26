@@ -7,9 +7,11 @@ import * as api from '../lib/tauriAPI'
 import { TileJobQueue } from '../lib/tileJobQueue'
 import { postOverlay } from '../lib/overlayWorker'
 import { useTileLayer } from '../hooks/useTileLayer'
+import * as tileStats from '../lib/tileStats'
 
 const CHUNK_SIZE = 16
-const queue = new TileJobQueue()
+const queue = new TileJobQueue(4, () => tileStats.notify(), 'local-difficulty')
+tileStats.registerOverlay({ key: 'localdifficulty', label: 'Local difficulty', className: 'localdifficulty', queues: [queue], caches: [] })
 
 function difficultyColor(t: number): [number, number, number] {
   if (t <= 0.5) {

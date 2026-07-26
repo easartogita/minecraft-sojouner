@@ -24,7 +24,7 @@ type InMsg =
   | { type: 'local-difficulty';  id: number; chunkColor: ArrayBuffer; chunkAlpha: ArrayBuffer; chunkValid: ArrayBuffer; cx0: number; cz0: number; width: number; originX: number; originZ: number; blocksPerPixel: number }
   | { type: 'ore-vein';          id: number; data: ArrayBuffer; qx0: number; qz0: number; qw: number; cx0: number; cz0: number; originX: number; originZ: number; blocksPerPixel: number; doCopper: boolean; doIron: boolean }
   | { type: 'underground-biome'; id: number; ugBiomes: ArrayBuffer; surfBiomes: ArrayBuffer; queryW: number; queryH: number; blocksPerPixel: number; biomeScale: number }
-  | { type: 'ore-feature';       id: number; data: ArrayBuffer; originX: number; originZ: number; blocksPerPixel: number }
+  | { type: 'ore-feature';       id: number; data: ArrayBuffer; originX: number; originZ: number; blocksPerPixel: number; yMin?: number; yMax?: number }
   | { type: 'carver';            id: number; data: ArrayBuffer; cx0: number; cz0: number; originX: number; originZ: number; blocksPerPixel: number }
   | { type: 'ore-vein-columns';  id: number; data: ArrayBuffer; cx0: number; cz0: number; originX: number; originZ: number; blocksPerPixel: number; doCopper: boolean; doIron: boolean }
   | { type: 'terrain-shade';     id: number; heights: ArrayBuffer; gridW: number; samplesPerTile: number }
@@ -138,7 +138,7 @@ function handleTerrain(msg: Extract<InMsg, { type: 'terrain-shade' }>) {
 // ── Ore-feature placement (individual ore blocks, coloured per ore) ───────────
 
 function handleOreFeature(msg: Extract<InMsg, { type: 'ore-feature' }>) {
-  const { id, data: buf, originX, originZ, blocksPerPixel } = msg
+  const { id, data: buf, originX, originZ, blocksPerPixel, yMin, yMax } = msg
   const data   = new Int32Array(buf)
   const pixels = new Uint8ClampedArray(TILE_SIZE * TILE_SIZE * 4)
   const r = blocksPerPixel <= 1 ? 1 : 0  // dot half-size in px (bigger when very zoomed in)
@@ -147,6 +147,10 @@ function handleOreFeature(msg: Extract<InMsg, { type: 'ore-feature' }>) {
   for (let i = 0; i < count; i++) {
     const c = ORE_TYPE_COLOR[data[i * 4]]
     if (!c) continue
+    // Cave-mode Y-window filter: only show deposits within the visible depth slice.
+    const y = data[i * 4 + 2]
+    if (yMin != null && y < yMin) continue
+    if (yMax != null && y > yMax) continue
     const cpx = Math.floor((data[i * 4 + 1] - originX) / blocksPerPixel) // x
     const cpz = Math.floor((data[i * 4 + 3] - originZ) / blocksPerPixel) // z
     for (let dy = -r; dy <= r; dy++) {

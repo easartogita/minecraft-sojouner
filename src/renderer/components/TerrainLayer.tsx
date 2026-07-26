@@ -9,7 +9,7 @@ import { useTileLayer } from '../hooks/useTileLayer'
 import * as tileStats from '../lib/tileStats'
 
 const MAX_CACHE = 256
-const queue = new TileJobQueue(4, () => tileStats.notify())
+const queue = new TileJobQueue(4, () => tileStats.notify(), 'terrain')
 const cache = new Map<string, ImageData | string>()
 tileStats.registerOverlay({ key: 'terrain', label: 'Terrain', className: 'terrain', queues: [queue], caches: [cache] })
 

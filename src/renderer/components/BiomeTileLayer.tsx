@@ -20,9 +20,9 @@ const deepCache        = new Map<string, ImageData>()
 const MAX_SURFACE_CACHE = 1600
 const MAX_UG_CACHE      = 800
 
-const surfaceQueue     = new TileJobQueue(16, () => tileStats.notify())
-const undergroundQueue = new TileJobQueue(8)
-const deepQueue        = new TileJobQueue(8)
+const surfaceQueue     = new TileJobQueue(16, () => tileStats.notify(), 'biome/surface')
+const undergroundQueue = new TileJobQueue(8,  () => tileStats.notify(), 'biome/underground')
+const deepQueue        = new TileJobQueue(8,  () => tileStats.notify(), 'biome/deep')
 
 const LOADING_GIFS = [
   '/loading/biome-loading-256-0.gif',
@@ -91,6 +91,10 @@ function BiomeTileLayer({ map, unlimitedCache = false }: { map: L.Map; unlimited
 
   const is1_18 = mcVersion >= MC_VERSIONS['MC_1_18']
   const showUg = dimension === 'overworld' && is1_18
+  // Underground/deep are overworld-only cave modes. Outside the overworld (or
+  // pre-1.18) they don't apply, so the surface layer must render regardless of
+  // the persisted biomeMode — otherwise the biome layer goes blank in the Nether.
+  const showSurface = biomeMode === 'surface' || !showUg
 
   // ── Surface ──────────────────────────────────────────────────────────────────
 
@@ -102,7 +106,12 @@ function BiomeTileLayer({ map, unlimitedCache = false }: { map: L.Map; unlimited
     zIndex: 1,
     layerOptions: { updateWhenIdle: true, updateWhenZooming: false, minZoom: MIN_ZOOM, minNativeZoom: 0 },
     deps: [map, generatorSlot, seed, dimension, version, state.tileCacheVersion, biomeMode],
-    enabled: seed != null && slot != null && biomeMode === 'surface',
+    // dimension is already in cacheKeyFn below; biomeMode doesn't affect the
+    // fetched tile (renderBiomeTile doesn't take it) — only seed/version/an
+    // explicit force-refresh should actually wipe the (possibly Infinity-sized,
+    // see unlimitedCache) shared surface cache.
+    cacheEpochDeps: [seed, version, state.tileCacheVersion],
+    enabled: seed != null && slot != null && showSurface,
     cache: surfaceCache as Map<string, ImageData | string>,
     maxCache: unlimitedCache ? Infinity : MAX_SURFACE_CACHE,
     cacheKeyFn: (coords) => `B:${seed}:${version}:${dimension}:${coords.x}:${coords.y}:${coords.z}`,
@@ -135,6 +144,8 @@ function BiomeTileLayer({ map, unlimitedCache = false }: { map: L.Map; unlimited
     zIndex: 1,
     layerOptions: { updateWhenIdle: true, updateWhenZooming: false },
     deps: [map, slot, seed, version, biomeMode],
+    // biomeMode only gates `enabled`, not the fetched content — see surface layer above.
+    cacheEpochDeps: [seed, version],
     enabled: seed != null && slot != null && showUg && biomeMode === 'underground',
     cache: undergroundCache,
     maxCache: MAX_UG_CACHE,
@@ -162,6 +173,8 @@ function BiomeTileLayer({ map, unlimitedCache = false }: { map: L.Map; unlimited
     zIndex: 1,
     layerOptions: { updateWhenIdle: true, updateWhenZooming: false },
     deps: [map, slot, seed, version, biomeMode],
+    // biomeMode only gates `enabled`, not the fetched content — see surface layer above.
+    cacheEpochDeps: [seed, version],
     enabled: seed != null && slot != null && showUg && biomeMode === 'deep',
     cache: deepCache,
     maxCache: MAX_UG_CACHE,

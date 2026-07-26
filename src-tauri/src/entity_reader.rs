@@ -51,6 +51,11 @@ pub struct GameEntity {
     pub horse_armor:           Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub horse_variant:         Option<String>,
+    /// Taming progress on a wild horse (NBT `Temper`): rises with interaction
+    /// until it passes a random 0–99 threshold and the horse tames. Only set
+    /// when > 0 (a fresh, untouched wild horse has no meaningful temper).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temper:                Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chest_items:           Option<Vec<EntityItem>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,22 +170,61 @@ fn strip_ns(s: &str) -> &str {
     s.strip_prefix("minecraft:").unwrap_or(s)
 }
 
-fn parse_json_text(raw: &str) -> String {
+/// Collapse boat entity ids to canonical `boat` / `chest_boat`, returning the wood
+/// variant when known. MC 1.21.2 split the single `boat`/`chest_boat` types into
+/// per-wood ids (`oak_boat`, `bamboo_raft`, `oak_chest_boat`, `bamboo_chest_raft`,
+/// …). Older worlds (and Bedrock) still use the single id with a `Type` tag for the
+/// wood. Returns `None` for anything that isn't a boat/raft.
+fn normalize_boat(kind: &str, e: &HashMap<String, Value>) -> Option<(&'static str, Option<String>)> {
+    // Legacy single ids: wood (if any) lives in the `Type` tag.
+    if kind == "chest_boat" || kind == "boat" {
+        let wood = strip_ns(map_str(e, "Type"));
+        let wood = if wood.is_empty() { None } else { Some(wood.to_string()) };
+        return Some((if kind == "chest_boat" { "chest_boat" } else { "boat" }, wood));
+    }
+    // Modern split ids: wood is the id prefix. Check chest variants first so
+    // `oak_chest_boat` isn't mistaken for a plain `_boat` suffix.
+    if let Some(wood) = kind.strip_suffix("_chest_boat") {
+        return Some(("chest_boat", Some(wood.to_string())));
+    }
+    if kind == "bamboo_chest_raft" {
+        return Some(("chest_boat", Some("bamboo".to_string())));
+    }
+    if let Some(wood) = kind.strip_suffix("_boat") {
+        return Some(("boat", Some(wood.to_string())));
+    }
+    if kind == "bamboo_raft" {
+        return Some(("boat", Some("bamboo".to_string())));
+    }
+    None
+}
+
+pub fn parse_json_text(raw: &str) -> String {
     if raw.is_empty() || raw == "\"\"" || raw == "null" {
         return String::new();
     }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-        if let Some(s) = v.as_str() { return s.to_string(); }
-        if let Some(t) = v.get("text").and_then(|t| t.as_str()) { return t.to_string(); }
-        if let Some(arr) = v.as_array() {
-            return arr.iter().map(|p| {
-                p.as_str().map(str::to_string)
-                    .or_else(|| p.get("text").and_then(|t| t.as_str()).map(str::to_string))
-                    .unwrap_or_default()
-            }).collect::<Vec<_>>().join("");
+    // 1.13–1.21.4: CustomName is a JSON text-component string (`{"text":"Alex"}`
+    // or a quoted `"Alex"`). 1.21.5+ stores text components as native NBT, so a
+    // *simple* name arrives here as a plain, non-JSON string (`Alex`) — which must
+    // be taken literally, not run through a JSON parse that fails and drops it.
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(v) => {
+            if let Some(s) = v.as_str() { return s.to_string(); }
+            if let Some(t) = v.get("text").and_then(|t| t.as_str()) { return t.to_string(); }
+            if let Some(arr) = v.as_array() {
+                return arr.iter().map(|p| {
+                    p.as_str().map(str::to_string)
+                        .or_else(|| p.get("text").and_then(|t| t.as_str()).map(str::to_string))
+                        .unwrap_or_default()
+                }).collect::<Vec<_>>().join("");
+            }
+            // Parsed as a bare number/bool (e.g. a mob literally named "123") — not a
+            // real component, so take it literally. Only a JSON object is a component.
+            if v.is_object() { String::new() } else { raw.to_string() }
         }
+        // Not JSON at all → 1.21.5+ plain-string component; use it verbatim.
+        Err(_) => raw.to_string(),
     }
-    String::new()
 }
 
 // ── Item / enchantment helpers ────────────────────────────────────────────────
@@ -378,7 +422,14 @@ fn parse_item_from_map(m: &HashMap<String, Value>) -> Option<EntityItem> {
     if id.is_empty() { return None; }
     Some(EntityItem {
         id:          strip_ns(id).to_string(),
-        count:       map_i32(m, "Count"),
+        // Pre-1.20.5: Count (byte); 1.20.5+: count (int), omitted → 1. Mirrors
+        // parse_entity_item so villager trade counts don't read 0 on 26.x worlds.
+        count: match m.get("Count").or_else(|| m.get("count")) {
+            Some(Value::Int(n))   => *n,
+            Some(Value::Short(n)) => *n as i32,
+            Some(Value::Byte(n))  => *n as i32,
+            _ => 1,
+        },
         enchantment: parse_first_enchantment(m),
     })
 }
@@ -419,7 +470,13 @@ const EPHEMERAL_ENTITIES: &[&str] = &[
 fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
     let raw_id = map_str(e, "id");
     if raw_id.is_empty() { return None; }
-    let kind = strip_ns(raw_id).to_string();
+    let raw_kind = strip_ns(raw_id).to_string();
+    // Boats/rafts come in many per-wood ids (MC 1.21.2+); collapse to canonical
+    // `boat`/`chest_boat` so the per-type handling and frontend grouping apply.
+    let (kind, boat_wood) = match normalize_boat(&raw_kind, e) {
+        Some((canon, wood)) => (canon.to_string(), wood),
+        None => (raw_kind, None),
+    };
 
     // Position from Pos list
     let pos = e.get("Pos").and_then(|v| if let Value::List(l) = v { Some(l) } else { None })?;
@@ -536,6 +593,8 @@ fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
             _ => 0,
         };
         entity.horse_variant = Some(parse_horse_variant(variant_int));
+        let temper = map_i32(e, "Temper");
+        if temper > 0 { entity.temper = Some(temper); }
         let spd  = get_attribute_base(e, &["movement_speed", "generic.movement_speed", "generic.movementSpeed"]);
         let jump = get_attribute_base(e, &["jump_strength", "generic.jump_strength", "horse.jumpStrength"]);
         if let Some(s) = spd  { entity.speed       = Some(attr_to_speed(s)); }
@@ -552,6 +611,13 @@ fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
         let spd = get_attribute_base(e, &["movement_speed", "generic.movement_speed", "generic.movementSpeed"])
             .or_else(|| FIXED_MOUNT_SPEED.iter().find(|(k, _)| *k == kind).map(|(_, v)| *v));
         if let Some(s) = spd { entity.speed = Some(attr_to_speed(s)); }
+        // Zombie/skeleton horses randomize jump strength like regular horses
+        // (0.4–1.0); only their speed (0.2) and health (15) are fixed. Donkeys
+        // and mules have a fixed 0.5 jump — no signal, so no stat for them.
+        if matches!(kind.as_str(), "zombie_horse" | "skeleton_horse") {
+            let jump = get_attribute_base(e, &["jump_strength", "generic.jump_strength", "horse.jumpStrength"]);
+            if let Some(j) = jump { entity.jump_height = Some(jump_strength_to_height(j)); }
+        }
         return Some(entity);
     }
 
@@ -588,7 +654,13 @@ fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
         return Some(entity);
     }
 
+    if kind == "boat" {
+        entity.pet_variant = boat_wood;
+        return Some(entity);
+    }
+
     if matches!(kind.as_str(), "chest_minecart" | "hopper_minecart" | "chest_boat") {
+        if kind == "chest_boat" { entity.pet_variant = boat_wood; }
         let loot = map_str(e, "LootTable").to_string();
         if !loot.is_empty() {
             entity.loot_table = Some(strip_ns(&loot).to_string());
@@ -868,7 +940,7 @@ impl Default for GameEntity {
             kind: String::new(), x: 0, y: 0, z: 0,
             custom_name: None, villager_profession: None, villager_type: None,
             villager_level: None, trades: None, tamed: None, saddled: None,
-            horse_armor: None, horse_variant: None, chest_items: None,
+            horse_armor: None, horse_variant: None, temper: None, chest_items: None,
             loot_table: None, llama_strength: None, llama_decor: None,
             llama_variant: None, painting_variant: None, frame_item: None,
             frame_item_enchantment: None, frame_rotation: None, armor_items: None,

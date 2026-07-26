@@ -70,6 +70,11 @@ fn parse_subchunk(data: &[u8]) -> Option<Subchunk> {
         // Bit 0 of bits_raw is a "use network bit format" flag; actual bpb = bits_raw >> 1
         let bpb = bits_raw >> 1;
 
+        // Valid Bedrock bpb values top out at 32 (one value per word); a corrupt
+        // or adversarial subchunk byte can claim up to 127 (bits_raw >> 1), which
+        // would make vals_per_word floor to 0 and panic on the division below.
+        if bpb > 32 { return None; }
+
         let words_count = if bpb == 0 {
             0
         } else {
@@ -197,7 +202,7 @@ fn extract_palette_entry_name(data: &[u8]) -> (String, usize) {
 
 fn get_block_in_layer(layer: &PaletteLayer, local_y: usize, bx: usize, bz: usize) -> &str {
     if layer.palette.is_empty() { return "air"; }
-    if layer.bpb == 0 {
+    if layer.bpb == 0 || layer.bpb > 32 {
         return layer.palette.get(0).map(|s| s.as_str()).unwrap_or("air");
     }
 
@@ -440,6 +445,7 @@ pub fn read_bedrock_chunk_colors(
         let colors = get_bedrock_chunk_colors(
             db, req.cx, req.cz, dim, hide_water, cave_y, cave_scan_low, cave_scan_high,
         );
-        ChunkResult { cx: req.cx, cz: req.cz, colors }
+        // Bedrock reads whole LevelDB values atomically — no torn-read window.
+        ChunkResult { cx: req.cx, cz: req.cz, colors, torn: false }
     }).collect()
 }

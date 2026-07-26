@@ -1,6 +1,7 @@
 [submodule "cubiomes"]
 	path = cubiomes
-	url = https://github.com/xpple/cubiomes.git
+	url = git@github.com:easartogita/cubiomes.git
+	branch = 26.3
 [submodule "leveldb"]
 	path = leveldb
 	url = git@github.com:Mojang/leveldb.git

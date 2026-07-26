@@ -1,6 +1,7 @@
 import { MCVersionKey, dataVersionToMCVersionKey, Dimension } from '../lib/constants'
-import { StructureType, getStructuresForDimension, getDefaultStructures } from '../lib/structureConfig'
+import { StructureType, getStructuresForDimension, getDefaultStructures, structureVariantKey } from '../lib/structureConfig'
 import { loadWorldSettings } from '../lib/worldSettings'
+import { TravelMode } from '../lib/travelModes'
 
 export type WorldType = 'default' | 'large_biomes' | 'amplified' | 'flat' | 'single_biome' | 'custom'
 
@@ -13,6 +14,15 @@ export interface Pin {
   crossDimensional: boolean
 }
 
+export interface SavedRoute {
+  id: string
+  name: string
+  dimension: Dimension
+  waypoints: { x: number; z: number }[]
+  legModes: TravelMode[]
+  createdAt: number
+}
+
 export interface WorldState {
   levelDatPath: string | null
   worldDir: string | null
@@ -21,6 +31,15 @@ export interface WorldState {
   dimension: Dimension
   enabledStructures: Set<StructureType>
   structuresByDimension: Partial<Record<Dimension, StructureType[]>>
+  /** Excluded structure variants, keys from structureVariantKey(). Empty set =
+   *  all variants render. Global (not per-dimension): each StructureType
+   *  already belongs to exactly one dimension, so keys are self-partitioned. */
+  disabledStructureVariants: Set<string>
+  /** Structure types currently filtered to "notable loot only" (e.g. End City
+   *  → has a ship, Shipwreck → has a treasure chest). Unlike variants, this
+   *  isn't known until the async per-instance chest fetch resolves — see
+   *  NOTABLE_LOOT_CHECK in StructureLayer.tsx. */
+  notableLootOnly: Set<StructureType>
   worldType: WorldType
   isWatching: boolean
   followPlayer: boolean
@@ -29,6 +48,7 @@ export interface WorldState {
   changedRegions: [number, number][]
   error: string | null
   pins: Pin[]
+  savedRoutes: SavedRoute[]
   recentWorlds: string[]
   unlimitedCache: boolean
 }
@@ -39,18 +59,23 @@ export type WorldAction =
   | { type: 'SET_VERSION'; version: MCVersionKey }
   | { type: 'SET_DIMENSION'; dimension: Dimension }
   | { type: 'TOGGLE_STRUCTURE'; structure: StructureType }
+  | { type: 'TOGGLE_STRUCTURE_VARIANT'; structure: StructureType; tag: string | null }
+  | { type: 'TOGGLE_NOTABLE_LOOT_ONLY'; structure: StructureType }
   | { type: 'SET_ALL_STRUCTURES'; structures: StructureType[]; enabled: boolean }
   | { type: 'TOGGLE_FOLLOW_PLAYER' }
   | { type: 'SET_FOLLOW_PLAYER'; follow: boolean }
   | { type: 'SET_WORLD_TYPE'; worldType: WorldType }
   | { type: 'SET_WATCHING'; watching: boolean }
   | { type: 'SEED_UPDATED'; data: SeedData }
-  | { type: 'REGION_CHANGED'; regions: [number, number][] }
+  | { type: 'REGION_CHANGED'; dimension: string; regions: [number, number][] }
   | { type: 'SYNC_DAY_TIME'; dayTime: number }
   | { type: 'SET_ERROR'; error: string | null }
   | { type: 'ADD_PIN'; pin: Pin }
   | { type: 'REMOVE_PIN'; id: string }
   | { type: 'UPDATE_PIN'; id: string; changes: Partial<Pick<Pin, 'label' | 'crossDimensional'>> }
+  | { type: 'ADD_ROUTE'; route: SavedRoute }
+  | { type: 'REMOVE_ROUTE'; id: string }
+  | { type: 'UPDATE_ROUTE'; id: string; changes: Partial<Pick<SavedRoute, 'name' | 'waypoints' | 'legModes'>> }
   | { type: 'SET_UNLIMITED_CACHE'; enabled: boolean }
 
 // ── Pin storage — world-scoped ────────────────────────────────────────────────
@@ -107,6 +132,30 @@ export function savePinsForWorld(key: string, pins: Pin[]): void {
   localStorage.setItem('mcmap:pins', JSON.stringify(all))
 }
 
+// ── Saved route storage — world-scoped, same key as pins ─────────────────────
+
+function loadAllRoutes(): Record<string, SavedRoute[]> {
+  try {
+    const raw = localStorage.getItem('mcmap:routes')
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return {}
+    return parsed as Record<string, SavedRoute[]>
+  } catch { return {} }
+}
+
+export function loadRoutesForWorld(key: string | null): SavedRoute[] {
+  if (!key) return []
+  const all = loadAllRoutes()
+  return all[key] ?? []
+}
+
+export function saveRoutesForWorld(key: string, routes: SavedRoute[]): void {
+  const all = loadAllRoutes()
+  all[key] = routes
+  localStorage.setItem('mcmap:routes', JSON.stringify(all))
+}
+
 // ── Recent worlds ─────────────────────────────────────────────────────────────
 
 export function loadRecentWorlds(): string[] {
@@ -128,6 +177,8 @@ export function worldInitialState(session: {
   selectedVersion?: MCVersionKey
   dimension?: Dimension
   structuresByDimension?: Partial<Record<Dimension, StructureType[]>>
+  disabledStructureVariants?: string[]
+  notableLootOnly?: StructureType[]
 }): WorldState {
   const dim = session.dimension ?? 'overworld'
   const structuresByDimension = session.structuresByDimension ?? {}
@@ -139,6 +190,8 @@ export function worldInitialState(session: {
     dimension: dim,
     structuresByDimension,
     enabledStructures: new Set(structuresByDimension[dim] ?? getDefaultStructures(dim)),
+    disabledStructureVariants: new Set(session.disabledStructureVariants ?? []),
+    notableLootOnly: new Set(session.notableLootOnly ?? []),
     worldType: 'default',
     isWatching: false,
     followPlayer: false,
@@ -147,6 +200,7 @@ export function worldInitialState(session: {
     changedRegions: [],
     error: null,
     pins: [],
+    savedRoutes: [],
     recentWorlds: loadRecentWorlds(),
     unlimitedCache: false,
   }
@@ -178,6 +232,7 @@ export function worldReducer<S extends WorldState>(state: S, action: { type: str
         error: null,
         recentWorlds,
         pins: loadPinsForWorld(pinWorldKey(a.path, null, version)),
+        savedRoutes: loadRoutesForWorld(pinWorldKey(a.path, null, version)),
         unlimitedCache: worldSettings.unlimitedCache,
       }
     }
@@ -196,6 +251,7 @@ export function worldReducer<S extends WorldState>(state: S, action: { type: str
           worldType: a.worldType ?? 'default',
           spawnX: 0,
           spawnZ: 0,
+          spawnChunkRadius: null,
           playerX: null,
           playerY: null,
           playerZ: null,
@@ -203,6 +259,13 @@ export function worldReducer<S extends WorldState>(state: S, action: { type: str
           dayTime: null,
           difficulty: 2,
           worldTime: null,
+          edition: 'java',
+          players: [],
+          serverBrands: [],
+          borderCenterX: 0,
+          borderCenterZ: 0,
+          borderSize: 60_000_000,
+          gameRules: {},
         },
         selectedVersion: a.version,
         worldType: a.worldType ?? 'default',
@@ -210,6 +273,7 @@ export function worldReducer<S extends WorldState>(state: S, action: { type: str
         lastUpdate: Date.now(),
         error: null,
         pins: loadPinsForWorld(pinWorldKey(null, a.seed, a.version)),
+        savedRoutes: loadRoutesForWorld(pinWorldKey(null, a.seed, a.version)),
       }
     }
     case 'SEED_UPDATED': {
@@ -225,6 +289,10 @@ export function worldReducer<S extends WorldState>(state: S, action: { type: str
     }
     case 'REGION_CHANGED': {
       const a = action as WorldAction & { type: 'REGION_CHANGED' }
+      // Ignore writes to a dimension we're not currently viewing — otherwise a
+      // Nether save would invalidate the identically-numbered Overworld region.
+      // '*' means "dimension unknown" (Bedrock) → always apply to the active view.
+      if (a.dimension !== '*' && a.dimension !== state.dimension) return state
       return { ...state, lastUpdate: Date.now(), changedRegions: a.regions }
     }
     case 'SYNC_DAY_TIME': {
@@ -249,6 +317,21 @@ export function worldReducer<S extends WorldState>(state: S, action: { type: str
       if (next.has(a.structure)) next.delete(a.structure)
       else next.add(a.structure)
       return { ...state, enabledStructures: next, structuresByDimension: { ...state.structuresByDimension, [state.dimension]: [...next] } }
+    }
+    case 'TOGGLE_STRUCTURE_VARIANT': {
+      const a = action as WorldAction & { type: 'TOGGLE_STRUCTURE_VARIANT' }
+      const key = structureVariantKey(a.structure, a.tag)
+      const next = new Set(state.disabledStructureVariants)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return { ...state, disabledStructureVariants: next }
+    }
+    case 'TOGGLE_NOTABLE_LOOT_ONLY': {
+      const a = action as WorldAction & { type: 'TOGGLE_NOTABLE_LOOT_ONLY' }
+      const next = new Set(state.notableLootOnly)
+      if (next.has(a.structure)) next.delete(a.structure)
+      else next.add(a.structure)
+      return { ...state, notableLootOnly: next }
     }
     case 'SET_ALL_STRUCTURES': {
       const a = action as WorldAction & { type: 'SET_ALL_STRUCTURES' }
@@ -294,6 +377,27 @@ export function worldReducer<S extends WorldState>(state: S, action: { type: str
       const key = pinWorldKey(state.levelDatPath, state.seedData?.seed ?? null, state.selectedVersion)
       if (key) savePinsForWorld(key, pins)
       return { ...state, pins }
+    }
+    case 'ADD_ROUTE': {
+      const a = action as WorldAction & { type: 'ADD_ROUTE' }
+      const savedRoutes = [...state.savedRoutes, a.route]
+      const key = pinWorldKey(state.levelDatPath, state.seedData?.seed ?? null, state.selectedVersion)
+      if (key) saveRoutesForWorld(key, savedRoutes)
+      return { ...state, savedRoutes }
+    }
+    case 'REMOVE_ROUTE': {
+      const a = action as WorldAction & { type: 'REMOVE_ROUTE' }
+      const savedRoutes = state.savedRoutes.filter(r => r.id !== a.id)
+      const key = pinWorldKey(state.levelDatPath, state.seedData?.seed ?? null, state.selectedVersion)
+      if (key) saveRoutesForWorld(key, savedRoutes)
+      return { ...state, savedRoutes }
+    }
+    case 'UPDATE_ROUTE': {
+      const a = action as WorldAction & { type: 'UPDATE_ROUTE' }
+      const savedRoutes = state.savedRoutes.map(r => r.id === a.id ? { ...r, ...a.changes } : r)
+      const key = pinWorldKey(state.levelDatPath, state.seedData?.seed ?? null, state.selectedVersion)
+      if (key) saveRoutesForWorld(key, savedRoutes)
+      return { ...state, savedRoutes }
     }
     case 'SET_UNLIMITED_CACHE': {
       const a = action as WorldAction & { type: 'SET_UNLIMITED_CACHE' }

@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sojourner — a map viewer for Minecraft</title>
+<meta name="description" content="Sojourner is a desktop map viewer for Minecraft. It reads your actual world — chests, villagers, spawners, biomes, structures, ore veins — and renders it locally. No server, no account, no telemetry. Java and Bedrock.">
+<meta property="og:title" content="Sojourner — a map viewer for Minecraft">
+<meta property="og:description" content="See everything that's actually in your world. Runs entirely on your machine — no server, no account, no telemetry. Java + Bedrock.">
+<meta property="og:type" content="website">
+<style>
+:root{
+  --amber:#ffaa00; --amber-dim:#6b4700; --red-dim:#6b1000;
+  --white:#e8e8e0; --muted:#7a6a50; --bg:#010100;
+  --mono:Consolas,'Courier New',monospace; --micr:'MICR',var(--mono);
+}
+*,::before,::after{margin:0;padding:0;box-sizing:border-box}
+@font-face{font-family:MICR;src:local('OCR A Extended'),local('OCR A'),local('OCR A Std'),local('Consolas'),local('Courier New');unicode-range:U+0030-0039,U+002E,U+002C,U+002B,U+0078}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg); color:var(--white); font-family:var(--mono);
+  font-size:clamp(.9rem,1.7vw,1rem); line-height:1.75; font-variant-numeric:tabular-nums;
+  overflow-x:hidden; -webkit-font-smoothing:antialiased;
+}
+/* CRT scanlines + vignette — pure CSS, no assets, no requests */
+body::before{content:'';position:fixed;inset:0;z-index:99;pointer-events:none;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.09) 2px,rgba(0,0,0,.09) 4px)}
+body::after{content:'';position:fixed;inset:0;z-index:98;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 32%,transparent 42%,rgba(0,0,0,.85) 100%)}
+.wrap{max-width:720px;margin:0 auto;padding:clamp(3rem,9vw,6rem) clamp(1.4rem,5vw,2.2rem) 4rem;position:relative;z-index:10}
+
+/* hero */
+.hero{text-align:center;margin-bottom:clamp(3.5rem,9vw,6rem);position:relative}
+/* chunk-grid backdrop, screen-space so it doesn't scroll away with the hero —
+   the world is drawn on a grid, so the page's own "world" gets one too */
+.hero::before{content:'';position:absolute;top:-3rem;left:50%;width:100vw;height:calc(100% + 6rem);
+  transform:translateX(-50%);z-index:-1;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,rgba(255,170,0,.05) 0 1px,transparent 1px 32px),
+    repeating-linear-gradient(90deg,rgba(255,170,0,.05) 0 1px,transparent 1px 32px);
+  -webkit-mask-image:radial-gradient(ellipse 60% 55% at 50% 45%,#000 0%,transparent 75%);
+  mask-image:radial-gradient(ellipse 60% 55% at 50% 45%,#000 0%,transparent 75%)}
+.block-icon{width:2.6rem;height:2.6rem;margin:0 auto 1.1rem;image-rendering:pixelated;image-rendering:crisp-edges;
+  filter:drop-shadow(0 3px 10px rgba(0,0,0,.6))}
+.mark{font-size:clamp(2.6rem,11vw,5.4rem);letter-spacing:.1em;line-height:.95;color:var(--white);
+  text-shadow:0 0 50px rgba(232,232,224,.25),0 0 110px rgba(255,170,0,.10),3px 3px 0 rgba(0,0,0,.85)}
+.tag{font-family:var(--micr);font-size:clamp(.66rem,1.5vw,.78rem);letter-spacing:.22em;color:var(--amber-dim);margin-top:1.1rem}
+.hook{color:var(--white);font-size:clamp(1rem,2.3vw,1.22rem);line-height:1.65;margin:1.6rem auto 0;max-width:30em}
+.hook b{color:var(--amber);font-weight:400}
+/* xp bar — a little "world loaded" flourish, not an actual progress indicator */
+.xp{width:min(340px,70vw);height:6px;margin:2rem auto 0;background:#1a1400;border:1px solid #000;
+  box-shadow:inset 1px 1px 0 rgba(0,0,0,.6);position:relative;overflow:hidden}
+.xp::before{content:'';position:absolute;inset:1px;background:linear-gradient(#8adb3e,#5da621);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}
+
+/* sections */
+section{margin-bottom:clamp(2.6rem,6vw,3.6rem);border-left:1px solid var(--amber-dim);padding-left:clamp(1rem,3vw,1.6rem)}
+.lbl{display:block;font-size:.62rem;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:.7rem}
+h2{font-size:clamp(1.05rem,2.6vw,1.4rem);letter-spacing:.02em;color:var(--amber);font-weight:400;margin-bottom:.9rem;
+  text-shadow:0 0 26px rgba(255,170,0,.28)}
+p{margin-bottom:.9rem;color:var(--white)}
+p.lede{color:#c9c4b4}
+ul{list-style:none;margin:.4rem 0 .4rem}
+li{position:relative;padding-left:1.7em;margin-bottom:.55rem;color:#d6d1c2}
+/* item-slot bullet — a tiny inventory slot standing in for the usual chevron */
+li::before{content:'›';position:absolute;left:0;top:.1em;width:1.1em;height:1.1em;line-height:1.1em;
+  text-align:center;color:var(--amber);font-size:.85em;background:#0c0900;
+  border:1px solid #000;box-shadow:inset 1px 1px 0 rgba(255,170,0,.14),inset -1px -1px 0 rgba(0,0,0,.7)}
+li b,p b{color:var(--white);font-weight:400}
+.k{color:var(--amber)}
+
+/* trust block — the load-bearing one */
+.trust{border-left-color:var(--amber)}
+.trust li::before{content:'✓'}
+.fineprint{font-size:.82rem;color:var(--muted);margin-top:1rem;line-height:1.6}
+
+/* get it */
+.get{text-align:center;border-left:none;padding-left:0;margin-top:clamp(3rem,7vw,4.5rem)}
+.plats{font-family:var(--micr);font-size:.74rem;letter-spacing:.16em;color:var(--muted);margin:.4rem 0 1.4rem}
+.cta{display:inline-block;font-family:var(--mono);font-size:.9rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--amber);text-decoration:none;border:1px solid var(--amber);padding:.7rem 1.8rem;background:#0c0900;
+  box-shadow:inset 1px 1px 0 rgba(255,170,0,.16),inset -2px -2px 0 rgba(0,0,0,.65);
+  transition:color .18s,background .18s,box-shadow .18s}
+.cta:hover,.cta:focus-visible{background:var(--amber);color:var(--bg);
+  box-shadow:inset 1px 1px 0 rgba(255,255,255,.4),inset -2px -2px 0 rgba(0,0,0,.25),0 0 30px rgba(255,170,0,.4);outline:none}
+/* not-yet-shipped: ghost the CTA and stamp a badge on it */
+.cta.soon{color:var(--amber-dim);border-color:var(--amber-dim);cursor:not-allowed;pointer-events:none;opacity:.7}
+.badge{display:inline-block;font-family:var(--micr);font-size:.6rem;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--bg);background:var(--amber-dim);padding:.12rem .5rem;margin-left:.7rem;vertical-align:middle;line-height:1.6}
+.alt{display:block;margin-top:1rem;font-size:.78rem;letter-spacing:.1em;color:var(--muted)}
+.alt a{color:var(--amber-dim);text-decoration:none}.alt a:hover{color:var(--amber)}
+.alt .soon{color:#4a4030;text-decoration:none;pointer-events:none}
+.ver{font-family:var(--micr);color:var(--amber-dim)}
+
+/* footer */
+footer{margin-top:clamp(3.5rem,8vw,5rem);padding-top:1.6rem;border-top:1px solid #1a1400;text-align:center;
+  font-size:.74rem;line-height:1.7;color:var(--muted)}
+footer a{color:var(--amber-dim);text-decoration:none}footer a:hover{color:var(--amber)}
+.home{font-family:var(--micr);letter-spacing:.1em}
+.disc{margin-top:1rem;font-size:.68rem;color:#4a4030}
+
+/* one staggered reveal on load — cheap, CSS-only, motion-safe */
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.hero,section,footer{animation:rise .6s cubic-bezier(.2,.7,.2,1) both}
+section:nth-of-type(1){animation-delay:.06s}
+section:nth-of-type(2){animation-delay:.12s}
+section:nth-of-type(3){animation-delay:.18s}
+section:nth-of-type(4){animation-delay:.24s}
+.get{animation-delay:.3s}footer{animation-delay:.36s}
+/* gallery — grid breaks out wider than the reading column */
+.gallery{margin-top:clamp(3.5rem,8vw,5.5rem);margin-bottom:clamp(3.5rem,8vw,5.5rem)}
+.gallery .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:1.6rem;margin-top:2rem;
+  width:min(1180px,94vw);margin-left:50%;transform:translateX(-50%)}
+.shot{margin:0;border:1px solid var(--amber-dim);background:#080600;display:flex;flex-direction:column;
+  box-shadow:inset 1px 1px 0 rgba(255,170,0,.1),inset -2px -2px 0 rgba(0,0,0,.6);
+  transition:border-color .18s,box-shadow .18s}
+.shot:hover{border-color:var(--amber);
+  box-shadow:inset 1px 1px 0 rgba(255,170,0,.1),inset -2px -2px 0 rgba(0,0,0,.6),0 0 26px rgba(255,170,0,.18)}
+.shot a{display:block;line-height:0}
+.shot img{width:100%;height:auto;display:block;border-bottom:1px solid var(--amber-dim)}
+.shot figcaption{padding:.65rem .8rem;font-size:.76rem;line-height:1.5;color:#bdb8a8}
+.shot figcaption b{color:var(--amber);font-weight:400}
+.gallery .hint{color:var(--muted)}
+.mystery .redact{flex:1;min-height:150px;display:flex;align-items:center;justify-content:center;font-family:var(--micr);
+  letter-spacing:.35em;color:#33260a;font-size:1rem;line-height:1.9;text-align:center;border-bottom:1px solid var(--amber-dim);
+  background:repeating-linear-gradient(45deg,#080600,#080600 9px,#0c0900 9px,#0c0900 18px)}
+/* lightbox */
+.lightbox{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;
+  padding:clamp(1rem,4vw,3rem);background:rgba(1,1,0,.93);cursor:zoom-out;animation:lbfade .18s ease both}
+.lightbox[hidden]{display:none}
+.lightbox img{max-width:100%;max-height:100%;border:1px solid var(--amber-dim);box-shadow:0 0 70px rgba(0,0,0,.85);cursor:default}
+.lb-close{position:fixed;top:.7rem;right:1.1rem;background:none;border:none;color:var(--amber);font-family:var(--mono);
+  font-size:2.1rem;line-height:1;cursor:pointer;padding:.1rem .5rem;opacity:.75;transition:opacity .15s,text-shadow .15s}
+.lb-close:hover,.lb-close:focus-visible{opacity:1;outline:none;text-shadow:0 0 16px rgba(255,170,0,.65)}
+.lb-hint{position:fixed;bottom:1rem;left:0;right:0;text-align:center;font-size:.7rem;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;pointer-events:none}
+@keyframes lbfade{from{opacity:0}to{opacity:1}}
+/* achievement toast — pops the one time you scroll into the trust section */
+.toast{position:fixed;top:1rem;right:1rem;z-index:500;display:flex;align-items:center;gap:.7rem;
+  background:rgba(20,16,8,.95);border:2px solid var(--amber-dim);padding:.55rem .9rem;
+  box-shadow:inset 1px 1px 0 rgba(255,170,0,.12),inset -2px -2px 0 rgba(0,0,0,.6),0 4px 18px rgba(0,0,0,.5);
+  max-width:min(300px,80vw);pointer-events:none;
+  transform:translateX(calc(100% + 1.5rem));transition:transform .4s cubic-bezier(.2,.8,.3,1)}
+.toast.show{transform:translateX(0)}
+.toast-icon{width:26px;height:26px;flex-shrink:0;image-rendering:pixelated;image-rendering:crisp-edges}
+.toast-lines{display:flex;flex-direction:column;gap:.2rem;min-width:0}
+.toast-kind{font-family:var(--micr);font-size:.6rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.toast-name{font-size:.82rem;color:var(--amber);text-shadow:0 0 10px rgba(255,170,0,.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}html{scroll-behavior:auto}.toast{transition:none}}
+</style>
+</head>
+<body>
+<main class="wrap">
+
+  <header class="hero">
+    <svg class="block-icon" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+      <rect width="16" height="16" fill="#7a4a20"/>
+      <rect y="9" width="16" height="7" fill="#5c3717"/>
+      <rect width="16" height="6" fill="#5f9a34"/>
+      <rect y="5" width="16" height="2" fill="#4c7e29"/>
+      <rect x="2" y="8" width="2" height="2" fill="#472c13"/>
+      <rect x="11" y="10" width="2" height="2" fill="#472c13"/>
+      <rect x="6" y="12" width="2" height="2" fill="#6b4119"/>
+      <rect x="1" width="2" height="2" fill="#79c14a"/>
+      <rect x="8" y="1" width="2" height="2" fill="#79c14a"/>
+      <rect x="13" width="2" height="2" fill="#4c7e29"/>
+    </svg>
+    <h1 class="mark">SOJOURNER</h1>
+    <div class="tag">MAP VIEWER &middot; MINECRAFT &middot; JAVA + BEDROCK</div>
+    <p class="hook">I wanted to see my whole world — not a postcard of the terrain, but <b>everything that's actually in it</b>. Nothing did that. So I wrote this.</p>
+    <div class="xp" role="presentation"></div>
+  </header>
+
+  <section>
+    <span class="lbl">// why this exists</span>
+    <h2>I wanted to see everything that's in there.</h2>
+    <p class="lede">Every map tool draws the ground and goes quiet. Beautiful hills and oceans — and not a word about the chest you forgot, the villager three biomes over, the spawner under your base. The seed tools go the other way: a flawless generated world you don't actually have, nothing you built, nothing alive. I didn't want either. I wanted to open a map and see the <span class="k">living world</span> — what's really on the disk, blocks and builds and mobs and loot and all. Nobody read the save the way I wanted it read, so I read it myself.</p>
+  </section>
+
+  <section>
+    <span class="lbl">// what it actually shows you</span>
+    <h2>The living world, not just its skin.</h2>
+    <p class="lede">Open a save and it draws what's <em>there</em> — the real blocks you placed, the biomes and structures from the seed, the ore veins, the caves. And then the part nobody else bothers with:</p>
+    <ul>
+      <li><b>Every chest and exactly what's in it.</b> Spawners, signs, banners, beehives, brewing stands — all of it, grouped and searchable.</li>
+      <li><b>Every villager and what they do.</b> Mobs, item frames, minecarts, bosses — placed where they actually stand.</li>
+      <li><b>Beds, workstations, bells.</b> The bones of a settlement, straight off the save.</li>
+      <li><b>And the seed side</b> — biomes, structures, slime chunks, ore veins, cave mode, relief.</li>
+    </ul>
+    <p>On <span class="k">Java and Bedrock both</span>. The chest-and-villager depth is the part the fast, pretty renderers never read — and it's the whole reason I built this one.</p>
+  </section>
+
+  <section class="gallery">
+    <span class="lbl">// see it</span>
+    <h2>Here's what it actually looks like.</h2>
+    <p class="lede">These are real — my world, my builds, my loot, drawn on my machine, nothing uploaded to make them. <span class="hint">Click any shot for full resolution.</span></p>
+    <div class="grid">
+
+      <figure class="shot">
+        <a href="img/feat-shipwreck-loot.png"><img src="img/feat-shipwreck-loot.webp" loading="lazy" width="1000" height="643" alt="Shipwreck popup listing each chest's exact predicted contents"></a>
+        <figcaption><b>Loot, predicted.</b> Every chest's exact contents from the seed — before you dig.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a href="img/feat-chest-loot.png"><img src="img/feat-chest-loot.webp" loading="lazy" width="1000" height="643" alt="An opened storage chest's real inventory read from the save"></a>
+        <figcaption><b>Loot, actual.</b> Once a chest's been opened, this is what's really inside — no more guessing.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a href="img/feat-farm-island.png"><img src="img/feat-farm-island.webp" loading="lazy" width="1000" height="643" alt="Player-built farm island rendered in real blocks"></a>
+        <figcaption><b>Your builds.</b> Real block colors straight from the save — crops, platforms, and all.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a href="img/feat-zombie-villager.png"><img src="img/feat-zombie-villager.webp" loading="lazy" width="1000" height="545" alt="Zombie Villager popup amid a village overrun by the infected"></a>
+        <figcaption><b>The living world.</b> Every zombie villager, right down to profession and level — a whole village gone wrong.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a href="img/feat-nether.png"><img src="img/feat-nether.webp" loading="lazy" width="1000" height="643" alt="The Nether interior rendered with lava and netherrack"></a>
+        <figcaption><b>Every dimension.</b> The Nether interior — lava, basalt, and the mobs that followed you through.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a href="img/feat-orevein-density.png"><img src="img/feat-orevein-density.webp" loading="lazy" width="1000" height="643" alt="Ore-vein density field overlay over terrain"></a>
+        <figcaption><b>Ore veins.</b> Where the copper and iron run, computed from the seed.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a href="img/feat-biomes-structures.png"><img src="img/feat-biomes-structures.webp" loading="lazy" width="1000" height="643" alt="Biome color map with structure markers overlaid"></a>
+        <figcaption><b>Biomes &amp; structures.</b> The whole seed engine, overlaid on the map.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a href="img/feat-cave-mode.png"><img src="img/feat-cave-mode.webp" loading="lazy" width="1000" height="643" alt="Cave-mode underground slice with exposed ore"></a>
+        <figcaption><b>See underground.</b> A cave-depth slice — voids, ore, and what's waiting below.</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a href="img/feat-villager.png"><img src="img/feat-villager.webp" loading="lazy" width="858" height="554" alt="A Master cleric villager's full trade list read from the save"></a>
+        <figcaption><b>Every villager, every trade.</b> A Master cleric — profession, level, and all 10 trades, straight off the save.</figcaption>
+      </figure>
+
+      <figure class="shot mystery" aria-label="The End — intentionally not shown">
+        <div class="redact" aria-hidden="true">&#9619; &#9619; &#9619; &#9619; &#9619;<br>&#9619; &#9619; &#9619; &#9619;</div>
+        <figcaption><b>The End.</b> Some things you should find for yourself.</figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <section class="trust">
+    <span class="lbl">// how it works</span>
+    <h2>Runs entirely on your machine.</h2>
+    <p>Sojourner is a local desktop app, full stop — no cloud, no login, nothing phoned home. Here's exactly what that gets you:</p>
+    <ul>
+      <li><b>No server.</b> There's nothing to phone home to. Cut it off the network entirely and it works exactly the same.</li>
+      <li><b>Read-only.</b> It opens your save files to draw them — never writes, moves, or touches anything else on disk.</li>
+      <li><b>Nothing leaves your machine.</b> No account, no telemetry, no upload, no ads. Just a map of your world, drawn where it already lives.</li>
+      <li><b>Built by one person.</b> Indie, and unapologetically so — no roadmap meetings, no growth targets, just a tool built to be useful.</li>
+    </ul>
+    <p class="fineprint">This page holds itself to the same bar: zero outside requests, no trackers, a few kilobytes.</p>
+  </section>
+
+  <section>
+    <span class="lbl">// what makes it different</span>
+    <h2>Built for depth, not speed.</h2>
+    <p class="lede">This isn't a seed-hunting tool — it shows you the world you already have. And it's not chasing render-benchmark numbers — it's chasing completeness: every chest, every villager, every structure, read straight off your save. That's the depth other viewers skip, and it's the whole reason Sojourner exists.</p>
+  </section>
+
+  <section class="get">
+    <span class="lbl">// get it</span>
+    <a class="cta" href="downloads/Sojourner_26.3.0-snapshot.5_amd64.AppImage" download>Download<span class="badge">Linux</span></a>
+    <div class="plats">LINUX &nbsp;|&nbsp; v<span class="ver">26.3.0-snapshot.5</span></div>
+    <span class="alt">AppImage above (no install needed) &middot; also as <a href="downloads/Sojourner_26.3.0-snapshot.5_amd64.deb">.deb</a> &amp; <a href="downloads/Sojourner-26.3.0-snapshot.5-1.x86_64.rpm">.rpm</a>. Version tracks the Minecraft release it supports. &nbsp;<span class="soon">Windows &amp; macOS &rarr; coming soon</span></span>
+  </section>
+
+  <footer>
+    <span class="home">a resident of <a href="https://1048576.net">1048576.net</a></span> &nbsp;&middot;&nbsp; 2<sup style="font-size:.6em">20</sup> bytes is one megabyte; this page is a fraction of one.
+    <p class="disc">Sojourner is an unofficial, fan-made tool. Not affiliated with, endorsed by, or associated with Mojang Studios or Microsoft. <em>Minecraft</em> is a trademark of Mojang Studios.</p>
+  </footer>
+
+</main>
+
+<div id="toast" class="toast" aria-hidden="true">
+  <svg class="toast-icon" viewBox="0 0 16 16" shape-rendering="crispEdges">
+    <rect x="2" y="2" width="5" height="12" fill="#6a3fb5"/>
+    <rect x="7" y="3" width="7" height="10" fill="#eee6d0"/>
+    <rect x="7" y="3" width="1" height="10" fill="#c9bd9a"/>
+    <rect x="2" y="2" width="5" height="1" fill="#8a63cf"/>
+  </svg>
+  <div class="toast-lines">
+    <span class="toast-kind">Advancement Made!</span>
+    <span class="toast-name">Read The Source</span>
+  </div>
+</div>
+
+<div id="lb" class="lightbox" hidden role="dialog" aria-modal="true" aria-label="Screenshot, full resolution">
+  <button id="lb-close" class="lb-close" aria-label="Close (Esc)" type="button">&times;</button>
+  <img id="lb-img" alt="">
+  <div class="lb-hint" aria-hidden="true">Esc or click anywhere to close</div>
+</div>
+
+<script>
+(function(){
+  var lb=document.getElementById('lb'),img=document.getElementById('lb-img'),
+      close=document.getElementById('lb-close'),last=null;
+  function open(src,alt){
+    img.src=src; img.alt=alt||''; lb.hidden=false;
+    last=document.activeElement; close.focus();
+    document.documentElement.style.overflow='hidden';
+  }
+  function shut(){
+    lb.hidden=true; img.removeAttribute('src');
+    document.documentElement.style.overflow='';
+    if(last && last.focus) last.focus();
+  }
+  document.querySelectorAll('.shot a').forEach(function(a){
+    a.addEventListener('click',function(e){
+      e.preventDefault();
+      var im=a.querySelector('img');
+      open(a.getAttribute('href'), im?im.alt:'');
+    });
+  });
+  close.addEventListener('click',shut);
+  lb.addEventListener('click',function(e){ if(e.target!==img) shut(); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape' && !lb.hidden) shut(); });
+
+  // Achievement toast — fires once, the first time the trust section scrolls
+  // into view (fits the content: that's the "go verify it yourself" section).
+  var trust=document.querySelector('.trust'),toast=document.getElementById('toast');
+  if(trust && toast && 'IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          toast.classList.add('show');
+          io.unobserve(trust);
+          setTimeout(function(){ toast.classList.remove('show'); },4500);
+        }
+      });
+    },{threshold:.4});
+    io.observe(trust);
+  }
+})();
+</script>
+</body>
+</html>

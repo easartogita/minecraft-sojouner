@@ -49,14 +49,25 @@ export function getBEConfig(be: BlockEntity): BEConfig | null {
     if (type === 'hopper')               return { color: '#6b7280', initial: 'H', label: 'Hopper' }
     if (type === 'dropper')              return { color: '#6b7280', initial: 'D', label: 'Dropper' }
     if (type === 'dispenser')            return { color: '#6b7280', initial: 'D', label: 'Dispenser' }
+    // Copper Chest (26.3+): weathering-stage-specific label (e.g. "Waxed Oxidized
+    // Copper Chest"), but one copper-toned color regardless of stage — matches the
+    // copper block family's color convention (block_colors.rs renders all stages
+    // the same way it renders other copper blocks: distinctly, not chest-brown).
+    if (type.endsWith('copper_chest'))   return { color: '#c17b52', initial: 'C', label: formatLabel(type) }
     return { color: '#a0522d', initial: 'C', label: formatLabel(type) }
   }
   if (type === 'mob_spawner')            return { color: '#8b0000', initial: 'M', label: 'Spawner' }
   if (type === 'trial_spawner')          return { color: '#cc4400', initial: 'T', label: 'Trial Spawner' }
   if (group === 'signs')                 return { color: '#d4a017', initial: 'S', label: 'Sign' }
+  // 'H' for Hive — 'B' is taken by Bell, and the two share this same
+  // honey-amber color family, so the letter is the only thing telling them
+  // apart at a glance.
   if (type === 'beehive' || type === 'bee_nest')
-                                         return { color: '#f0a500', initial: 'B', label: formatLabel(type) }
-  if (type === 'bell')                   return { color: '#f9a825', initial: 'B', label: 'Bell' }
+                                         return { color: '#f0a500', initial: 'H', label: formatLabel(type) }
+  // Bell is usually POI-shadowed (see POI_SHADOWED_BE_TYPES in
+  // BlockEntityLayer.tsx) — the marker actually shown comes from
+  // meeting_point in poiConfig.ts, which must match this color.
+  if (type === 'bell')                   return { color: '#4f46e5', initial: 'B', label: 'Bell' }
   if (type === 'lectern')                return { color: '#795548', initial: 'L', label: 'Lectern' }
   if (type === 'brewing_stand')          return { color: '#4a148c', initial: 'W', label: 'Brewing Stand' }
   if (type === 'blast_furnace')          return { color: '#bf360c', initial: 'A', label: 'Blast Furnace' }
@@ -92,14 +103,16 @@ export function getBEConfig(be: BlockEntity): BEConfig | null {
 
 // ── Popup ─────────────────────────────────────────────────────────────────────
 
-function itemsHtml(items: BlockItem[], maxShow = 20): string {
+function itemsHtml(items: BlockItem[]): string {
   if (!items.length) return '<div class="be-empty">Empty</div>'
-  const visible = items.slice(0, maxShow)
-  const rows = visible.map(i =>
-    `<div class="be-item"><span class="be-item-count">×${i.count}</span> ${formatItemId(i.id)}</div>`
-  ).join('')
-  const more = items.length > maxShow ? `<div class="be-more">…and ${items.length - maxShow} more</div>` : ''
-  return rows + more
+  // Show every slot — containers are per-slot but in practice short (hoppers hold
+  // 5, chests are rarely packed), so the old "…and N more" cutoff just hid detail.
+  return items.map(i => {
+    // "Potion" -> "Potion of Strong Healing" — resolved from the item's own
+    // NBT (see item_potion in block_entity_reader.rs), not a loot prediction.
+    const label = i.potion ? `${formatItemId(i.id)} of ${formatLabel(i.potion)}` : formatItemId(i.id)
+    return `<div class="be-item"><span class="be-item-count">×${i.count}</span> ${label}</div>`
+  }).join('')
 }
 
 export function buildPopup(be: BlockEntity, cfg: BEConfig): string {
@@ -213,7 +226,7 @@ export function buildPopup(be: BlockEntity, cfg: BEConfig): string {
 
   if (be.type === 'chiseled_bookshelf') {
     body = be.items?.length
-      ? `<div class="be-section"><div class="be-section-label">Books (${be.items.length}/6)</div>${itemsHtml(be.items, 6)}</div>`
+      ? `<div class="be-section"><div class="be-section-label">Books (${be.items.length}/6)</div>${itemsHtml(be.items)}</div>`
       : '<div class="be-empty">Empty</div>'
   }
 

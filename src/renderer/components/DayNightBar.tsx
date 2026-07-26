@@ -116,7 +116,7 @@ export default function DayNightBar({ dayTime }: { dayTime: number }) {
 
       // Time label
       const label = mcTimeLabel(tick)
-      ctx.font         = "11px 'Courier New', monospace"
+      ctx.font         = "11px 'IBM Plex Mono', 'DejaVu Sans Mono', monospace"
       ctx.textBaseline = 'middle'
       ctx.textAlign    = 'right'
       ctx.fillStyle    = 'rgba(255,255,255,0.65)'

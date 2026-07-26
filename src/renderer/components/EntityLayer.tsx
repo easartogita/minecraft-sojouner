@@ -3,6 +3,7 @@ import L from 'leaflet'
 import { useApp } from '../App'
 import { minecraftToLeaflet } from '../lib/tileCoords'
 import { buildEntityGroupLookup, isGroupVisible, ENTITY_TYPE_TO_GROUP } from '../lib/markerFilters'
+import { effectiveMarkerAnchorY } from '../hooks/overlaySlice'
 import * as api from '../lib/tauriAPI'
 import { useChunkMarkerLayer, type LayerStats, makeLayerStats, updateLayerStats, markerYBounds } from '../lib/chunkMarkerLayer'
 import { getConfig, buildPopup, buildTooltip, createIcon, getVillagerLevelData, getHorseRatings } from '../lib/entityConfig'
@@ -19,15 +20,17 @@ export function resetEntityLayerStats(): void { _stats = makeLayerStats() }
 
 function EntityLayer({ map }: { map: L.Map }) {
   const { state } = useApp()
-  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, markerYFilterEnabled, markerYFilterRadius, changedRegions } = state
+  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, markerYLow, markerYHigh, changedRegions, markerMinZoom } = state
   const edition = state.seedData?.edition ?? 'java'
   const entityGroupLookup = useMemo(() => buildEntityGroupLookup(markerGroupDefs), [markerGroupDefs])
   const playerY = state.seedData?.playerY ?? null
+  const yAnchor = effectiveMarkerAnchorY(state, playerY)
 
   const triggerLoad = useChunkMarkerLayer(map, {
     worldDir,
     dimension,
     changedRegions,
+    minZoom: markerMinZoom,
     onClear: () => { _stats.lastCount = 0 },
     onLoad: async (pool, group, bounds, isAborted) => {
       const { minCx, maxCx, minCz, maxCz } = bounds
@@ -41,7 +44,7 @@ function EntityLayer({ map }: { map: L.Map }) {
 
       if (isAborted()) return
 
-      const [yMin, yMax] = markerYBounds(markerYFilterEnabled, playerY, markerYFilterRadius)
+      const [yMin, yMax] = markerYBounds(yAnchor, markerYLow, markerYHigh)
 
       const wanted = new Set<string>()
       for (const e of entities) {
@@ -62,7 +65,8 @@ function EntityLayer({ map }: { map: L.Map }) {
           const cfg       = getConfig(e)
           const levelData = (e.type === 'villager' || e.type === 'zombie_villager')
             ? getVillagerLevelData(e.villagerLevel) : null
-          const horseRatings = e.type === 'horse' ? getHorseRatings(e) : null
+          const horseRatings = (e.type === 'horse' || e.type === 'zombie_horse' || e.type === 'skeleton_horse')
+            ? getHorseRatings(e) : null
           const { x: lng, y: lat } = minecraftToLeaflet(e.x, e.z)
           const badge = levelData
             ? { text: levelData.badge, color: levelData.color }
@@ -102,7 +106,7 @@ function EntityLayer({ map }: { map: L.Map }) {
   useEffect(() => {
     triggerLoad()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabledMarkerGroups, entityGroupLookup, markerYFilterEnabled, markerYFilterRadius, playerY])
+  }, [enabledMarkerGroups, entityGroupLookup, yAnchor, markerYLow, markerYHigh])
 
   return null
 }

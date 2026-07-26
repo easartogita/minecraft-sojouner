@@ -4,9 +4,9 @@ interface Props {
   coords: { x: number; z: number } | null
   biomeName?: string | null
   blockName?: string | null
-  /** Surface Y from chunk data or cubiomes (normal mode). */
+  /** Y of the hovered block: surface Y in normal mode, cave-scan hit Y in cave mode. */
   terrainY?: number | null
-  /** Player Y used as cave-scan centre (cave mode only). */
+  /** Cave-scan anchor Y (cave mode only) — fallback when no block Y is known. */
   caveY?: number | null
   /** true = slime chunk; null = layer is off */
   slimeChunk?: boolean | null
@@ -22,8 +22,9 @@ export default function CursorInfoBar({
 
   if (!coords) return null
 
-  // Y to display: cave mode → player depth; normal mode → surface terrain Y.
-  const displayY = caveY ?? terrainY ?? null
+  // Y to display: the hovered block's Y when known (surface or cave-scan hit);
+  // in cave mode fall back to the scan anchor over unexplored chunks.
+  const displayY = terrainY ?? caveY ?? null
 
   const handleClick = async () => {
     try {

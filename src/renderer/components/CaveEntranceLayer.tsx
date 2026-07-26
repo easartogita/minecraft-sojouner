@@ -6,9 +6,11 @@ import * as api from '../lib/tauriAPI'
 import { TileJobQueue } from '../lib/tileJobQueue'
 import { postOverlay } from '../lib/overlayWorker'
 import { useTileLayer } from '../hooks/useTileLayer'
+import * as tileStats from '../lib/tileStats'
 
 const CHUNK_SIZE = 16
-const queue = new TileJobQueue()
+const queue = new TileJobQueue(4, () => tileStats.notify(), 'cave-entrance')
+tileStats.registerOverlay({ key: 'caveentrance', label: 'Cave entrances', className: 'caveentrance', queues: [queue], caches: [] })
 
 function CaveEntranceLayer({ map }: { map: L.Map }) {
   const { state } = useApp()

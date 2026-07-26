@@ -2,15 +2,18 @@ import React, { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import { useApp } from '../App'
 import * as api from '../lib/tauriAPI'
-import { BASE_BLOCKS_PER_PIXEL, MIN_ZOOM, MAX_ZOOM, CAVE_MODE_ZOOM, CAVE_MODE_MIN_ZOOM, CAVE_MODE_MAX_ZOOM } from '../lib/constants'
+import { BASE_BLOCKS_PER_PIXEL, MIN_ZOOM, MAX_ZOOM, CAVE_MODE_ZOOM } from '../lib/constants'
 import { minecraftToLeaflet } from '../lib/tileCoords'
 import { BIOME_NAMES } from '../lib/biomeColors'
+import { caveZoomRange, effectiveCaveAnchorY } from '../hooks/overlaySlice'
 
 import CursorInfoBar from './CursorInfoBar'
 import MapContextMenu, { type ContextMenuState } from './MapContextMenu'
 import { setMarkerMenuHandler } from '../lib/contextMenuBus'
 import BiomeTileLayer from './BiomeTileLayer'
 import GeneratedRegionsLayer from './GeneratedRegionsLayer'
+import SpawnChunksLayer from './SpawnChunksLayer'
+import WorldBorderLayer from './WorldBorderLayer'
 import ChunkOverlayLayer from './ChunkOverlayLayer'
 import ChunkGridLayer from './ChunkGridLayer'
 import SlimeChunkLayer from './SlimeChunkLayer'
@@ -22,12 +25,15 @@ import CaveEntranceLayer from './CaveEntranceLayer'
 import LocalDifficultyLayer from './LocalDifficultyLayer'
 import StructureLayer from './StructureLayer'
 import SpawnMarker from './SpawnMarker'
+import PlayerRespawnMarker from './PlayerRespawnMarker'
 import PlayerMarker from './PlayerMarker'
 import PinLayer from './PinLayer'
+import SavedRoutesLayer from './SavedRoutesLayer'
 import RulerLayer from './RulerLayer'
 import RulerPanel from './RulerPanel'
 import TileLoadingHud from './TileLoadingHud'
 import DebugOverlay from './DebugOverlay'
+import CaveMapControls from './CaveMapControls'
 import MapToolbar from './MapToolbar'
 import BlockEntityLayer from './BlockEntityLayer'
 import EntityLayer from './EntityLayer'
@@ -57,8 +63,8 @@ export default function MapView() {
   const oreVeinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dimensionRef = useRef(state.dimension)
   dimensionRef.current = state.dimension
-  const rulerActiveRef = useRef(state.rulerActive)
-  rulerActiveRef.current = state.rulerActive
+  const rulerPlacementModeRef = useRef(state.rulerPlacementMode)
+  rulerPlacementModeRef.current = state.rulerPlacementMode
   const pendingCoordsRef = useRef<{ x: number; z: number } | null>(null)
   const coordsRafRef = useRef<number | null>(null)
 
@@ -132,8 +138,7 @@ export default function MapView() {
     }
     const showBlockName  = state.zoom > 6
     const showDifficulty = state.showLocalDifficulty
-    const caveY = state.caveMode && state.seedData?.playerY != null
-      ? Math.floor(state.seedData.playerY) : null
+    const caveY = effectiveCaveAnchorY(state, state.seedData?.playerY)
     const seedData = state.seedData
     blockTimerRef.current = setTimeout(async () => {
       try {
@@ -145,7 +150,22 @@ export default function MapView() {
           showDifficulty ? (seedData?.worldTime  ?? undefined) : undefined,
         )
         setBlockName(showBlockName ? (info?.blockName ?? null) : null)
-        setTerrainY(info?.blockY ?? null)
+        // Unexplored region → no chunk Y; fall back to the cubiomes height
+        // estimate (Java overworld only — cubiomes heights are wrong for Bedrock).
+        // Not in cave mode: a surface height is not the cave-scan Y.
+        let y = info?.blockY ?? null
+        if (y == null && caveY == null && !isBedrockWorld && state.dimension === 'overworld' && generatorSlot != null) {
+          try {
+            const heights = await api.getHeightRegion(
+              generatorSlot,
+              Math.floor(mouseCoords.x / 4), Math.floor(mouseCoords.z / 4),
+              1, 1,
+            )
+            const h = heights?.[0]
+            y = (h != null && isFinite(h)) ? Math.round(h) : null
+          } catch { /* keep null */ }
+        }
+        setTerrainY(y)
         if (showDifficulty && info?.specialMultiplier != null && info?.regionalDifficulty != null) {
           setLocalDifficulty({ specialMultiplier: info.specialMultiplier, regionalDifficulty: info.regionalDifficulty })
         } else {
@@ -158,7 +178,7 @@ export default function MapView() {
       }
     }, 120)
     return () => { if (blockTimerRef.current) clearTimeout(blockTimerRef.current) }
-  }, [mouseCoords, state.worldDir, state.dimension, state.hideWater, state.caveMode, state.seedData?.playerY, state.zoom, state.caveScanLow, state.caveScanHigh, state.seedData?.difficulty, state.seedData?.worldTime, state.showLocalDifficulty])
+  }, [mouseCoords, state.worldDir, state.dimension, state.hideWater, state.caveMode, state.caveLockedToPlayer, state.caveAnchorY, state.seedData?.playerY, state.zoom, state.caveScanLow, state.caveScanHigh, state.seedData?.difficulty, state.seedData?.worldTime, state.showLocalDifficulty, isBedrockWorld, generatorSlot])
 
   // Cubiomes height fallback — used when no worldDir (seed-only mode), overworld only.
   useEffect(() => {
@@ -226,7 +246,7 @@ export default function MapView() {
     leafletMap.on('click', (e: L.LeafletMouseEvent) => {
       const rawX = Math.round(e.latlng.lng * BASE_BLOCKS_PER_PIXEL)
       const rawZ = Math.round(-e.latlng.lat * BASE_BLOCKS_PER_PIXEL)
-      if (rulerActiveRef.current) {
+      if (rulerPlacementModeRef.current) {
         dispatch({ type: 'RULER_ADD_WAYPOINT', x: rawX, z: rawZ } as never)
         return
       }
@@ -250,7 +270,18 @@ export default function MapView() {
     mapRef.current = leafletMap
     setMap(leafletMap)
 
+    // Leaflet caches its container size at init and never re-measures on its
+    // own — a rail flyout opening/closing (or a window resize) changes the
+    // container's actual width, but Leaflet keeps rendering tiles for the old
+    // size until told otherwise. Growing is the broken direction: shrinking
+    // just clips the (already-rendered) overflow, but growing leaves the
+    // newly-revealed strip permanently blank since Leaflet never even
+    // requests tiles for space it doesn't know exists.
+    const resizeObserver = new ResizeObserver(() => { leafletMap.invalidateSize() })
+    resizeObserver.observe(containerRef.current)
+
     return () => {
+      resizeObserver.disconnect()
       mapRef.current = null
       leafletMap.remove()
     }
@@ -270,15 +301,17 @@ export default function MapView() {
     map.fitBounds(bounds, { animate: false, padding: [0, 0] })
   }, [state.seedData?.seed, map])
 
-  // Cave mode: restrict zoom to CAVE_MODE_MIN_ZOOM..CAVE_MODE_MAX_ZOOM and fly to player
+  // Cave mode: restrict zoom to the dimension's cave zoom range and fly to player
   useEffect(() => {
     if (!map) return
     if (state.caveMode) {
-      map.setMinZoom(CAVE_MODE_MIN_ZOOM)
-      map.setMaxZoom(CAVE_MODE_MAX_ZOOM)
+      const [caveMin, caveMax] = caveZoomRange(state, state.dimension)
+      map.setMinZoom(caveMin)
+      map.setMaxZoom(caveMax)
       const currentZoom = map.getZoom()
-      const targetZoom = (currentZoom < CAVE_MODE_MIN_ZOOM || currentZoom > CAVE_MODE_MAX_ZOOM)
-        ? CAVE_MODE_ZOOM : currentZoom
+      const preferredZoom = Math.max(caveMin, Math.min(caveMax, CAVE_MODE_ZOOM))
+      const targetZoom = (currentZoom < caveMin || currentZoom > caveMax)
+        ? preferredZoom : currentZoom
       const { playerX, playerZ } = state.seedData ?? {}
       if (playerX != null && playerZ != null) {
         const { x: lng, y: lat } = minecraftToLeaflet(playerX, playerZ)
@@ -290,7 +323,8 @@ export default function MapView() {
       map.setMinZoom(MIN_ZOOM)
       map.setMaxZoom(MAX_ZOOM)
     }
-  }, [map, state.caveMode, state.seedData?.playerX, state.seedData?.playerZ])
+  }, [map, state.caveMode, state.dimension, state.seedData?.playerX, state.seedData?.playerZ,
+      state.caveZoomMinOverworld, state.caveZoomMinNether])
 
   // Cave mode: pointer cursor for block identification
   useEffect(() => {
@@ -303,24 +337,28 @@ export default function MapView() {
     }
   }, [map, state.caveMode])
 
-  // Ruler mode: crosshair cursor
+  // Ruler placement mode: crosshair cursor — only while clicks actually add a
+  // point. Viewing/selecting a route (rulerActive but not placementMode)
+  // shouldn't visually invite the user to click, since a click wouldn't do that.
   useEffect(() => {
     if (!map) return
     const container = map.getContainer()
-    if (state.rulerActive) {
+    if (state.rulerPlacementMode) {
       container.classList.add('ruler-mode-active')
     } else {
       container.classList.remove('ruler-mode-active')
     }
-  }, [map, state.rulerActive])
+  }, [map, state.rulerPlacementMode])
 
-  // Ruler mode: Escape undoes last waypoint, or closes ruler if empty
+  // Ruler mode: Escape undoes last waypoint (only while actively placing —
+  // undo is an edit action, not something viewing a route should trigger), or
+  // closes the panel if there's nothing to undo.
   useEffect(() => {
     if (!state.rulerActive) return
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       e.stopPropagation()
-      if (state.rulerWaypoints.length > 0) {
+      if (state.rulerPlacementMode && state.rulerWaypoints.length > 0) {
         dispatch({ type: 'RULER_UNDO' } as never)
       } else {
         dispatch({ type: 'RULER_TOGGLE' } as never)
@@ -328,7 +366,7 @@ export default function MapView() {
     }
     window.addEventListener('keydown', handler, { capture: true })
     return () => window.removeEventListener('keydown', handler, { capture: true })
-  }, [state.rulerActive, state.rulerWaypoints.length])
+  }, [state.rulerActive, state.rulerPlacementMode, state.rulerWaypoints.length])
 
   // Resolve terrain Y for a background context-menu click.
   // Runs whenever a new background menu opens (no markerKind, blockY still undefined).
@@ -342,8 +380,7 @@ export default function MapView() {
       if (state.worldDir) {
         // Primary: exact surface Y from MCA chunk data
         try {
-          const caveY = state.caveMode && state.seedData?.playerY != null
-            ? Math.floor(state.seedData.playerY) : null
+          const caveY = effectiveCaveAnchorY(state, state.seedData?.playerY)
           const info = await api.getBlockAt(
             state.worldDir, edition, state.dimension, state.hideWater, caveY,
             state.caveScanLow, state.caveScanHigh, blockX, blockZ,
@@ -378,7 +415,17 @@ export default function MapView() {
   const handleCtxCenter = (x: number, z: number) => {
     if (!map) return
     const { x: lng, y: lat } = minecraftToLeaflet(x, z)
-    map.panTo(L.latLng(lat, lng))
+    map.flyTo(L.latLng(lat, lng), map.getZoom())
+  }
+
+  const handleCtxStartRoute = (x: number, z: number) => {
+    dispatch({ type: 'RULER_NEW' } as never)
+    dispatch({ type: 'RULER_ADD_WAYPOINT', x, z } as never)
+  }
+
+  const handleCtxAddRoutePoint = (x: number, z: number) => {
+    dispatch({ type: 'RULER_START_EDITING' } as never)
+    dispatch({ type: 'RULER_ADD_WAYPOINT', x, z } as never)
   }
 
   const handleDeletePin = (id: string) => {
@@ -454,8 +501,10 @@ export default function MapView() {
         {map && (
           <>
             {state.showBiomes && !isBedrockWorld && <BiomeTileLayer map={map} unlimitedCache={state.unlimitedCache} />}
-            {state.worldDir && <GeneratedRegionsLayer map={map} />}
-            {state.showChunkData && state.worldDir && (state.dimension === 'overworld' || (state.dimension === 'nether' && state.caveMode)) && <ChunkOverlayLayer map={map} unlimitedCache={state.unlimitedCache} />}
+            {/* Low-zoom face of the Chunk Data layer: ghosted bounding boxes of
+                explored regions until the zoom threshold, real tiles after. */}
+            {state.worldDir && state.showChunkData && <GeneratedRegionsLayer map={map} />}
+            {state.showChunkData && state.worldDir && (state.dimension === 'overworld' || state.dimension === 'end' || (state.dimension === 'nether' && state.caveMode)) && <ChunkOverlayLayer map={map} unlimitedCache={state.unlimitedCache} />}
             {(state.showChunkGrid || state.showRegionGrid) && (
               <ChunkGridLayer
                 map={map}
@@ -463,19 +512,21 @@ export default function MapView() {
                 showRegionGrid={state.showRegionGrid}
               />
             )}
+            {state.showSpawnChunks && <SpawnChunksLayer map={map} />}
+            {state.showWorldBorder && <WorldBorderLayer map={map} />}
             {state.showSlimeChunks && !isBedrockWorld && state.dimension === 'overworld' && (
               <SlimeChunkLayer map={map} />
             )}
             {state.showOreVeins && !isBedrockWorld && state.dimension === 'overworld' && generatorSlot != null && (
               <OreVeinLayer map={map} slot={generatorSlot} />
             )}
-            {state.showOreFeatures && !isBedrockWorld && state.dimension === 'overworld' && generatorSlot != null && (
+            {state.showOreFeatures && !isBedrockWorld && state.dimension !== 'end' && generatorSlot != null && (
               <OreFeatureLayer map={map} slot={generatorSlot} />
             )}
-            {state.showTerrain && !isBedrockWorld && state.dimension === 'overworld' && generatorSlot != null && (
+            {state.showTerrain && !isBedrockWorld && state.dimension !== 'nether' && generatorSlot != null && (
               <TerrainLayer map={map} slot={generatorSlot} />
             )}
-            {state.showCarvers && !isBedrockWorld && state.dimension === 'overworld' && generatorSlot != null && (
+            {state.showCarvers && !isBedrockWorld && state.dimension !== 'end' && generatorSlot != null && (
               <CarverLayer map={map} slot={generatorSlot} />
             )}
             {state.showCaveEntrances && !isBedrockWorld && state.worldDir && state.dimension === 'overworld' && (
@@ -485,24 +536,27 @@ export default function MapView() {
               <LocalDifficultyLayer map={map} />
             )}
             {!isBedrockWorld && <StructureLayer map={map} slot={generatorSlot} />}
-            {state.showMarkers && state.worldDir && <BlockEntityLayer map={map} />}
-            {state.showMarkers && state.worldDir && <EntityLayer map={map} />}
-            {state.showMarkers && state.worldDir && <PoiLayer map={map} />}
+            {state.showMarkers && state.worldDir && state.zoom >= state.markerMinZoom && <BlockEntityLayer map={map} />}
+            {state.showMarkers && state.worldDir && state.zoom >= state.markerMinZoom && <EntityLayer map={map} />}
+            {state.showMarkers && state.worldDir && state.zoom >= state.markerMinZoom && <PoiLayer map={map} />}
             <SpawnMarker map={map} />
+            <PlayerRespawnMarker map={map} />
             <PlayerMarker map={map} />
             <PinLayer map={map} />
+            <SavedRoutesLayer map={map} />
             {state.rulerActive && <RulerLayer map={map} mouseCoords={mouseCoords} />}
           </>
         )}
         <TileLoadingHud />
         <DebugOverlay />
         <RulerPanel />
+        <CaveMapControls />
         <CursorInfoBar
           coords={mouseCoords}
           biomeName={biomeName}
           blockName={blockName}
           terrainY={terrainY}
-          caveY={state.caveMode && state.seedData?.playerY != null ? Math.floor(state.seedData.playerY) : null}
+          caveY={effectiveCaveAnchorY(state, state.seedData?.playerY)}
           slimeChunk={slimeChunkResult}
           oreVeins={oreVeinData}
           localDifficulty={localDifficulty}
@@ -520,6 +574,12 @@ export default function MapView() {
             onAddPin={handleCtxAddPin}
             onDeletePin={handleDeletePin}
             onCenter={handleCtxCenter}
+            onStartRoute={handleCtxStartRoute}
+            onAddRoutePoint={
+              !contextMenu.markerKind && state.rulerActive && !state.rulerPlacementMode && state.rulerWaypoints.length > 0
+                ? () => handleCtxAddRoutePoint(contextMenu.blockX, contextMenu.blockZ)
+                : undefined
+            }
             onPinBestCopper={
               !contextMenu.markerKind && state.showOreVeins && state.showCopperVeins && state.seedData
                 ? () => handlePinBestVein('copper', contextMenu.blockX, contextMenu.blockZ)

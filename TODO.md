@@ -1,4 +1,4 @@
-# Minecraft Sojourner — TODO
+# Sojourner — TODO
 
 ## Refactoring
 
@@ -8,23 +8,17 @@
 
 ## World Save Data
 
-### Block entities (TS-only additions)
-- [ ] **Player head / skull** — owner profile / player name (LOW)
-- [ ] **Structure block** — `name` + `mode`; useful for map/adventure worlds (LOW)
-- [ ] **Command block** — stored command string (LOW)
-
 ### Entity data
 - [ ] **Villager assignments** — linked bed + workstation position (POI cross-reference)
 
 ### Points of interest — `poi/*.mca`
-- [/] **Beds** — position + owner UUID
-- [/] **Workstations** — type + owner UUID; job site coverage
-- [/] **Village meeting points** — bell positions; defines village centre
-- [ ] **Nether portals** — deduplicate by X/Z footprint; cross-link overworld↔nether pairs
-- [ ] **Lodestones** — position markers (all dimensions)
+Beds, workstations, meeting points (bells), lodestones, and nether portals all render as
+markers now (`poiConfig.ts`, `PoiLayer.tsx`). Skull/player-head, structure-block, and
+command-block block entities also ship (`markerFilters.ts`).
+- [ ] **Nether portal pairing** — deduplicate multi-block portals by X/Z footprint; cross-link overworld↔nether pairs
 
 ### Player data — `playerdata/*.dat`
-- [ ] **Respawn point** — `SpawnX/Y/Z` + `SpawnDimension`; bed icon marker
+- [x] **Respawn point** — `SpawnX/Y/Z` + `SpawnDimension`; bed icon marker (`PlayerRespawnMarker.tsx`, always-on alongside the world spawn marker)
 - [ ] **All player positions** — every player's last location (multiplayer)
 - [ ] **Player inventory + ender chest** — grid in sidebar on marker click
 - [ ] **Stats panel** — play time, deaths, top mobs killed, distance traveled (`stats/<uuid>.json`)
@@ -55,20 +49,12 @@
 
 ## Wishlist
 
-### Route Planner
-Click a sequence of waypoints; the app draws the path and reports total overworld distance, nether equivalent (÷8), and per-leg breakdown. Waypoints snap to structure/pin markers. Primary use: planning nether highway layouts — map overworld destinations, read off nether portal coordinates.
+See `TODO_WAYPOINTS.md` for Route Planner / Ruler / Pin UX (per-leg travel modes, biome-aware boat splitting, nether-highway timing, pin groups).
+
+See `WISHLIST.md` for other ideas not on the active roadmap.
 
 ### Find Chest With Item
 Search all `.mca` files for any container holding a specific item ID, display name, or enchantment. Background job with progress; results as clickable map markers. Rust side: scan chunks via `fastnbt`, filter container block entities, walk `Items` NBT.
-
-### Cave Entrance Detection
-Where `WORLD_SURFACE` Y is significantly higher than `MOTION_BLOCKING` Y at the same column → likely cave entrance, ravine, or overhang. Render as a faint overlay at chunk-data zoom levels.
-
-### Pin UX
-- Right-click context menu: "Drop pin here", "Copy coordinates"
-- Pin categories / colors — filterable in sidebar
-- Pin notes — multi-line text per pin, shown in tooltip
-- Import/export as JSON or `/tp` command list
 
 ---
 

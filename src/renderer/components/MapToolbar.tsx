@@ -1,9 +1,11 @@
 import React, { useEffect } from 'react'
 import L from 'leaflet'
 import { useApp } from '../App'
-import { DIMENSIONS, Dimension, MC_VERSIONS, MIN_ZOOM, MAX_ZOOM, CAVE_MODE_MIN_ZOOM, CAVE_MODE_MAX_ZOOM } from '../lib/constants'
+import { DIMENSIONS, Dimension, MC_VERSIONS, MIN_ZOOM, MAX_ZOOM } from '../lib/constants'
 import { minecraftToLeaflet } from '../lib/tileCoords'
 import DayNightBar from './DayNightBar'
+import { caveZoomRange } from '../hooks/overlaySlice'
+import { IconCenter, IconFollow } from './icons'
 
 const DIM_LABELS: Record<Dimension, string> = {
   overworld: 'Overworld',
@@ -30,7 +32,7 @@ export default function MapToolbar() {
     if (switchDimension && playerDim && playerDim !== state.dimension) {
       dispatch({ type: 'SET_DIMENSION', dimension: playerDim } as never)
       const { x: lng, y: lat } = minecraftToLeaflet(playerX, playerZ)
-      mapRef.current.setView(L.latLng(lat, lng), mapRef.current.getZoom())
+      mapRef.current.flyTo(L.latLng(lat, lng), mapRef.current.getZoom())
       return
     }
 
@@ -41,7 +43,7 @@ export default function MapToolbar() {
     }
 
     const { x: lng, y: lat } = minecraftToLeaflet(displayX, displayZ)
-    mapRef.current.setView(L.latLng(lat, lng), mapRef.current.getZoom())
+    mapRef.current.flyTo(L.latLng(lat, lng), mapRef.current.getZoom())
   }
 
   // Follow player: re-center on projected position whenever player moves.
@@ -60,7 +62,7 @@ export default function MapToolbar() {
     } else if (playerDim !== state.dimension) { return } // incompatible dims — don't move
 
     const { x: lng, y: lat } = minecraftToLeaflet(displayX, displayZ)
-    mapRef.current.setView(L.latLng(lat, lng), mapRef.current.getZoom())
+    mapRef.current.flyTo(L.latLng(lat, lng), mapRef.current.getZoom())
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.followPlayer, state.seedData?.playerX, state.seedData?.playerZ, state.seedData?.playerDimension, state.dimension])
 
@@ -113,7 +115,7 @@ export default function MapToolbar() {
               : undefined} />
         )}
         {state.worldDir && (
-          <ToolbarToggle label="Chunk Data" title="Toggle real block colors from .mca files (D)"
+          <ToolbarToggle label="Chunk Data" title="Toggle explored-world data: region outlines at low zoom, real block colors up close (D)"
             active={state.showChunkData} onClick={() => dispatch({ type: 'TOGGLE_CHUNK_DATA' } as never)} />
         )}
         {!isBedrockWorld && state.dimension === 'overworld' && (
@@ -121,20 +123,39 @@ export default function MapToolbar() {
             active={state.showSlimeChunks} onClick={() => dispatch({ type: 'TOGGLE_SLIME_CHUNKS' } as never)} />
         )}
         {!isBedrockWorld && state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
-          <ToolbarToggle label="Ore Veins" title="Toggle ore vein probability overlay (V)"
-            active={state.showOreVeins} onClick={() => dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)}
-            mode={state.showOreVeins ? (state.oreVeinMode === 'density' ? 'Density' : 'Footprint') : undefined} />
+          <ToolbarToggle label="Ore Veins" title="Cycle ore vein overlay: Density → Footprint → off (V)"
+            active={state.showOreVeins}
+            mode={state.showOreVeins ? (state.oreVeinMode === 'density' ? 'Density' : 'Footprint') : undefined}
+            onClick={() => {
+              if (!state.showOreVeins) {
+                dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)
+                dispatch({ type: 'SET_ORE_VEIN_MODE', mode: 'density' } as never)
+              } else if (state.oreVeinMode === 'density') {
+                dispatch({ type: 'SET_ORE_VEIN_MODE', mode: 'footprint' } as never)
+              } else {
+                dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)
+              }
+            }} />
         )}
-        <ToolbarToggle label="Ruler" title="Measure distances between points (R)"
+        <ToolbarToggle label="Routes" title="Plan multi-leg routes with travel times (R)"
           active={state.rulerActive} onClick={() => dispatch({ type: 'RULER_TOGGLE' } as never)} />
-        <ToolbarToggle label="Grids" title="Toggle chunk/region grids — use Layers panel for individual control"
+        <ToolbarToggle label="Grids" title="Cycle grid overlay: Region → Chunk → Region+Chunk → off"
           active={state.showChunkGrid || state.showRegionGrid}
+          mode={state.showRegionGrid && state.showChunkGrid ? 'Region+Chunk'
+            : state.showChunkGrid ? 'Chunk'
+            : state.showRegionGrid ? 'Region'
+            : undefined}
           onClick={() => {
-            const anyOn = state.showChunkGrid || state.showRegionGrid
-            if (anyOn) {
-              if (state.showChunkGrid) dispatch({ type: 'TOGGLE_CHUNK_GRID' } as never)
-              if (state.showRegionGrid) dispatch({ type: 'TOGGLE_REGION_GRID' } as never)
+            const { showRegionGrid, showChunkGrid } = state
+            if (!showRegionGrid && !showChunkGrid) {
+              dispatch({ type: 'TOGGLE_REGION_GRID' } as never)
+            } else if (showRegionGrid && !showChunkGrid) {
+              dispatch({ type: 'TOGGLE_REGION_GRID' } as never)
+              dispatch({ type: 'TOGGLE_CHUNK_GRID' } as never)
+            } else if (!showRegionGrid && showChunkGrid) {
+              dispatch({ type: 'TOGGLE_REGION_GRID' } as never)
             } else {
+              dispatch({ type: 'TOGGLE_REGION_GRID' } as never)
               dispatch({ type: 'TOGGLE_CHUNK_GRID' } as never)
             }
           }} />
@@ -146,22 +167,22 @@ export default function MapToolbar() {
           <div className="map-toolbar-player">
             {canProject && (
               <button
-                className="toolbar-player-btn"
+                className="toolbar-icon-btn"
                 onClick={() => panToPlayer(false)}
                 title={sameDim ? 'Center on player' : `Center on projected position (${playerDim === 'nether' ? '×8' : '÷8'})`}
               >
-                ⦿ Center
+                <IconCenter />
               </button>
             )}
             {canProject && (
               <button
-                className={`toolbar-player-btn${state.followPlayer ? ' following' : ''}`}
+                className={`toolbar-icon-btn${state.followPlayer ? ' following' : ''}`}
                 onClick={() => dispatch({ type: 'TOGGLE_FOLLOW_PLAYER' } as never)}
                 title={state.followPlayer
                   ? 'Following — click to stop'
                   : sameDim ? 'Follow player' : `Follow projected position (${playerDim === 'nether' ? '×8' : '÷8'})`}
               >
-                {state.followPlayer ? '⦿ Following' : '⦿ Follow'}
+                <IconFollow />
               </button>
             )}
             {!sameDim && (
@@ -214,17 +235,19 @@ function ToolbarZoom() {
     mapRef.current?.setZoom(zoom)
   }
 
-  const effectiveMin = state.caveMode ? CAVE_MODE_MIN_ZOOM : MIN_ZOOM
-  const effectiveMax = state.caveMode ? CAVE_MODE_MAX_ZOOM : MAX_ZOOM
+  const [caveMin, caveMax] = caveZoomRange(state, state.dimension)
+  const effectiveMin = state.caveMode ? caveMin : MIN_ZOOM
+  const effectiveMax = state.caveMode ? caveMax : MAX_ZOOM
 
   return (
     <div className="toolbar-zoom" title={state.caveMode
-      ? `Cave mode: zoom ${CAVE_MODE_MIN_ZOOM}–${CAVE_MODE_MAX_ZOOM}`
+      ? `Cave mode: zoom ${caveMin}–${caveMax}`
       : `Biome colors below zoom ${state.chunkDataMinZoom}, chunk data at or above`}>
+      <span className="toolbar-zoom-label">Zoom</span>
       <div className="toolbar-zoom-track">
         {ZOOM_LEVELS.map(z => {
           const disabled = z < effectiveMin || z > effectiveMax
-          const zone = z >= CAVE_MODE_MIN_ZOOM ? 'cave'
+          const zone = z >= caveMin ? 'cave'
             : z >= state.chunkDataMinZoom ? 'chunk'
             : 'biome'
           return (

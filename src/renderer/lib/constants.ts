@@ -11,11 +11,13 @@ export const MC_VERSIONS = {
   'MC_1_21': 28,     // MC_1_21_WD / 1.21.5
   'MC_26_1': 33,     // 26.0 – 26.1
   'MC_26_2': 34,     // 26.2 (Chaos Cubed) — adds sulfur_caves
+  'MC_26_3': 35,     // 26.3 — adds abandoned_camp + nether terrain (xpple 26.3 branch)
 } as const
 
 export type MCVersionKey = keyof typeof MC_VERSIONS
 
 export const MC_VERSION_LABELS: { key: MCVersionKey; label: string; minDataVersion: number }[] = [
+  { key: 'MC_26_3',   label: '26.3',              minDataVersion: 4998 },
   { key: 'MC_26_2',   label: '26.2 (Chaos Cubed)', minDataVersion: 4903 },
   { key: 'MC_26_1',   label: '26.0 – 26.1',     minDataVersion: 4787 },
   { key: 'MC_1_21',   label: '1.21.5',          minDataVersion: 4786 },
@@ -29,9 +31,10 @@ export const MC_VERSION_LABELS: { key: MCVersionKey; label: string; minDataVersi
 ]
 
 // Data version thresholds from VERSION_MAP in nbt_reader.rs.
-// cubiomes (xpple fork) supports through 26.2 (MC_26_2); sulfur_caves (biome
-// 187) requires MC_26_2. Older 26.x worlds use MC_26_1 as the closest match.
+// cubiomes (xpple fork, 26.3 branch) supports through 26.3 (MC_26_3);
+// sulfur_caves (biome 187) requires MC_26_2. Older 26.x worlds use MC_26_1.
 export function dataVersionToMCVersionKey(dataVersion: number): MCVersionKey {
+  if (dataVersion >= 4998) return 'MC_26_3'    // 26.3 — abandoned_camp + nether terrain
   if (dataVersion >= 4903) return 'MC_26_2'    // 26.2 (Chaos Cubed) — sulfur caves
   if (dataVersion >= 4787) return 'MC_26_1'    // 26.0 – 26.1
   if (dataVersion >= 4786) return 'MC_1_21'    // 1.21.5 (WD)
@@ -70,8 +73,12 @@ export const MAX_ZOOM = 8
 // procedural biome colours. Configurable at runtime via state.chunkDataMinZoom.
 export const DEFAULT_CHUNK_DATA_MIN_ZOOM = 2
 
-// Zoom range allowed while Cave Mode is active.
-// Keeps per-chunk file reads bounded while still allowing some adjustment.
+// Zoom threshold at which entity/block-entity/POI markers load.
+// Configurable at runtime via state.markerMinZoom.
+export const DEFAULT_MARKER_MIN_ZOOM = 3
+
+// Default minimum zoom allowed while Cave Mode is active — configurable per
+// dimension at runtime via state.caveZoomMinOverworld/caveZoomMinNether.
+// The upper bound is always MAX_ZOOM; there's no reason to cap it below that.
 export const CAVE_MODE_MIN_ZOOM = 4
-export const CAVE_MODE_MAX_ZOOM = 8
 export const CAVE_MODE_ZOOM = 7

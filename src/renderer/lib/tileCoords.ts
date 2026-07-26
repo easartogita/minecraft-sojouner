@@ -50,3 +50,23 @@ export function minecraftToLeaflet(blockX: number, blockZ: number): { x: number;
     y: -blockZ / BASE_BLOCKS_PER_PIXEL
   }
 }
+
+/**
+ * Parse a pasted coordinate string into { x, z } — for pasting things like
+ * "123, -456", "123 -456", or a copied `/tp @s 123 64 -456` command straight
+ * into the Go-to-coordinates field. Pulls every numeric token out of the
+ * string: exactly 2 → (x, z); exactly 3 → treats the middle one as Y and
+ * takes (first, third). Any other count returns null so the caller falls
+ * back to a normal paste instead of guessing.
+ */
+export function parseCoordPaste(text: string): { x: number; z: number } | null {
+  const tokens = text.match(/-?\d+(?:\.\d+)?/g)
+  if (!tokens) return null
+  if (tokens.length === 2) {
+    return { x: parseFloat(tokens[0]), z: parseFloat(tokens[1]) }
+  }
+  if (tokens.length === 3) {
+    return { x: parseFloat(tokens[0]), z: parseFloat(tokens[2]) }
+  }
+  return null
+}

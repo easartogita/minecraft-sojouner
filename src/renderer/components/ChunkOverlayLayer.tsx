@@ -3,9 +3,10 @@ import L from 'leaflet'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { useApp } from '../App'
 import * as tileStats from '../lib/tileStats'
-import { CHUNK_TILE_SIZE, CAVE_MODE_MIN_ZOOM, BASE_BLOCKS_PER_PIXEL, MAX_ZOOM } from '../lib/constants'
+import { CHUNK_TILE_SIZE, BASE_BLOCKS_PER_PIXEL, MAX_ZOOM } from '../lib/constants'
 import { TileJobQueue, TileJob, evictCache } from '../lib/tileJobQueue'
 import * as api from '../lib/tauriAPI'
+import { caveZoomRange, effectiveCaveAnchorY } from '../hooks/overlaySlice'
 
 // Zoom level at which Rust renders chunk tiles (1 block per pixel).
 // Higher zooms are served from this cache with JS nearest-neighbor upscaling.
@@ -34,7 +35,14 @@ function nearestNeighborScale(
 
 // Load a tile PNG from disk (via asset protocol) into ImageData for canvas use.
 // Uses an OffscreenCanvas so the main tile canvas is never tainted by the load.
-function loadTileImageData(path: string): Promise<ImageData | null> {
+//
+// `version` (the tile's stamped mca-mtime) is appended as a `?v=` query so a
+// rewritten tile at the *same* path becomes a distinct URL. Without it, WebKit's
+// asset-URL cache keeps serving the previously-decoded image even after we
+// overwrite the PNG on disk — the tile freezes at its old content (e.g. a
+// partial/striped render captured mid-worldgen) and only "heals" on a zoom that
+// changes the path. The query is ignored by the asset protocol's path handler.
+function loadTileImageData(path: string, version: number): Promise<ImageData | null> {
   return new Promise<ImageData | null>((resolve) => {
     const img = new Image()
     img.crossOrigin = 'anonymous'
@@ -49,7 +57,8 @@ function loadTileImageData(path: string): Promise<ImageData | null> {
       }
     }
     img.onerror = () => resolve(null)
-    img.src = convertFileSrc(path)
+    const base = convertFileSrc(path)
+    img.src = `${base}${base.includes('?') ? '&' : '?'}v=${version}`
   })
 }
 
@@ -79,7 +88,7 @@ export function clearChunkCache() { tileCache.clear() }
 // ── Tile render priority queue (module-level, one per layer type) ─────────────
 // The slot is released as soon as the IPC response arrives (before PNG decode)
 // so the next tile can start its IPC call while decoding runs in parallel.
-const queue = new TileJobQueue(4, () => tileStats.notify())
+const queue = new TileJobQueue(4, () => tileStats.notify(), 'chunk')
 export function getChunkQueue() { return queue }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -99,8 +108,9 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
   const changedRegions   = state.changedRegions
   const caveMode         = state.caveMode
   const playerY          = state.seedData?.playerY ?? null
-  // Floor player Y for the scan start; null when cave mode is off or Y is unknown
-  const caveY            = caveMode && playerY != null ? Math.floor(playerY) : null
+  // Scan-window anchor: live player Y when locked, frozen anchor when unlocked;
+  // null when cave mode is off or no position is known.
+  const caveY            = effectiveCaveAnchorY(state, playerY)
   const caveScanLow      = state.caveScanLow
   const caveScanHigh     = state.caveScanHigh
 
@@ -182,28 +192,59 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
     api.invalidateMcaTiles(worldDir, changedRegions).then(() => {
       const layer = layerRef.current as any
       if (!layer?._tiles) return
+      const caveTag = caveY != null ? `${caveY}_${caveScanLow}_${caveScanHigh}` : 's'
+
+      // Group the affected on-screen tiles by the native-zoom parent that must be
+      // re-rendered. Native tiles (z ≤ CHUNK_NATIVE_ZOOM) are their own parent;
+      // higher zooms share a zoom-CHUNK_NATIVE_ZOOM parent and are upscaled from it.
+      // The high-zoom case must be handled here: while zoomed in, a live region
+      // rewrite evicts the cache but Leaflet keeps the existing tile elements, so
+      // without repainting them nothing updates until the user re-scales (which
+      // recreates the tiles). Render each parent once and fan it out to its children.
+      type Target = { coords: L.Coords; canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }
+      const groups = new Map<string, { rx: number; ry: number; renderZ: number; targets: Target[] }>()
+
       for (const key of Object.keys(layer._tiles)) {
         const { coords, el: canvas } = layer._tiles[key] as { coords: L.Coords; el: HTMLCanvasElement }
         if (!tileOverlapsRegions(coords.x, coords.y, coords.z, changedRegions)) continue
-        // High-zoom tiles re-derive from their parent once the parent re-renders.
-        if (coords.z > CHUNK_NATIVE_ZOOM) continue
         const ctx = canvas.getContext('2d')
         if (!ctx) continue
-        const caveTag = caveY != null ? `${caveY}_${caveScanLow}_${caveScanHigh}` : 's'
-        const cacheKey = `C:${worldDir}:${dimension}:${caveTag}:${coords.x}:${coords.y}:${coords.z}`
-        const centre = map.project(map.getCenter(), coords.z)
-        const dx = coords.x + 0.5 - centre.x / CHUNK_TILE_SIZE
-        const dy = coords.y + 0.5 - centre.y / CHUNK_TILE_SIZE
+        const upscale = coords.z > CHUNK_NATIVE_ZOOM ? (1 << (coords.z - CHUNK_NATIVE_ZOOM)) : 1
+        const renderZ = coords.z > CHUNK_NATIVE_ZOOM ? CHUNK_NATIVE_ZOOM : coords.z
+        const rx = Math.floor(coords.x / upscale)
+        const ry = Math.floor(coords.y / upscale)
+        const gkey = `${rx}:${ry}:${renderZ}`
+        const g = groups.get(gkey)
+        if (g) g.targets.push({ coords, canvas, ctx })
+        else groups.set(gkey, { rx, ry, renderZ, targets: [{ coords, canvas, ctx }] })
+      }
+
+      for (const { rx, ry, renderZ, targets } of groups.values()) {
+        const centre = map.project(map.getCenter(), renderZ)
+        const dx = rx + 0.5 - centre.x / CHUNK_TILE_SIZE
+        const dy = ry + 0.5 - centre.y / CHUNK_TILE_SIZE
         queue.enqueue(dx * dx + dy * dy, () => {
-          api.renderTile(worldDir, edition, dimension, coords.x, coords.y, coords.z, hideWater, caveY, caveScanLow, caveScanHigh)
+          api.renderTile(worldDir, edition, dimension, rx, ry, renderZ, hideWater, caveY, caveScanLow, caveScanHigh)
             .then(async rt => {
               queue.release()
-              if (!rt || !canvas.isConnected) return
-              const imageData = await loadTileImageData(rt.path)
-              if (!imageData || !canvas.isConnected) return
-              ctx.clearRect(0, 0, CHUNK_TILE_SIZE, CHUNK_TILE_SIZE)
-              ctx.putImageData(imageData, 0, 0)
-              tileCache.set(cacheKey, { data: imageData, mtime: rt.mtime })
+              if (!rt) return
+              const parentData = await loadTileImageData(rt.path, rt.mtime)
+              if (!parentData) return
+              tileCache.set(`C:${worldDir}:${dimension}:${caveTag}:${rx}:${ry}:${renderZ}`, { data: parentData, mtime: rt.mtime })
+              for (const { coords, canvas, ctx } of targets) {
+                if (!canvas.isConnected) continue
+                let imageData = parentData
+                if (coords.z > CHUNK_NATIVE_ZOOM) {
+                  const upscale = 1 << (coords.z - CHUNK_NATIVE_ZOOM)
+                  const subSize = CHUNK_TILE_SIZE / upscale
+                  const subX = (coords.x - rx * upscale) * subSize
+                  const subY = (coords.y - ry * upscale) * subSize
+                  imageData = nearestNeighborScale(parentData, upscale, subX, subY, CHUNK_TILE_SIZE)
+                }
+                ctx.clearRect(0, 0, CHUNK_TILE_SIZE, CHUNK_TILE_SIZE)
+                ctx.putImageData(imageData, 0, 0)
+                tileCache.set(`C:${worldDir}:${dimension}:${caveTag}:${coords.x}:${coords.y}:${coords.z}`, { data: imageData, mtime: rt.mtime })
+              }
               if (!unlimitedCacheRef.current) evictCache(tileCache, MAX_CACHE)
             })
             .catch(() => queue.release())
@@ -274,7 +315,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
         ).then(async rt => {
           queue.release()
           if (stale || !rt || !canvas.isConnected) return
-          const parentData = await loadTileImageData(rt.path)
+          const parentData = await loadTileImageData(rt.path, rt.mtime)
           if (stale || !parentData || !canvas.isConnected) return
           let imageData = parentData
           if (coords.z > CHUNK_NATIVE_ZOOM) {
@@ -383,7 +424,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
                 queue.release()
                 if (stale) { done(undefined, canvas); return }
                 if (!rt) { tileStats.mcaLoadingDone(Math.round(performance.now() - t0)); done(undefined, canvas); return }
-                const parentData = await loadTileImageData(rt.path)
+                const parentData = await loadTileImageData(rt.path, rt.mtime)
                 tileStats.mcaLoadingDone(Math.round(performance.now() - t0))
                 if (stale || !parentData) { done(undefined, canvas); return }
                 tileCache.set(parentKey, { data: parentData, mtime: rt.mtime })
@@ -427,7 +468,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
             queue.release()
             if (stale) { done(undefined, canvas); return }
             if (!rt || !canvas.isConnected) { tileStats.mcaLoadingDone(Math.round(performance.now() - t0)); done(undefined, canvas); return }
-            const imageData = await loadTileImageData(rt.path)
+            const imageData = await loadTileImageData(rt.path, rt.mtime)
             tileStats.mcaLoadingDone(Math.round(performance.now() - t0))
             if (stale || !imageData || !canvas.isConnected) { done(undefined, canvas); return }
             ctx.putImageData(imageData, 0, 0)
@@ -468,7 +509,8 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
     // This prevents a flood of tile requests at the old wide zoom level.
     // Child effects fire before parent effects, so our moveend listener is
     // registered before MapView's flyTo triggers the animation.
-    const needsViewportTransition = capturedCaveY != null && map.getZoom() < CAVE_MODE_MIN_ZOOM
+    const [caveMin] = caveZoomRange(state, dimension)
+    const needsViewportTransition = capturedCaveY != null && map.getZoom() < caveMin
 
     const addLayer = () => {
       if (stale) return
@@ -486,6 +528,9 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
     return () => {
       stale = true
       map.off('moveend', addLayer)
+      // Drop the queued backlog + abort in-flight renders so a teardown mid-load
+      // doesn't keep the backend rendering tiles no one is waiting for.
+      queue.cancelAll()
       if (layerRef.current) {
         map.removeLayer(layerRef.current)
         layerRef.current = null
@@ -494,7 +539,8 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
       // Zero out in-flight counter so the UI doesn't show stale "Loading N tiles"
       tileStats.resetMcaLoading()
     }
-  }, [map, worldDir, dimension, hideWater, chunkDataMinZoom, tileCacheVersion, caveY, caveScanLow, caveScanHigh])
+  }, [map, worldDir, edition, dimension, hideWater, chunkDataMinZoom, tileCacheVersion, caveY, caveScanLow, caveScanHigh,
+      state.caveZoomMinOverworld, state.caveZoomMinNether])
 
   return null
 }

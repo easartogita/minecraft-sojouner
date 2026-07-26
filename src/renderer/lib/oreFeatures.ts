@@ -6,21 +6,23 @@
 export type RGB = [number, number, number]
 
 export interface OreFeatureDef {
-  id:       string
-  label:    string
-  color:    RGB
-  oreTypes: number[]
+  id:        string
+  label:     string
+  color:     RGB
+  oreTypes:  number[]
+  dimension: 'overworld' | 'nether'
 }
 
 export const ORE_FEATURE_DEFS: OreFeatureDef[] = [
-  { id: 'diamond',  label: 'Diamond',  color: [96, 226, 222], oreTypes: [10, 2, 22, 30] },   // Diamond/Buried/Large/Medium
-  { id: 'gold',     label: 'Gold',     color: [252, 214, 80], oreTypes: [15, 14, 26] },       // Gold/Extra/Lower
-  { id: 'iron',     label: 'Iron',     color: [216, 174, 148], oreTypes: [18, 31, 37, 44] },  // Iron/Middle/Small/Upper
-  { id: 'redstone', label: 'Redstone', color: [222, 58, 48], oreTypes: [35, 28] },            // Redstone/Lower
-  { id: 'emerald',  label: 'Emerald',  color: [70, 214, 120], oreTypes: [13] },
-  { id: 'lapis',    label: 'Lapis',    color: [62, 110, 220], oreTypes: [19, 3] },            // Lapis/Buried
-  { id: 'copper',   label: 'Copper',   color: [220, 128, 86], oreTypes: [6, 20] },            // Copper/Large
-  { id: 'coal',     label: 'Coal',     color: [70, 70, 76], oreTypes: [5, 24, 41] },          // Coal/Lower/Upper
+  { id: 'diamond',  label: 'Diamond',  color: [96, 226, 222], oreTypes: [10, 2, 22, 30], dimension: 'overworld' },   // Diamond/Buried/Large/Medium
+  { id: 'gold',     label: 'Gold',     color: [252, 214, 80], oreTypes: [15, 14, 26], dimension: 'overworld' },      // Gold/Extra/Lower
+  { id: 'iron',     label: 'Iron',     color: [216, 174, 148], oreTypes: [18, 31, 37, 44], dimension: 'overworld' }, // Iron/Middle/Small/Upper
+  { id: 'redstone', label: 'Redstone', color: [222, 58, 48], oreTypes: [35, 28], dimension: 'overworld' },           // Redstone/Lower
+  { id: 'emerald',  label: 'Emerald',  color: [70, 214, 120], oreTypes: [13], dimension: 'overworld' },
+  { id: 'lapis',    label: 'Lapis',    color: [62, 110, 220], oreTypes: [19, 3], dimension: 'overworld' },           // Lapis/Buried
+  { id: 'copper',   label: 'Copper',   color: [220, 128, 86], oreTypes: [6, 20], dimension: 'overworld' },           // Copper/Large
+  { id: 'coal',     label: 'Coal',     color: [70, 70, 76], oreTypes: [5, 24, 41], dimension: 'overworld' },         // Coal/Lower/Upper
+  { id: 'ancient_debris', label: 'Ancient Debris', color: [150, 108, 128], oreTypes: [21, 36], dimension: 'nether' }, // Large/Small (netherite)
 ]
 
 /** Map every ore-config index to its logical-ore display color. */
@@ -29,8 +31,8 @@ export const ORE_TYPE_COLOR: Record<number, RGB> = Object.fromEntries(
 )
 
 /** Flatten selected logical-ore ids into the config indices to query. */
-export function oreTypesFor(selectedIds: readonly string[]): number[] {
+export function oreTypesFor(selectedIds: readonly string[], dimension?: string): number[] {
   return ORE_FEATURE_DEFS
-    .filter(d => selectedIds.includes(d.id))
+    .filter(d => selectedIds.includes(d.id) && (dimension == null || d.dimension === dimension))
     .flatMap(d => d.oreTypes)
 }

@@ -27,6 +27,25 @@ pub struct PlayerInfo {
     pub z:         f64,
     pub dimension: String,
     pub is_host:   bool,
+    /// When the player is riding something, its entity type (namespace-stripped).
+    /// Mounts are stored in the player's data, not the region files, so their own
+    /// marker vanishes — this lets the player marker surface it. None = on foot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mount_type: Option<String>,
+    /// The mount's custom name (name tag), if it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mount_name: Option<String>,
+    /// Bed/respawn-anchor spawn point (Player.SpawnX/Y/Z) — distinct from the
+    /// world spawn in level.dat. Absent until the player has actually slept in
+    /// a bed or set a respawn anchor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respawn_x: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respawn_y: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respawn_z: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respawn_dimension: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -39,6 +58,7 @@ pub struct SeedData {
     pub world_type: String,     // "default" | "large_biomes" | "amplified" | "flat" | "single_biome" | "custom"
     pub spawn_x: i32,
     pub spawn_z: i32,
+    pub spawn_chunk_radius: Option<i32>, // Data.GameRules.spawnChunkRadius (stored as a string)
     pub player_x: Option<f64>,
     pub player_y: Option<f64>,
     pub player_z: Option<f64>,
@@ -49,6 +69,18 @@ pub struct SeedData {
     pub world_time: Option<i64>, // Data.Time — total ticks elapsed (for totalDays + moon phase)
     pub edition: WorldEdition,
     pub players: Vec<PlayerInfo>,
+    /// Data.ServerBrands — empty (or absent) for a vanilla singleplayer world;
+    /// non-vanilla entries are a signal that worldgen may not match cubiomes.
+    pub server_brands: Vec<String>,
+    pub border_center_x: f64,
+    pub border_center_z: f64,
+    /// Vanilla default (60,000,000) when the world has never set a border —
+    /// callers should treat that as "no border" rather than draw it.
+    pub border_size: f64,
+    /// Data.GameRules — every rule is stored as a string in NBT (even the
+    /// boolean/int ones), so this is a raw passthrough; the frontend decides
+    /// which of these differ from vanilla defaults.
+    pub game_rules: HashMap<String, String>,
 }
 
 type Result<T> = std::result::Result<T, String>;
@@ -79,6 +111,17 @@ pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
     let day_time = extract_day_time(data);
     let world_time = get(data, "Time").and_then(as_i64);
     let difficulty = get(data, "Difficulty").and_then(as_i32).unwrap_or(2);
+    // Gamerules are stored as strings (even numeric ones), so parse spawnChunkRadius.
+    let game_rules = extract_game_rules(data);
+    let spawn_chunk_radius = game_rules
+        .get("spawnChunkRadius")
+        .and_then(|s| s.parse::<i32>().ok());
+    let server_brands = get(data, "ServerBrands")
+        .and_then(as_string_list)
+        .unwrap_or_default();
+    let border_center_x = get(data, "BorderCenterX").and_then(as_f64).unwrap_or(0.0);
+    let border_center_z = get(data, "BorderCenterZ").and_then(as_f64).unwrap_or(0.0);
+    let border_size = get(data, "BorderSize").and_then(as_f64).unwrap_or(60_000_000.0);
     let (player_x, player_y, player_z, player_dimension) =
         read_player_pos(data, world_dir, data_version);
 
@@ -86,6 +129,11 @@ pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
     // Fallback for very old worlds without a playerdata/ dir (inline Data.Player only).
     if players.is_empty() {
         if let (Some(x), Some(y), Some(z)) = (player_x, player_y, player_z) {
+            let inline_player = get(data, "Player");
+            let respawn_x = inline_player.and_then(|p| get(p, "SpawnX")).and_then(as_i32);
+            let respawn_y = inline_player.and_then(|p| get(p, "SpawnY")).and_then(as_i32);
+            let respawn_z = inline_player.and_then(|p| get(p, "SpawnZ")).and_then(as_i32);
+            let respawn_dimension = inline_player.and_then(|p| get(p, "SpawnDimension")).map(normalize_dimension);
             players.push(PlayerInfo {
                 uuid: get(data, "singleplayer_uuid")
                     .and_then(as_int_array)
@@ -97,6 +145,9 @@ pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
                 z,
                 dimension: player_dimension.clone().unwrap_or_else(|| "minecraft:overworld".to_string()),
                 is_host: true,
+                mount_type: None,
+                mount_name: None,
+                respawn_x, respawn_y, respawn_z, respawn_dimension,
             });
         }
     }
@@ -109,6 +160,7 @@ pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
         world_type,
         spawn_x,
         spawn_z,
+        spawn_chunk_radius,
         player_x,
         player_y,
         player_z,
@@ -119,7 +171,25 @@ pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
         world_time,
         edition: WorldEdition::Java,
         players,
+        server_brands,
+        border_center_x,
+        border_center_z,
+        border_size,
+        game_rules,
     })
+}
+
+// ── Game rules / server brand / world border ──────────────────────────────────
+
+fn extract_game_rules(data: &Value) -> HashMap<String, String> {
+    get(data, "GameRules")
+        .and_then(cmp)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| as_str(v).map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ── Seed extraction ───────────────────────────────────────────────────────────
@@ -229,6 +299,13 @@ fn extract_day_time(data: &Value) -> Option<i32> {
 // ── Player position ───────────────────────────────────────────────────────────
 
 fn uuid_from_int_array(ints: &[i32]) -> String {
+    // A well-formed UUID IntArray always has exactly 4 ints (128 bits); a
+    // truncated/hand-edited level.dat could have fewer, which would panic on
+    // the fixed-offset slices below instead of falling through to this
+    // function's caller's `.unwrap_or_default()`.
+    if ints.len() != 4 {
+        return String::new();
+    }
     let hex: String = ints.iter().map(|&i| format!("{:08x}", i as u32)).collect();
     format!(
         "{}-{}-{}-{}-{}",
@@ -305,6 +382,7 @@ fn read_player_pos(
 const VERSION_MAP: &[(i32, &str)] = &[
     // 26.x uses a new versioning scheme. cubiomes support (xpple fork) covers
     // these via MC_26_x; see dataVersionToMCVersionKey in constants.ts.
+    (4998, "26.3"), // snapshot 1 = 4998; final release will be higher but still >= this
     (4903, "26.2"),
     (4787, "26.x"),
     (4786, "1.21.5"),
@@ -351,14 +429,52 @@ fn load_usercache(world_dir: &Path) -> HashMap<String, String> {
     HashMap::new()
 }
 
-fn read_player_dat(path: &Path) -> Option<(f64, f64, f64, String)> {
+/// If the player is riding something, Minecraft moves that entity out of the
+/// region/entities files into the player's own data under `RootVehicle.Entity`,
+/// so the mount's normal marker disappears. Pull its type and custom name (if
+/// named) so the player marker can show it instead. None = on foot.
+fn read_mount(player: &Value) -> (Option<String>, Option<String>) {
+    let Some(entity) = get(player, "RootVehicle").and_then(|rv| get(rv, "Entity")) else {
+        return (None, None);
+    };
+    let mount_type = get(entity, "id")
+        .and_then(as_str)
+        .map(|s| s.strip_prefix("minecraft:").unwrap_or(s).to_string());
+    let raw_name = get(entity, "CustomName").and_then(as_str).unwrap_or("");
+    let parsed = crate::entity_reader::parse_json_text(raw_name);
+    let mount_name = if parsed.is_empty() { None } else { Some(parsed) };
+    (mount_type, mount_name)
+}
+
+struct PlayerDatInfo {
+    x: f64, y: f64, z: f64,
+    dimension: String,
+    mount_type: Option<String>,
+    mount_name: Option<String>,
+    respawn_x: Option<i32>,
+    respawn_y: Option<i32>,
+    respawn_z: Option<i32>,
+    respawn_dimension: Option<String>,
+}
+
+fn read_player_dat(path: &Path) -> Option<PlayerDatInfo> {
     let nbt = read_gz_nbt(path).ok()?;
     let pos = get(&nbt, "Pos").and_then(as_double_list)?;
     if pos.len() < 3 { return None; }
-    let dim = get(&nbt, "Dimension")
+    let dimension = get(&nbt, "Dimension")
         .map(normalize_dimension)
         .unwrap_or_else(|| "minecraft:overworld".to_string());
-    Some((pos[0], pos[1], pos[2], dim))
+    let (mount_type, mount_name) = read_mount(&nbt);
+    // Present only once the player has actually slept in a bed or set a
+    // respawn anchor — absent otherwise, not defaulted to the world spawn.
+    let respawn_x = get(&nbt, "SpawnX").and_then(as_i32);
+    let respawn_y = get(&nbt, "SpawnY").and_then(as_i32);
+    let respawn_z = get(&nbt, "SpawnZ").and_then(as_i32);
+    let respawn_dimension = get(&nbt, "SpawnDimension").map(normalize_dimension);
+    Some(PlayerDatInfo {
+        x: pos[0], y: pos[1], z: pos[2], dimension, mount_type, mount_name,
+        respawn_x, respawn_y, respawn_z, respawn_dimension,
+    })
 }
 
 fn read_all_players(data: &Value, world_dir: &Path, _data_version: i32) -> Vec<PlayerInfo> {
@@ -386,10 +502,15 @@ fn read_all_players(data: &Value, world_dir: &Path, _data_version: i32) -> Vec<P
             if stem.len() != 36 || stem.chars().filter(|&c| c == '-').count() != 4 { continue; }
             let uuid = stem.to_lowercase();
             if !seen.insert(uuid.clone()) { continue; }
-            let Some((x, y, z, dimension)) = read_player_dat(&path) else { continue };
+            let Some(p) = read_player_dat(&path) else { continue };
             let is_host = host_uuid.as_deref() == Some(uuid.as_str());
             let name = usercache.get(&uuid).cloned().unwrap_or_default();
-            players.push(PlayerInfo { uuid, name, x, y, z, dimension, is_host });
+            players.push(PlayerInfo {
+                uuid, name, x: p.x, y: p.y, z: p.z, dimension: p.dimension, is_host,
+                mount_type: p.mount_type, mount_name: p.mount_name,
+                respawn_x: p.respawn_x, respawn_y: p.respawn_y, respawn_z: p.respawn_z,
+                respawn_dimension: p.respawn_dimension,
+            });
         }
     }
 
@@ -440,6 +561,24 @@ fn as_i32(v: &Value) -> Option<i32> {
 
 fn as_str(v: &Value) -> Option<&str> {
     if let Value::String(s) = v { Some(s) } else { None }
+}
+
+fn as_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Double(d) => Some(*d),
+        Value::Float(f)  => Some(*f as f64),
+        _ => None,
+    }
+}
+
+// ServerBrands is a List<String>; reuses the same shape as_double_list handles
+// for List<Double>, just filtering to the String variant instead.
+fn as_string_list(v: &Value) -> Option<Vec<String>> {
+    if let Value::List(list) = v {
+        Some(list.iter().filter_map(as_str).map(String::from).collect())
+    } else {
+        None
+    }
 }
 
 // Value::List is Vec<Value> in fastnbt 2.x — collect the doubles out of it

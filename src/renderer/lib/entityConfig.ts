@@ -47,6 +47,7 @@ export const ENTITY_CONFIG: Record<string, EntityConfig> = {
   wither:           { color: '#1c1c1c', initial: 'W', label: 'Wither' },
   chest_minecart:   { color: '#a0522d', initial: 'C', label: 'Chest Minecart' },
   hopper_minecart:  { color: '#6b7280', initial: 'H', label: 'Hopper Minecart' },
+  boat:             { color: '#b08d57', initial: 'B', label: 'Boat' },
   chest_boat:       { color: '#8b6914', initial: 'C', label: 'Chest Boat' },
   wolf:             { color: '#94a3b8', initial: 'W', label: 'Wolf' },
   cat:              { color: '#fb923c', initial: 'C', label: 'Cat' },
@@ -263,7 +264,8 @@ export function buildPopup(e: GameEntity): string {
   if (e.type === 'horse') {
     const { speed: spdRating, jump: jmpRating } = getHorseRatings(e)
     const variant = e.horseVariant ? `<div class="entity-detail">${e.horseVariant}</div>` : ''
-    const tamed   = e.tamed ? '<div class="entity-detail">Tamed</div>' : '<div class="entity-muted">Wild</div>'
+    const wildLabel = e.temper != null ? `Wild · Temper ${e.temper}` : 'Wild'
+    const tamed   = e.tamed ? '<div class="entity-detail">Tamed</div>' : `<div class="entity-muted">${wildLabel}</div>`
     const saddle  = e.saddled ? '<div class="entity-detail">Saddled</div>' : ''
     const armor   = e.horseArmor ? `<div class="entity-detail">Armor: ${formatId(e.horseArmor)}</div>` : ''
     const spdRow  = spdRating ? horseTierRow('Speed', spdRating, e.speed != null ? `${e.speed} bps` : null) : ''
@@ -273,7 +275,13 @@ export function buildPopup(e: GameEntity): string {
 
   if (e.type === 'donkey' || e.type === 'mule' || e.type === 'zombie_horse' || e.type === 'skeleton_horse') {
     body = e.tamed ? '<div class="entity-detail">Tamed</div>' : '<div class="entity-muted">Wild</div>'
-    if (e.speed != null) body += `<div class="entity-detail">Speed: ${e.speed} bps</div>`
+    if (e.type === 'zombie_horse' || e.type === 'skeleton_horse') {
+      const { speed: spdRating, jump: jmpRating } = getHorseRatings(e)
+      if (spdRating) body += horseTierRow('Speed', spdRating, e.speed != null ? `${e.speed} bps` : null)
+      if (jmpRating) body += horseTierRow('Jump', jmpRating, e.jumpHeight != null ? `${e.jumpHeight} blk` : null)
+    } else if (e.speed != null) {
+      body += `<div class="entity-detail">Speed: ${e.speed} bps</div>`
+    }
     if (e.chestItems?.length) {
       body += `<div class="entity-section-label">Chest</div>`
       body += e.chestItems.map(i => `<div class="entity-detail">${formatItem(i)}</div>`).join('')
@@ -488,6 +496,12 @@ export function buildPopup(e: GameEntity): string {
       : '<div class="entity-muted">Not carrying anything</div>'
   }
 
+  if (e.type === 'boat') {
+    body = e.petVariant
+      ? `<div class="entity-detail">${formatId(e.petVariant)} wood</div>`
+      : ''
+  }
+
   if (e.type === 'chest_minecart' || e.type === 'hopper_minecart' || e.type === 'chest_boat') {
     if (e.lootTable) {
       body = `<div class="entity-detail be-unopened">Unopened</div><div class="be-loot-table">${formatId(e.lootTable.split('/').pop() ?? e.lootTable)}</div>`
@@ -539,7 +553,7 @@ export function buildTooltip(e: GameEntity): string {
       return tooltipText(label, e.tamed ? 'Tamed' : 'Wild', e.speed != null ? `${e.speed} bps` : null, e.chestItems?.length ? `${e.chestItems.length} items in chest` : null, baby)
     case 'zombie_horse':
     case 'skeleton_horse':
-      return tooltipText(label, e.speed != null ? `${e.speed} bps` : null, baby)
+      return tooltipText(label, e.speed != null ? `${e.speed} bps` : null, e.jumpHeight != null ? `${e.jumpHeight}blk jump` : null, baby)
     case 'camel':
       return tooltipText(label, e.saddled ? 'Saddled' : 'No saddle', e.speed != null ? `${e.speed} bps` : null, baby)
     case 'llama':
@@ -549,9 +563,14 @@ export function buildTooltip(e: GameEntity): string {
       return tooltipText(label, e.dragonHealth != null ? `${Math.round(e.dragonHealth)}/200 HP` : null, baby)
     case 'wither':
       return tooltipText(label, e.witherHealth != null ? `${Math.round(e.witherHealth)}/300 HP` : null, baby)
+    case 'boat':
+      return tooltipText(label, e.petVariant ? `${formatId(e.petVariant)} wood` : null, baby)
+    case 'chest_boat':
+      if (e.lootTable)          return tooltipText(label, e.petVariant ? formatId(e.petVariant) : null, 'Unopened', baby)
+      if (e.chestItems?.length) return tooltipText(label, e.petVariant ? formatId(e.petVariant) : null, `${e.chestItems.length} item${e.chestItems.length !== 1 ? 's' : ''}`, baby)
+      return tooltipText(label, e.petVariant ? formatId(e.petVariant) : null, 'Empty', baby)
     case 'chest_minecart':
     case 'hopper_minecart':
-    case 'chest_boat':
       if (e.lootTable)          return tooltipText(label, 'Unopened', baby)
       if (e.chestItems?.length) return tooltipText(label, `${e.chestItems.length} item${e.chestItems.length !== 1 ? 's' : ''}`, baby)
       return tooltipText(label, 'Empty', baby)

@@ -2,7 +2,8 @@
 
 _Last surveyed: 2026-06-22. Updated 2026-06-22 after a full codebase review —
 corrected Bedrock support (we ship it), added the POI/overlay surface, noted the
-planned multiplayer proxy._
+planned multiplayer proxy. Added SeedMapper (xpple's in-game mod, and the
+reference consumer of our cubiomes upstream's Java bindings)._
 
 Sojourner is unusual in that it straddles two categories that the rest of the
 market serves with separate tools: **save-file world rendering** (render what
@@ -30,7 +31,7 @@ but reads no entities) does not.
   app doesn't fit cleanly.
 - **Not viable:** Steam and the Mac App Store (Minecraft trademark + sandboxing).
 
-## The four to watch
+## The five to watch
 
 ### uNmINeD — closest map-renderer rival
 Fast, polished 2D viewer (solid-color, or textured at ≥4:1 zoom), Java + Bedrock +
@@ -80,6 +81,35 @@ structure toggles, analysis tab (counts/sizes/positions).
   entities, or player data. Caps at 1.21 (we're at 26.2). Known 1.18+
   desert-pyramid / jungle-temple estimation failures.
 
+### SeedMapper — xpple's in-game seed mod (and our cubiomes upstream)
+A **Fabric client mod** (Java only, 1.13+), not a renderer — it predicts generation
+from a *known* seed and surfaces it **inside the running game**: in-world block
+highlights, a minimap HUD, an explorable `/sm:seedmap` GUI, and `/sm:locate` /
+`/sm:highlight` commands for structures, biomes, slime chunks, loot, and **ore veins**
+(copper/iron, with raw-ore distinction). Baritone integration can auto-mine to a
+located target. Requires the seed (crack with SeedCrackerX if unknown). Built on
+**xpple's cubiomes fork — the same one we vendor** — consumed via **jextract Java
+bindings** (the FFM API; this is exactly what `cubiomes/includes.txt` feeds).
+
+- **Categorically different:** an in-game assist for *playing* a known seed, not a
+  save-file inspector. It never reads your `.mca`; it shows the **pristine generated**
+  world (no builds, chests, entities, or modified terrain), Java-only. Different job,
+  different audience — closest in spirit to cubiomes-viewer, but live in-game.
+- **Beats us on:** living inside the game (highlight the block as you mine it),
+  minimap HUD, Baritone automation, and maturity/distribution (published, popular on
+  Modrinth).
+- **Lacks vs us:** everything from the actual save (real terrain, entities, block
+  entities, POI, difficulty), Bedrock, and a desktop map of *what you built*.
+- **Relationship, not rivalry — and a contribution lever:** xpple maintains the
+  cubiomes fork we depend on, and SeedMapper is the reference consumer of its Java
+  bindings. Our ore-vein work is directly useful to *him*: SeedMapper already
+  locates/highlights veins **per block** (our "footprint"), but has no per-chunk
+  **field/density** view. The `getOreVeinStrengthAt` helper we added (plus its
+  `includes.txt` line) would surface in SeedMapper's own bindings as a cheap "is there
+  a vein out that way?" primitive — scanning the veininess field is far cheaper than
+  walking `getOreVeinBlockAt` block-by-block to find a vein **at distance**. That's the
+  upstream-PR hook: it speeds up *his* `/sm:locate orevein`, not just our map.
+
 ## Feature matrix
 
 | Capability | **Sojourner** | uNmINeD | MinedMap | BlueMap | cubiomes-viewer |
@@ -105,11 +135,15 @@ structure toggles, analysis tab (counts/sizes/positions).
 | Platform | desktop (Tauri) | desktop | CLI | server | desktop (no mac) |
 | License / price | — | free | free MIT | free | free GPLv3 |
 
+_SeedMapper is omitted from this matrix on purpose — it's an in-game Fabric mod,
+not a save-file renderer, so most rows don't apply. See its section above; it shares
+our cubiomes engine but reads no `.mca` and shows only the pristine generated world._
+
 ## Takeaways
 
-1. **Entity + block-entity mapping is unclaimed.** Zero of the four read living
-   entities or containers/spawners/signs as grouped, queryable objects. Lead with
-   it.
+1. **Entity + block-entity mapping is unclaimed.** Zero of them read living
+   entities or containers/spawners/signs as grouped, queryable objects — not the
+   four renderers, not SeedMapper. Lead with it.
 2. **We're the only tool fusing both halves** — render-what-exists and
    compute-from-seed — in one app. Each competitor sits on one side of that line.
 3. **Bedrock data depth is uniquely ours.** uNmINeD renders Bedrock blocks but
@@ -182,5 +216,6 @@ demand is proven.
 - MinedMap — https://github.com/neocturne/MinedMap
 - BlueMap — https://bluemap.bluecolored.de/ · markers: https://bluemap.bluecolored.de/wiki/customization/Markers.html
 - cubiomes-viewer — https://github.com/Cubitect/cubiomes-viewer
+- SeedMapper (xpple) — https://github.com/xpple/SeedMapper · https://modrinth.com/mod/seedmapper
 - Chunkbase — https://www.chunkbase.com/apps/seed-map
 - mcview (Microsoft Store) — https://apps.microsoft.com/detail/9n91b7rljv9f

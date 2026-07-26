@@ -5,6 +5,20 @@ use std::sync::Mutex;
 // All FFI calls must be serialised through this lock.
 pub(super) static CUBIOMES_LOCK: Mutex<()> = Mutex::new(());
 
+/// Acquire `CUBIOMES_LOCK`, recovering from poison instead of propagating it.
+///
+/// A `.lock().unwrap()` on a poisoned mutex panics — and since a panic while
+/// *holding* this lock is exactly what poisons it, that first panic would
+/// otherwise kill worldgen/map rendering for the rest of the process (every
+/// later FFI call panics too, with no way back short of restarting the app).
+/// The guarded region only ever calls into cubiomes' C globals; a poisoning
+/// panic there means at worst a bad tile for the request that hit it, not a
+/// corrupted mutex we should keep honoring forever. Recovering treats a stale
+/// poisoned guard as if it were released cleanly — the safer choice.
+pub(super) fn lock_cubiomes() -> std::sync::MutexGuard<'static, ()> {
+    CUBIOMES_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 // Cooperative cancellation for long-running overlay computations.
 //
 // Overlay tiles all serialise on CUBIOMES_LOCK, so an abandoned tile (scrolled
@@ -39,6 +53,8 @@ unsafe extern "C" {
         dimension:  i32,
         flags:      i32,
     ) -> i32;
+
+    pub(super) fn cm_slot_matches(slot: i32, seed_low: i32, seed_high: i32, dimension: i32) -> i32;
 
     pub(super) fn cm_get_biome_region(
         slot:   i32,
@@ -141,6 +157,12 @@ unsafe extern "C" {
     pub(super) fn cm_free_string(ptr: *mut std::os::raw::c_char);
 
     pub(super) fn cm_item_name(global_id: i32, mc: i32) -> *const std::os::raw::c_char;
+
+    pub(super) fn cm_enchantment_name(ench: i32) -> *const std::os::raw::c_char;
+
+    pub(super) fn cm_potion_name_for_effect(effect: i32, duration: i32) -> *const std::os::raw::c_char;
+
+    pub(super) fn cm_get_end_gateway_links(slot: i32, out: *mut i32) -> i32;
 
     pub(super) fn cm_get_surface_heights(
         slot:   i32,

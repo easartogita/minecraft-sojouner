@@ -1,0 +1,60 @@
+plugins {
+    id 'java'
+    // NeoForge's ModDevGradle. Bump to the version that matches your NeoForge build.
+    id 'net.neoforged.moddev' version '2.0.+'
+}
+
+version = mod_version
+group   = mod_group
+
+base {
+    archivesName = mod_id
+}
+
+java {
+    // MC 1.21+ builds on Java 21. Raise this if your MC 26.x build requires newer.
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+}
+
+repositories {
+    mavenCentral()
+}
+
+neoForge {
+    version = project.neo_version
+
+    runs {
+        client { client() }
+        server { server() }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+dependencies {
+    // The mod is otherwise pure-vanilla; the only third-party code is the WebSocket
+    // server, embedded into the output jar via jarJar so no extra install is needed.
+    jarJar(implementation("org.java-websocket:Java-WebSocket:${java_websocket_version}"))
+}
+
+// Expand ${...} placeholders in neoforge.mods.toml at build time.
+tasks.named('processResources', ProcessResources).configure {
+    def replacements = [
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_license            : mod_license,
+        minecraft_version_range: minecraft_version_range,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+    ]
+    inputs.properties replacements
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand replacements
+    }
+}

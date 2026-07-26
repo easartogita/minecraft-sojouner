@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+build/
+# Wrapper jar is generated locally via `gradle wrapper`
+gradle/wrapper/gradle-wrapper.jar
+
+# NeoForge / ModDevGradle run + decompile caches
+run/
+runs/
+.neoforge/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.eclipse/
+bin/

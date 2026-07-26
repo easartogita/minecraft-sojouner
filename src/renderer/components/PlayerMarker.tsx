@@ -30,6 +30,40 @@ function blockRadiusToLeaflet(radius: number): number {
   return radius / BASE_BLOCKS_PER_PIXEL
 }
 
+// Block-accurate outline of the disc of `r` blocks around block (cx, cz).
+// Mob-spawn eligibility is a per-block Euclidean check (a block is inside when
+// a²+b² ≤ r²), so the no-spawn boundary is a rasterized staircase, not a smooth
+// circle. Traces the top edge left→right then the bottom edge right→left.
+function blockDiscOutline(cx: number, cz: number, r: number): L.LatLngExpression[] {
+  const pts: L.LatLngExpression[] = []
+  const push = (mcX: number, mcZ: number) => {
+    const { x: lng, y: lat } = minecraftToLeaflet(mcX, mcZ)
+    pts.push([lat, lng])
+  }
+  for (let a = -r; a <= r; a++) {
+    const b = Math.floor(Math.sqrt(r * r - a * a))
+    push(cx + a, cz + b + 1)          // top edge of this column (block cz+b)
+    push(cx + a + 1, cz + b + 1)
+  }
+  for (let a = r; a >= -r; a--) {
+    const b = Math.floor(Math.sqrt(r * r - a * a))
+    push(cx + a + 1, cz - b)          // bottom edge of this column (block cz-b)
+    push(cx + a, cz - b)
+  }
+  return pts
+}
+
+// A ridden mount is stored on the player (RootVehicle), not in the region
+// files, so its own marker vanishes — these surface it on the player marker.
+function titleCase(id: string): string {
+  return id.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
+}
+
 function PlayerMarker({ map }: { map: L.Map }) {
   const { state } = useApp()
   const layersRef = useRef<L.Layer[]>([])
@@ -71,11 +105,14 @@ function PlayerMarker({ map }: { map: L.Map }) {
       const { ring, glow } = colorFor(idx)
 
       if (showRadius && sameDimension) {
-        const inner = L.circle(latlng, {
-          radius: blockRadiusToLeaflet(24),
-          color: ring, weight: 1.5, opacity: 0.7,
-          fillColor: ring, fillOpacity: 0.07, interactive: false,
-        }).addTo(map)
+        // 24-block no-spawn: per-block check → block-accurate staircase outline,
+        // centred on the player's block.
+        const inner = L.polygon(
+          blockDiscOutline(Math.floor(displayX), Math.floor(displayZ), 24),
+          { color: ring, weight: 1.5, opacity: 0.7,
+            fillColor: ring, fillOpacity: 0.07, interactive: false },
+        ).addTo(map)
+        // 128-block despawn: continuous check on the mob's real position → smooth.
         const outer = L.circle(latlng, {
           radius: blockRadiusToLeaflet(128),
           color: ring, weight: 1.5, opacity: 0.5,
@@ -87,10 +124,23 @@ function PlayerMarker({ map }: { map: L.Map }) {
       const label = player.name || player.uuid.slice(0, 8)
       const dimSuffix = sameDimension ? '' : ' (projected)'
       const markerClass = sameDimension ? 'player-marker' : 'player-marker player-marker--cross-dim'
+
+      // Mounted indicator: a second label line — the mount's name if named, else
+      // its type — plus a hover title and full detail in the popup.
+      const mountTitle = player.mountType ? ` · riding ${titleCase(player.mountType)}` : ''
+      const mountDisplay = player.mountType ? (player.mountName || titleCase(player.mountType)) : null
+      const mountSub = mountDisplay
+        ? `<span class="player-marker__mount">(${escapeHtml(mountDisplay)})</span>`
+        : ''
+      const mountLine = player.mountType
+        ? `<div class="popup-coords">Riding: ${titleCase(player.mountType)}${
+            player.mountName ? ` — “${escapeHtml(player.mountName)}”` : ''}</div>`
+        : ''
+
       const icon = L.divIcon({
         className: '',
-        html: `<div class="${markerClass}" style="border-color:${ring};box-shadow:0 0 0 2px ${glow},0 1px 4px rgba(0,0,0,0.6)" title="${label}${dimSuffix}">
-          <div class="player-marker__label" style="color:${ring}">${label}</div>
+        html: `<div class="${markerClass}" style="border-color:${ring};box-shadow:0 0 0 2px ${glow},0 1px 4px rgba(0,0,0,0.6)" title="${label}${dimSuffix}${mountTitle}">
+          <div class="player-marker__label" style="color:${ring}">${escapeHtml(label)}${mountSub}</div>
         </div>`,
         iconSize: [14, 14],
         iconAnchor: [7, 7],
@@ -100,7 +150,8 @@ function PlayerMarker({ map }: { map: L.Map }) {
       marker.bindPopup(
         `<div class="popup-content">
           <div class="popup-title" style="color:${ring}">${label}${dimSuffix}</div>
-          <div class="popup-coords">X: ${Math.round(displayX)}, Z: ${Math.round(displayZ)}</div>
+          <div class="popup-coords">X: ${Math.round(displayX)}, Y: ${Math.round(player.y)}, Z: ${Math.round(displayZ)}</div>
+          ${mountLine}
           ${sameDimension ? '<div class="popup-hint">No-spawn: 24 blocks · Despawn: 128 blocks</div>' : ''}
         </div>`
       )

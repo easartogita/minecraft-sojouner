@@ -4,6 +4,7 @@ import { useTileStats } from '../../hooks/useTileStats'
 import { MC_VERSION_LABELS, MCVersionKey } from '../../lib/constants'
 import { WorldType } from '../../hooks/useSeed'
 import * as api from '../../lib/tauriAPI'
+import { IconFolder, IconBolt, IconDice, IconExport } from '../icons'
 
 const WORLD_TYPE_LABELS: Record<WorldType, string> = {
   default: 'Default', large_biomes: 'Large Biomes', amplified: 'Amplified',
@@ -40,6 +41,10 @@ export default function WorldFlyout({ onExport, onWorldSettings }: { onExport: (
   const [manualVersion, setManualVersion] = useState<MCVersionKey>('MC_1_21')
   const [manualWorldType, setManualWorldType] = useState<WorldType>('default')
   const [manualError, setManualError] = useState<string | null>(null)
+  // "From seed…" reveal in the loaded-world state (the no-world state shows
+  // seed entry permanently)
+  const [showSeedEntry, setShowSeedEntry] = useState(false)
+  const [showGameRules, setShowGameRules] = useState(false)
 
   useEffect(() => {
     api.listSavesWorlds().then(setSavesWorlds).catch(() => setSavesWorlds([]))
@@ -99,7 +104,43 @@ export default function WorldFlyout({ onExport, onWorldSettings }: { onExport: (
     ? state.levelDatPath.split('/').slice(-3).join('/')
     : null
 
+  // Shared seed-entry block: input + dice, version/world-type, Load.
+  const seedEntry = (
+    <>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+        <input
+          type="text"
+          className="seed-manual-input"
+          style={{ flex: 1, minWidth: 0 }}
+          placeholder="Seed"
+          value={manualSeed}
+          onChange={e => { setManualSeed(e.target.value); setManualError(null) }}
+          onKeyDown={e => e.key === 'Enter' && handleManualSeed()}
+        />
+        <button className="btn-sm btn-sm--icon" onClick={randomizeSeed} title="Random seed"><IconDice /></button>
+      </div>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+        <select className="version-select" style={{ flex: 1 }} value={manualVersion}
+          onChange={e => setManualVersion(e.target.value as MCVersionKey)}>
+          {MC_VERSION_LABELS.map(v => <option key={v.key} value={v.key}>{v.label}</option>)}
+        </select>
+        <select className="version-select" style={{ flex: 1 }} value={manualWorldType}
+          onChange={e => setManualWorldType(e.target.value as WorldType)}>
+          <option value="default">Default</option>
+          <option value="large_biomes">Large Biomes</option>
+          <option value="amplified">Amplified</option>
+        </select>
+      </div>
+      <button className="btn-primary" onClick={handleManualSeed} style={{ width: '100%' }}>Load</button>
+      {manualError && <div style={{ fontSize: 10, color: '#c0392b', marginTop: 4 }}>{manualError}</div>}
+    </>
+  )
+
   const isBedrockWorld = state.seedData?.edition === 'bedrock'
+  // "vanilla" is the standard singleplayer brand; anything else is worth flagging
+  // since cubiomes predictions assume vanilla worldgen.
+  const nonVanillaBrands = (state.seedData?.serverBrands ?? []).filter(b => b.toLowerCase() !== 'vanilla')
+  const gameRuleEntries = Object.entries(state.seedData?.gameRules ?? {}).sort(([a], [b]) => a.localeCompare(b))
 
   return (
     <div className="flyout-panel">
@@ -122,7 +163,7 @@ export default function WorldFlyout({ onExport, onWorldSettings }: { onExport: (
 
             {fileName && (
               <div className="seed-path" title={state.levelDatPath ?? ''} style={{ marginBottom: 8 }}>
-                📁 {fileName}
+                <IconFolder className="icon-inline" /> {fileName}
               </div>
             )}
 
@@ -180,12 +221,39 @@ export default function WorldFlyout({ onExport, onWorldSettings }: { onExport: (
               </>
             )}
 
+            {nonVanillaBrands.length > 0 && (
+              <div style={{ marginBottom: 6 }}>
+                <span className="server-brand-badge"
+                  title={`Server brand${nonVanillaBrands.length > 1 ? 's' : ''}: ${nonVanillaBrands.join(', ')} — cubiomes predictions assume vanilla worldgen and may not match a modded server`}>
+                  ⚠ {nonVanillaBrands.join(', ')}
+                </span>
+              </div>
+            )}
+
+            {gameRuleEntries.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <div className="recent-worlds-more" onClick={() => setShowGameRules(v => !v)}>
+                  {showGameRules ? 'hide game rules' : `game rules (${gameRuleEntries.length})…`}
+                </div>
+                {showGameRules && (
+                  <div className="game-rules-list">
+                    {gameRuleEntries.map(([rule, value]) => (
+                      <div key={rule} className="game-rules-row">
+                        <span className="game-rules-name">{rule}</span>
+                        <span className="game-rules-value">{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flyout-world-actions">
               <button className="flyout-world-action-btn" onClick={onExport} title="Export the visible map area as a TIFF image">
-                ⬇ Export TIFF
+                <IconExport className="icon-inline" /> Export TIFF
               </button>
               <button className="flyout-world-action-btn" onClick={onWorldSettings} title="Pre-generate tile cache and world settings">
-                ⚡ Pre-generate
+                <IconBolt className="icon-inline" /> Pre-generate
               </button>
             </div>
 
@@ -209,13 +277,16 @@ export default function WorldFlyout({ onExport, onWorldSettings }: { onExport: (
                   </div>
                 )}
                 <div className="recent-worlds-more" onClick={browseWorldFolder}>Browse…</div>
+                <div className="recent-worlds-more" onClick={() => setShowSeedEntry(v => !v)}>From seed…</div>
               </div>
             )}
             {(!savesWorlds || savesWorlds.length === 0) && (
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
                 <button className="btn-sm" onClick={browseWorldFolder}>Change world</button>
+                <button className="btn-sm" onClick={() => setShowSeedEntry(v => !v)}>From seed…</button>
               </div>
             )}
+            {showSeedEntry && <div style={{ marginTop: 6 }}>{seedEntry}</div>}
           </>
         ) : (
           <>
@@ -241,32 +312,7 @@ export default function WorldFlyout({ onExport, onWorldSettings }: { onExport: (
               </button>
             )}
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>Or enter a seed:</div>
-            <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
-              <input
-                type="text"
-                className="seed-manual-input"
-                style={{ flex: 1, minWidth: 0 }}
-                placeholder="Seed"
-                value={manualSeed}
-                onChange={e => { setManualSeed(e.target.value); setManualError(null) }}
-                onKeyDown={e => e.key === 'Enter' && handleManualSeed()}
-              />
-              <button className="btn-sm" onClick={randomizeSeed} title="Random seed">🎲</button>
-            </div>
-            <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
-              <select className="version-select" style={{ flex: 1 }} value={manualVersion}
-                onChange={e => setManualVersion(e.target.value as MCVersionKey)}>
-                {MC_VERSION_LABELS.map(v => <option key={v.key} value={v.key}>{v.label}</option>)}
-              </select>
-              <select className="version-select" style={{ flex: 1 }} value={manualWorldType}
-                onChange={e => setManualWorldType(e.target.value as WorldType)}>
-                <option value="default">Default</option>
-                <option value="large_biomes">Large Biomes</option>
-                <option value="amplified">Amplified</option>
-              </select>
-            </div>
-            <button className="btn-primary" onClick={handleManualSeed} style={{ width: '100%' }}>Load</button>
-            {manualError && <div style={{ fontSize: 10, color: '#c0392b', marginTop: 4 }}>{manualError}</div>}
+            {seedEntry}
           </>
         )}
       </div>

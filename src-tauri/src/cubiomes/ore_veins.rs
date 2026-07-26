@@ -1,5 +1,5 @@
 use super::{
-    CUBIOMES_LOCK, take_cancelled,
+    lock_cubiomes, take_cancelled,
     cm_get_ore_veins_at2, cm_generate_ore_features, cm_get_ore_vein_columns, cm_free_results,
     seed_parts, seed_from_parts,
 };
@@ -13,7 +13,7 @@ pub fn get_ore_veins_at(seed: i64, cx: i32, cz: i32) -> (i32, i32, i32, i32) {
     let mut copper_sz = 0i32;
     let mut iron_y    = i32::MIN;
     let mut iron_sz   = 0i32;
-    let _guard = CUBIOMES_LOCK.lock().unwrap();
+    let _guard = lock_cubiomes();
     unsafe {
         cm_get_ore_veins_at2(lo, hi, cx, cz,
             &mut copper_y, &mut copper_sz,
@@ -47,8 +47,12 @@ pub async fn cubiomes_generate_ore_features(
     cx0: i32, cz0: i32, cx1: i32, cz1: i32, req_id: u64,
 ) -> Vec<i32> {
     tauri::async_runtime::spawn_blocking(move || {
+        // Same chunk-count cap as structures.rs's region cap: reject an
+        // out-of-range request before it can size a C-side allocation off
+        // unclamped nx*nz.
+        if (cx1 - cx0 + 1).saturating_mul(cz1 - cz0 + 1) > 65536 { return Vec::new(); }
         // Hold the lock across the whole call so the generator slot can't be recycled.
-        let _guard = CUBIOMES_LOCK.lock().unwrap();
+        let _guard = lock_cubiomes();
         // Bail if the tile was abandoned while we waited for the lock.
         if take_cancelled(req_id) { return Vec::new(); }
         let ptr = unsafe {
@@ -79,8 +83,12 @@ pub async fn cubiomes_get_ore_vein_columns(
     slot: i32, cx0: i32, cz0: i32, cx1: i32, cz1: i32, req_id: u64,
 ) -> Vec<i32> {
     tauri::async_runtime::spawn_blocking(move || {
+        // Same chunk-count cap as structures.rs's region cap: reject an
+        // out-of-range request before it can size a C-side allocation off
+        // unclamped nx*nz.
+        if (cx1 - cx0 + 1).saturating_mul(cz1 - cz0 + 1) > 65536 { return Vec::new(); }
         // Hold the lock across the whole call so the generator slot can't be recycled.
-        let _guard = CUBIOMES_LOCK.lock().unwrap();
+        let _guard = lock_cubiomes();
         // Bail if the tile was abandoned while we waited for the lock.
         if take_cancelled(req_id) { return Vec::new(); }
         let ptr = unsafe { cm_get_ore_vein_columns(slot, cx0, cz0, cx1, cz1) };
@@ -107,6 +115,10 @@ pub async fn cubiomes_get_ore_veins_ex(
 ) -> Vec<i32> {
     let seed = seed_from_parts(seed_low, seed_high);
     tauri::async_runtime::spawn_blocking(move || {
+        // Same chunk-count cap as structures.rs's region cap: this path
+        // allocates directly in Rust (no C bridge), so an unclamped range
+        // would still be a self-inflicted huge-Vec allocation.
+        if (cx1 - cx0 + 1).saturating_mul(cz1 - cz0 + 1) > 65536 { return Vec::new(); }
         let w = (cx1 - cx0 + 1) as usize;
         let n = w * (cz1 - cz0 + 1) as usize;
         let mut result = vec![i32::MIN; n * 4];

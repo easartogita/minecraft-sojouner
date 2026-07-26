@@ -23,6 +23,8 @@ interface Props extends ContextMenuState {
   onAddPin:          (x: number, z: number) => void
   onDeletePin?:      (id: string)            => void
   onCenter:          (x: number, z: number)  => void
+  onStartRoute:      (x: number, z: number)  => void
+  onAddRoutePoint?:  () => void   // defined only when a route is active but not being edited
   onPinBestCopper?:  () => void   // defined only when copper veins are visible
   onPinBestIron?:    () => void   // defined only when iron veins are visible
   onClose:           () => void
@@ -34,7 +36,7 @@ export default function MapContextMenu({
   screenX, screenY, blockX, blockZ, blockY,
   markerKind, pinId, markerLabel,
   dimension,
-  onAddPin, onDeletePin, onCenter,
+  onAddPin, onDeletePin, onCenter, onStartRoute, onAddRoutePoint,
   onPinBestCopper, onPinBestIron,
   onClose,
 }: Props) {
@@ -121,6 +123,20 @@ export default function MapContextMenu({
         <button className="ctx-item" onClick={() => { onAddPin(blockX, blockZ); onClose() }}>
           <CtxIcon d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
           Add pin
+        </button>
+      )}
+
+      {isBackground && (
+        <button className="ctx-item" onClick={() => { onStartRoute(blockX, blockZ); onClose() }}>
+          <CtxIcon d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z" />
+          Start route here
+        </button>
+      )}
+
+      {isBackground && onAddRoutePoint && (
+        <button className="ctx-item" onClick={() => { onAddRoutePoint(); onClose() }}>
+          <CtxIcon d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+          Add point to route
         </button>
       )}
 

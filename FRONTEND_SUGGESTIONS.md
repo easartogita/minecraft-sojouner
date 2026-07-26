@@ -1,6 +1,6 @@
 # Frontend improvement ideas
 
-Suggestions for Minecraft Sojourner from the perspective of a player and a server operator. Organized by audience, with a final cross-cutting section for general UX wins.
+Suggestions for Sojourner from the perspective of a player and a server operator. Organized by audience, with a final cross-cutting section for general UX wins.
 
 ---
 
@@ -8,7 +8,7 @@ Suggestions for Minecraft Sojourner from the perspective of a player and a serve
 
 ### Navigation & wayfinding
 
-- **Distance / ruler tool.** Click two points → blocks, chunks, and walking-time estimate. Polyline mode for multi-leg travel routes.
+- **Route planner.** Largely shipped — per-leg travel modes, biome-aware boat/foot splitting, nether-highway timing, and named saved routes are all in. See `TODO_WAYPOINTS.md` for the shipped checklist and what's still open (waypoint snapping, mid-route editing, Road Maker/Finder).
 - **Stronghold ring overlay.** cubiomes already exposes stronghold positions. Players ask for this constantly.
 - **Spawn-chunks ring** — the always-loaded 19×19 chunks around world spawn. Useful for AFK builds, farms, and answering "why is this chunk always loaded?".
 - **Nether portal helper.** When a pin or structure is selected, show "your OW portal should be at X/Z to land here in Nether." Better than the current dual-coord display.

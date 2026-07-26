@@ -7,10 +7,10 @@ import { MC_VERSION_LABELS, MC_VERSIONS, MCVersionKey } from './lib/constants'
 import { WorldType } from './hooks/useSeed'
 import * as api from './lib/tauriAPI'
 import { listen } from '@tauri-apps/api/event'
-import { getBiomeQueue } from './components/BiomeTileLayer'
-import { getChunkQueue } from './components/ChunkOverlayLayer'
+import { getAllQueues } from './lib/tileJobQueue'
 import MapView from './components/MapView'
 import Rail from './components/Rail'
+import { IconPickaxe, IconDice } from './components/icons'
 import './styles/app.css'
 
 // Contexts
@@ -73,7 +73,7 @@ export default function App() {
           const { playerX, playerZ } = state.seedData ?? {}
           if (playerX != null && playerZ != null && mapRef.current) {
             const { x: lng, y: lat } = minecraftToLeaflet(playerX, playerZ)
-            mapRef.current.setView(L.latLng(lat, lng), mapRef.current.getZoom())
+            mapRef.current.flyTo(L.latLng(lat, lng), mapRef.current.getZoom())
           }
           break
         }
@@ -86,8 +86,16 @@ export default function App() {
             dispatch({ type: 'TOGGLE_CHUNK_DATA' } as never)
           break
         case 'v':
-          if (state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'])
-            dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)
+          if (state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18']) {
+            if (!state.showOreVeins) {
+              dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)
+              dispatch({ type: 'SET_ORE_VEIN_MODE', mode: 'density' } as never)
+            } else if (state.oreVeinMode === 'density') {
+              dispatch({ type: 'SET_ORE_VEIN_MODE', mode: 'footprint' } as never)
+            } else {
+              dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)
+            }
+          }
           break
         case 'r':
           dispatch({ type: 'RULER_TOGGLE' } as never)
@@ -96,18 +104,16 @@ export default function App() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [dispatch, openLevelDat, state.dimension, state.worldDir, state.selectedVersion, state.seedData?.playerY])
+  }, [dispatch, openLevelDat, state.dimension, state.worldDir, state.selectedVersion, state.seedData?.playerY, state.showOreVeins, state.oreVeinMode])
 
-  // Pause tile queues while the window is hidden to prevent WebKit from crashing
-  // when createImageBitmap / canvas ops fire while the renderer is throttled.
+  // Pause ALL tile queues while the window is hidden to prevent WebKit from
+  // crashing when createImageBitmap / canvas ops fire while the renderer is
+  // throttled. Enumerated from the registry so every layer's queue is covered,
+  // not just biome + chunk (overlay queues were previously left running hidden).
   useEffect(() => {
     const update = () => {
-      const queues = [getBiomeQueue(), getChunkQueue()]
-      if (document.hidden) {
-        queues.forEach(q => q.pause())
-      } else {
-        queues.forEach(q => q.resume())
-      }
+      const hidden = document.hidden
+      getAllQueues().forEach(q => hidden ? q.pause() : q.resume())
     }
     document.addEventListener('visibilitychange', update)
     return () => document.removeEventListener('visibilitychange', update)
@@ -212,6 +218,21 @@ function EmptyState({ onOpen, onLoad, dispatch, recentWorlds }: {
     } as never)
   }
 
+  // Same behavior as the World flyout's dice: fill the field and load immediately.
+  const randomizeSeed = () => {
+    const arr = new BigInt64Array(1)
+    crypto.getRandomValues(arr)
+    const seed = arr[0].toString()
+    setManualSeed(seed)
+    setSeedError(null)
+    dispatch({
+      type: 'SET_MANUAL_SEED',
+      seed,
+      version: manualVersion,
+      worldType: manualWorldType,
+    } as never)
+  }
+
   const WORLD_TYPE_OPTIONS: WorldType[] = ['default', 'large_biomes', 'amplified', 'flat', 'single_biome', 'custom']
   const WORLD_TYPE_LABELS: Record<WorldType, string> = {
     default: 'Default', large_biomes: 'Large Biomes', amplified: 'Amplified',
@@ -229,8 +250,8 @@ function EmptyState({ onOpen, onLoad, dispatch, recentWorlds }: {
         // HTML5 drop: try to get file names for feedback (actual paths come via tauri://file-drop)
       }}
     >
-      <div className="empty-icon">⛏</div>
-      <h2>Minecraft Sojourner</h2>
+      <div className="empty-icon"><IconPickaxe size={48} /></div>
+      <h2 className="wordmark">Sojourner</h2>
 
       {!showSeedForm ? (
         <>
@@ -267,15 +288,20 @@ function EmptyState({ onOpen, onLoad, dispatch, recentWorlds }: {
         </>
       ) : (
         <div className="empty-seed-form">
-          <input
-            className="empty-seed-input"
-            type="text"
-            placeholder="Seed (number or text)"
-            value={manualSeed}
-            onChange={e => setManualSeed(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleManualSeed()}
-            autoFocus
-          />
+          <div className="empty-seed-row">
+            <input
+              className="empty-seed-input"
+              type="text"
+              placeholder="Seed (number or text)"
+              value={manualSeed}
+              onChange={e => setManualSeed(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleManualSeed()}
+              autoFocus
+            />
+            <button className="btn-sm btn-sm--icon" onClick={randomizeSeed} title="Random seed">
+              <IconDice />
+            </button>
+          </div>
           <div className="empty-seed-options">
             <select
               className="version-select"

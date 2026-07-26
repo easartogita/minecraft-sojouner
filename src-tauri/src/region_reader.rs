@@ -1,4 +1,4 @@
-use crate::block_colors::block_name_to_rgb;
+use crate::block_colors::block_name_to_rgb_in_biome;
 use fastnbt::Value;
 use flate2::read::{GzDecoder, ZlibDecoder};
 use serde::Serialize;
@@ -159,6 +159,35 @@ struct SectionView<'a> {
     palette: Vec<&'a str>,  // block names (without minecraft: prefix where possible)
     data:    &'a [i64],
     bpv:     u32,           // bits per value
+    biomes:  Option<BiomeView<'a>>,
+}
+
+/// 1.18+ per-section biome palette: 4×4×4 cells, packed like block states but
+/// with no 4-bit minimum on the index width.
+struct BiomeView<'a> {
+    palette: Vec<&'a str>,
+    data:    &'a [i64],
+    bpv:     u32,
+}
+
+fn parse_biomes(section: &Value) -> Option<BiomeView<'_>> {
+    let b = get(section, "biomes")?;
+    let palette_vals = get(b, "palette").and_then(as_list)?;
+    let palette: Vec<&str> = palette_vals
+        .iter()
+        .filter_map(as_str)
+        .map(|s| s.strip_prefix("minecraft:").unwrap_or(s))
+        .collect();
+    if palette.is_empty() {
+        return None;
+    }
+    let data = get(b, "data").and_then(as_long_array).unwrap_or(&[]);
+    let bpv = if palette.len() <= 1 {
+        0
+    } else {
+        (palette.len() as f32).log2().ceil() as u32
+    };
+    Some(BiomeView { palette, data, bpv })
 }
 
 fn parse_section(section: &Value) -> Option<SectionView<'_>> {
@@ -188,7 +217,7 @@ fn parse_section(section: &Value) -> Option<SectionView<'_>> {
     }
     .max(4);
 
-    Some(SectionView { palette, data, bpv })
+    Some(SectionView { palette, data, bpv, biomes: parse_biomes(section) })
 }
 
 fn get_block_name_in_section<'a>(sv: &'a SectionView<'a>, local_y: usize, bx: usize, bz: usize) -> &'a str {
@@ -203,6 +232,16 @@ fn get_block_name_in_section<'a>(sv: &'a SectionView<'a>, local_y: usize, bx: us
     sv.palette.get(palette_idx).copied().unwrap_or("air")
 }
 
+fn get_biome_in_section<'a>(sv: &'a SectionView<'a>, local_y: usize, bx: usize, bz: usize) -> &'a str {
+    let Some(bv) = &sv.biomes else { return "" };
+    if bv.palette.len() == 1 || bv.data.is_empty() {
+        return bv.palette.first().copied().unwrap_or("");
+    }
+    let cell_idx = (local_y / 4) * 16 + (bz / 4) * 4 + (bx / 4);
+    let palette_idx = unpack_long(bv.data, cell_idx, bv.bpv) as usize;
+    bv.palette.get(palette_idx).copied().unwrap_or("")
+}
+
 // ── Main extraction ───────────────────────────────────────────────────────────
 
 const AIR: &[&str] = &["air", "cave_air", "void_air"];
@@ -211,15 +250,17 @@ fn is_air(name: &str) -> bool {
     AIR.contains(&name)
 }
 
-/// Extract the surface block (name + Y) for each of the 256 columns in a chunk.
-/// Returns an empty slice when the chunk is not fully generated.
+/// Extract the surface block (name + Y + biome) for each of the 256 columns in
+/// a chunk. The biome is the 1.18+ per-section palette entry at the surface
+/// cell ("" for pre-1.18 chunks). Returns an empty slice when the chunk is not
+/// fully generated.
 fn extract_surface(
     chunk: &Value,
     hide_water: bool,
     cave_y: Option<i32>,
     cave_scan_low: i32,
     cave_scan_high: i32,
-) -> Vec<(String, i32)> {
+) -> Vec<(String, i32, String)> {
     // Prefer 1.18+ root-level Status; older worlds have it under "Level"
     let root = if get(chunk, "Status").is_some() {
         chunk
@@ -255,21 +296,15 @@ fn extract_surface(
         .unwrap_or(&[]);
 
     // A full heightmap is 37 packed longs (256 columns × 9 bits). Anything shorter
-    // means the chunk hasn't been terrained yet — skip it (biome layer shows).
-    if hm_longs.len() < 37 {
-        return vec![];
-    }
+    // means no usable heightmap — but the chunk may still be terrained. Proto-chunks
+    // at the exploration frontier (e.g. `carvers` status) carry real terrain sections
+    // with NO Heightmaps at all; those must be rendered by scanning the sections
+    // top-down for the surface, or they'd leave a blank seam (the biome layer shows
+    // through). Only truly-empty chunks (no terrain) fall through to the empty return.
+    let has_heightmap = hm_longs.len() >= 37;
 
     let y_pos: i32 = get(root, "yPos").and_then(as_i32).unwrap_or(-4);
     let min_y = y_pos * 16;
-
-    let get_height_y = |col: usize| -> i32 {
-        if hm_longs.len() < 37 {
-            return 64;
-        }
-        let raw = unpack_long(hm_longs, col, 9) as i32;
-        raw + min_y - 1 // -1: actual block, not the air above
-    };
 
     // Build section map: sectionY → parsed SectionView
     let sections_list = get(root, "sections")
@@ -286,6 +321,12 @@ fn extract_surface(
         }
     }
 
+    // Without a heightmap, a chunk with no non-air blocks has nothing to draw.
+    let has_terrain = section_map.values().any(|sv| sv.palette.iter().any(|n| !is_air(n)));
+    if !has_heightmap && !has_terrain {
+        return vec![];
+    }
+
     let get_block = |y: i32, bx: usize, bz: usize| -> &str {
         let section_y = y.div_euclid(16);
         let local_y = y.rem_euclid(16) as usize;
@@ -295,7 +336,43 @@ fn extract_surface(
             .unwrap_or("air")
     };
 
-    let mut result: Vec<(String, i32)> = vec![(String::new(), 0); 256];
+    let biome_at = |y: i32, bx: usize, bz: usize| -> String {
+        let section_y = y.div_euclid(16);
+        let local_y = y.rem_euclid(16) as usize;
+        section_map
+            .get(&section_y)
+            .map(|sv| get_biome_in_section(sv, local_y, bx, bz))
+            .unwrap_or("")
+            .to_string()
+    };
+
+    // Top of the populated section range — the start point for the scan fallback.
+    let scan_top = section_map.keys().copied().max().map(|sy| sy * 16 + 15).unwrap_or(min_y);
+
+    // Surface Y for a column: from the heightmap when present, else scanned from the
+    // top of the sections down to the first non-air block. When hiding water the scan
+    // also skips water/ice so it lands on the ocean floor (mirrors OCEAN_FLOOR).
+    let get_height_y = |col: usize| -> i32 {
+        if has_heightmap {
+            let raw = unpack_long(hm_longs, col, 9) as i32;
+            return raw + min_y - 1; // -1: actual block, not the air above
+        }
+        let bx = col % 16;
+        let bz = col / 16;
+        let mut y = scan_top;
+        while y >= min_y {
+            let b = get_block(y, bx, bz);
+            let skip = is_air(b)
+                || (hide_water && matches!(b, "water" | "ice" | "frosted_ice" | "bubble_column"));
+            if !skip {
+                return y;
+            }
+            y -= 1;
+        }
+        min_y - 1 // all air in this column → get_block returns air → transparent pixel
+    };
+
+    let mut result: Vec<(String, i32, String)> = vec![(String::new(), 0, String::new()); 256];
 
     for col in 0..256usize {
         let bx = col % 16;
@@ -305,7 +382,11 @@ fn extract_surface(
             // Cave mode: scan for a floor (non-air block with air above it)
             let lo = (center_y + cave_scan_low).max(min_y);
             let hi = (center_y + cave_scan_high).min(get_height_y(col) - 1);
-            let scan_start = center_y.min(hi);
+            if hi < lo { continue; } // window entirely above the surface here → transparent
+            // Start nearest the anchor but *inside* the window — the anchor may sit
+            // outside it entirely (unlocked gauge), and both scan legs must stay
+            // within [lo, hi] or floors outside the window leak into the render.
+            let scan_start = center_y.clamp(lo, hi);
 
             let find_floor = |from: i32, to: i32, step: i32| -> Option<(String, i32)> {
                 let mut y = from;
@@ -324,8 +405,10 @@ fn extract_surface(
             };
 
             let hit = find_floor(scan_start, lo, -1)
-                .or_else(|| if hi > center_y { find_floor(center_y + 1, hi, 1) } else { None });
-            result[col] = hit.unwrap_or_default();
+                .or_else(|| if hi > scan_start { find_floor(scan_start + 1, hi, 1) } else { None });
+            result[col] = hit
+                .map(|(name, y)| { let b = biome_at(y, bx, bz); (name, y, b) })
+                .unwrap_or_default();
         } else {
             // Surface mode: use heightmap, then refine for ice/water-hide case
             let block_y = get_height_y(col);
@@ -345,15 +428,15 @@ fn extract_surface(
                     if is_air(below) {
                         break;
                     }
-                    result[col] = (below.to_string(), y);
+                    result[col] = (below.to_string(), y, biome_at(y, bx, bz));
                     found = true;
                     break;
                 }
                 if !found {
-                    result[col] = (name.to_string(), block_y);
+                    result[col] = (name.to_string(), block_y, biome_at(block_y, bx, bz));
                 }
             } else {
-                result[col] = (name.to_string(), block_y);
+                result[col] = (name.to_string(), block_y, biome_at(block_y, bx, bz));
             }
         }
     }
@@ -465,6 +548,18 @@ pub fn find_poi_file(world_dir: &str, dimension: &str, rx: i32, rz: i32) -> Opti
 
 /// Parse one chunk's RGBA colors from a decompressed .mca buffer.
 /// Returns None when the chunk doesn't exist or isn't fully generated.
+/// Outcome of reading one chunk from a region buffer.
+enum ChunkParse {
+    Colors(ChunkColors),
+    /// Legitimately nothing to draw — no sector allocated, or a valid chunk with no
+    /// terrain yet (e.g. `structure_starts`). Safe to render transparent and cache.
+    Absent,
+    /// Chunk IS present but unreadable — offset/length past EOF, or the payload won't
+    /// decompress/parse. That means Minecraft is mid-flush (region writes are
+    /// non-atomic). The tile must NOT be frozen from this read; re-render when settled.
+    Torn,
+}
+
 fn parse_chunk_colors(
     file_buf: &[u8],
     local_x: usize,
@@ -473,10 +568,10 @@ fn parse_chunk_colors(
     cave_y: Option<i32>,
     cave_scan_low: i32,
     cave_scan_high: i32,
-) -> Option<ChunkColors> {
+) -> ChunkParse {
     let header_offset = 4 * (local_x + local_z * 32);
     if header_offset + 4 > file_buf.len() {
-        return None;
+        return ChunkParse::Absent;
     }
 
     let sector_offset = ((file_buf[header_offset] as usize) << 16)
@@ -485,12 +580,12 @@ fn parse_chunk_colors(
     let sector_count = file_buf[header_offset + 3] as usize;
 
     if sector_offset == 0 || sector_count == 0 {
-        return None;
+        return ChunkParse::Absent; // no sector allocated → chunk genuinely not here
     }
 
     let byte_offset = sector_offset * 4096;
     if byte_offset + 5 > file_buf.len() {
-        return None;
+        return ChunkParse::Torn; // offset points past EOF → sectors mid-write
     }
 
     let data_len = u32::from_be_bytes([
@@ -502,30 +597,34 @@ fn parse_chunk_colors(
     let compression = file_buf[byte_offset + 4];
 
     if data_len <= 1 {
-        return None;
+        return ChunkParse::Torn; // allocated sector but no payload yet
     }
 
     let data_end = byte_offset + 5 + (data_len - 1);
     if data_end > file_buf.len() {
-        return None;
+        return ChunkParse::Torn; // length header claims more than the file holds
     }
 
     let compressed = &file_buf[byte_offset + 5..data_end];
-    let raw = decompress_chunk(compressed, compression)?;
-    let chunk_val: Value = fastnbt::from_bytes(&raw).ok()?;
+    let Some(raw) = decompress_chunk(compressed, compression) else {
+        return ChunkParse::Torn; // payload won't decompress → half-written
+    };
+    let Ok(chunk_val) = fastnbt::from_bytes::<Value>(&raw) else {
+        return ChunkParse::Torn; // decompressed but not valid NBT → half-written
+    };
 
     let surface = extract_surface(&chunk_val, hide_water, cave_y, cave_scan_low, cave_scan_high);
     if surface.is_empty() {
-        return None;
+        return ChunkParse::Absent; // valid chunk, just no terrain to draw yet
     }
 
     let mut rgba = vec![0u8; 16 * 16 * 4];
-    for (i, (name, y)) in surface.iter().enumerate() {
+    for (i, (name, y, biome)) in surface.iter().enumerate() {
         if name.is_empty() {
             continue; // alpha = 0 → transparent (no data)
         }
         let base = if let Some(rest) = name.strip_prefix("minecraft:") { rest } else { name };
-        let [r, g, b] = block_name_to_rgb(base, *y);
+        let [r, g, b] = block_name_to_rgb_in_biome(base, *y, biome);
         rgba[i * 4]     = r;
         rgba[i * 4 + 1] = g;
         rgba[i * 4 + 2] = b;
@@ -533,7 +632,7 @@ fn parse_chunk_colors(
         rgba[i * 4 + 3] = ((y + 64).clamp(1, 255)) as u8;
     }
 
-    Some(rgba)
+    ChunkParse::Colors(rgba)
 }
 
 // ── Cave entrance detection ───────────────────────────────────────────────────
@@ -674,6 +773,9 @@ pub struct ChunkResult {
     pub cx:     i32,
     pub cz:     i32,
     pub colors: Option<Vec<u8>>, // base64-encoded by Tauri serialisation
+    /// True when the chunk is present on disk but was read torn (Minecraft mid-flush).
+    /// The tile renderer uses this to avoid freezing an incomplete render into cache.
+    pub torn:   bool,
 }
 
 /// Read chunk colors directly from .mca, no caching.
@@ -695,12 +797,13 @@ pub fn read_chunk_colors_from_mca(
         by_region.entry((rx, rz)).or_default().push(req);
     }
 
-    let mut results: HashMap<(i32, i32), Option<Vec<u8>>> = HashMap::new();
+    // (colors, torn) per chunk
+    let mut results: HashMap<(i32, i32), (Option<Vec<u8>>, bool)> = HashMap::new();
 
     for ((rx, rz), region_chunks) in &by_region {
         let Some(mca_path) = find_region_file(world_dir, dimension, *rx, *rz) else {
             for req in region_chunks {
-                results.insert((req.cx, req.cz), None);
+                results.insert((req.cx, req.cz), (None, false)); // no file → genuinely absent
             }
             continue;
         };
@@ -709,8 +812,9 @@ pub fn read_chunk_colors_from_mca(
         let file_buf = match std::fs::read(&mca_path) {
             Ok(b) if b.len() >= 4096 => b,
             _ => {
+                // File exists but is unreadable / smaller than its headers → mid-write.
                 for req in region_chunks {
-                    results.insert((req.cx, req.cz), None);
+                    results.insert((req.cx, req.cz), (None, true));
                 }
                 continue;
             }
@@ -719,25 +823,20 @@ pub fn read_chunk_colors_from_mca(
         for req in region_chunks {
             let lx = req.cx.rem_euclid(32) as usize;
             let lz = req.cz.rem_euclid(32) as usize;
-            let colors = parse_chunk_colors(
-                &file_buf,
-                lx,
-                lz,
-                hide_water,
-                cave_y,
-                cave_scan_low,
-                cave_scan_high,
-            );
-            results.insert((req.cx, req.cz), colors);
+            let entry = match parse_chunk_colors(&file_buf, lx, lz, hide_water, cave_y, cave_scan_low, cave_scan_high) {
+                ChunkParse::Colors(c) => (Some(c), false),
+                ChunkParse::Absent    => (None, false),
+                ChunkParse::Torn      => (None, true),
+            };
+            results.insert((req.cx, req.cz), entry);
         }
     }
 
     chunks
         .iter()
-        .map(|req| ChunkResult {
-            cx:     req.cx,
-            cz:     req.cz,
-            colors: results.remove(&(req.cx, req.cz)).flatten(),
+        .map(|req| {
+            let (colors, torn) = results.remove(&(req.cx, req.cz)).unwrap_or((None, false));
+            ChunkResult { cx: req.cx, cz: req.cz, colors, torn }
         })
         .collect()
 }
@@ -825,10 +924,10 @@ pub fn get_chunk_info_from_mca(
     let surface = extract_surface(&chunk_val, hide_water, cave_y, cave_scan_low, cave_scan_high);
     let surface_entry = surface.get(block_z.rem_euclid(16) as usize * 16 + block_x.rem_euclid(16) as usize);
     let block_name = surface_entry
-        .and_then(|(name, _)| if name.is_empty() { None } else { Some(name.as_str()) })
+        .and_then(|(name, _, _)| if name.is_empty() { None } else { Some(name.as_str()) })
         .map(|name| name.strip_prefix("minecraft:").unwrap_or(name).to_string());
     let block_y = surface_entry
-        .and_then(|(name, y)| if name.is_empty() { None } else { Some(*y) });
+        .and_then(|(name, y, _)| if name.is_empty() { None } else { Some(*y) });
 
     ChunkInfo { block_name, inhabited_time, special_multiplier, regional_difficulty, block_y }
 }

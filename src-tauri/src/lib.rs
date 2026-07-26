@@ -13,7 +13,7 @@ mod tile_renderer;
 use bedrock::leveldb::LdbDatabase;
 use file_watcher::WatchStateMutex;
 use nbt_reader::{SeedData, WorldEdition};
-use region_reader::{ChunkInfo, ChunkRequest, ChunkResult};
+use region_reader::ChunkInfo;
 use serde::Serialize;
 use std::path::Path;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
@@ -258,32 +258,6 @@ fn list_saves_worlds() -> Vec<SavesWorldEntry> {
 }
 
 // ── Region / chunk commands ───────────────────────────────────────────────────
-
-#[tauri::command]
-fn get_chunk_colors(
-    world_dir:      String,
-    edition:        String,
-    dimension:      String,
-    chunks:         Vec<ChunkRequest>,
-    hide_water:     bool,
-    cave_y:         Option<i32>,
-    cave_scan_low:  i32,
-    cave_scan_high: i32,
-    db_cache:       tauri::State<'_, BedrockDbCache>,
-) -> Vec<ChunkResult> {
-    if edition == "bedrock" {
-        let _ = db_cache.get_or_open(&world_dir);
-        db_cache.with(&world_dir, |db| {
-            bedrock::chunk_reader::read_bedrock_chunk_colors(
-                db, &dimension, &chunks, hide_water, cave_y, cave_scan_low, cave_scan_high,
-            )
-        }).unwrap_or_default()
-    } else {
-        region_reader::read_chunk_colors_from_mca(
-            &world_dir, &dimension, &chunks, hide_water, cave_y, cave_scan_low, cave_scan_high,
-        )
-    }
-}
 
 #[tauri::command]
 async fn get_cave_entrances(
@@ -715,7 +689,6 @@ pub fn run() {
             select_world_dir,
             list_saves_worlds,
             // Region / chunks
-            get_chunk_colors,
             get_cave_entrances,
             get_inhabited_times,
             get_block_at,
@@ -751,6 +724,7 @@ pub fn run() {
             cubiomes_find_all_structures,
             clear_structure_cache,
             cubiomes::cubiomes_get_hover_biome,
+            cubiomes::cubiomes_get_biomes_along_line,
             cubiomes::cubiomes_get_spawn,
             cubiomes::cubiomes_get_height_region,
             cubiomes::cubiomes_get_ore_veins_at,
@@ -761,6 +735,7 @@ pub fn run() {
             cubiomes::cubiomes_cancel_request,
             cubiomes::structures::cubiomes_get_structure_loot,
             cubiomes::structures::cubiomes_get_structure_chests,
+            cubiomes::structures::cubiomes_get_end_gateway_links,
             cubiomes::cubiomes_get_surface_heights,
         ])
         .run(tauri::generate_context!())

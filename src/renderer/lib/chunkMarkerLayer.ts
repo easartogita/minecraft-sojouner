@@ -3,6 +3,13 @@ import L from 'leaflet'
 import { BASE_BLOCKS_PER_PIXEL } from './constants'
 import { setupDebouncedMapListeners } from './mapListeners'
 
+// Active worldgen flushes many region files in quick succession, each firing a
+// region:changed event. Coalesce that burst into a single reload: without it,
+// each event kicks off a full-viewport .mca re-read that supersedes (aborts) the
+// previous one before it can prune, so no load ever wins the race and stale
+// markers linger on screen while the backend churns through doomed fetches.
+const REGION_RELOAD_DEBOUNCE_MS = 600
+
 // ── Tooltip helper ────────────────────────────────────────────────────────────
 
 // Joins non-empty parts with ' · ' for use as a marker title attribute.
@@ -12,14 +19,15 @@ export function tooltipText(...parts: (string | null | undefined | false)[]): st
 
 // ── Y-filter bounds ───────────────────────────────────────────────────────────
 
-/** Returns [yMin, yMax] for the marker Y-filter, or [-Infinity, Infinity] when disabled. */
+/** Returns [yMin, yMax] for the marker Y-filter. `anchorY` is the resolved
+ *  window anchor (effectiveMarkerAnchorY); null means no filtering. */
 export function markerYBounds(
-  enabled: boolean,
-  playerY: number | null,
-  radius: number,
+  anchorY: number | null,
+  low: number,
+  high: number,
 ): [number, number] {
-  if (enabled && playerY !== null) return [playerY - radius, playerY + radius]
-  return [-Infinity, Infinity]
+  if (anchorY == null) return [-Infinity, Infinity]
+  return [anchorY + low, anchorY + high]
 }
 
 // ── Shared stats ──────────────────────────────────────────────────────────────
@@ -52,7 +60,7 @@ export interface ChunkBounds {
   maxCz: number
 }
 
-export function viewportChunkBounds(map: L.Map, maxChunkSpan = 96): ChunkBounds | null {
+export function viewportChunkBounds(map: L.Map, maxChunkSpan = 512): ChunkBounds | null {
   const b = map.getBounds()
   const f = BASE_BLOCKS_PER_PIXEL
   const minCx = Math.floor(Math.floor( b.getWest()  * f) / 16)
@@ -77,8 +85,8 @@ interface HookOpts {
   dimension: string
   enabled?: boolean          // default true; clears pool when false
   changedRegions?: unknown[] // triggers reload when non-empty
-  minZoom?: number           // default 5
-  maxChunkSpan?: number      // default 96
+  minZoom?: number           // default 3
+  maxChunkSpan?: number      // default derived from minZoom
   debounceMs?: number        // default 300
   onLoad: OnLoadFn
   onClear?: () => void       // called whenever the pool is cleared
@@ -88,7 +96,11 @@ interface HookOpts {
 export function useChunkMarkerLayer(map: L.Map, opts: HookOpts): () => void {
   const layerGroupRef = useRef<L.LayerGroup | null>(null)
   const poolRef       = useRef<Map<string, L.Marker>>(new Map())
-  const abortRef      = useRef(false)
+  // Generation counter (same mechanism as StructureLayer's updateGenRef): each
+  // load takes a generation; anything that should cancel in-flight loads bumps
+  // it. A shared boolean can't do this — a newer load resetting the flag would
+  // un-abort an older fetch still awaiting its response.
+  const genRef        = useRef(0)
   const prevIdRef     = useRef('')
   const loadFnRef     = useRef<() => void>(() => {})
   const onLoadRef     = useRef(opts.onLoad)
@@ -102,8 +114,11 @@ export function useChunkMarkerLayer(map: L.Map, opts: HookOpts): () => void {
     worldDir, dimension,
     enabled      = true,
     changedRegions,
-    minZoom      = 5,
-    maxChunkSpan = 96,
+    minZoom      = 3,
+    // Must fit a full-screen viewport at minZoom (a 4K screen at zoom z spans
+    // 3840 / 2^z chunks) — otherwise viewportChunkBounds bails to null and the
+    // layer silently renders nothing. E.g. minZoom 3 → 512 chunks.
+    maxChunkSpan = Math.ceil(4096 / 2 ** minZoom),
     debounceMs   = 300,
   } = opts
 
@@ -135,39 +150,38 @@ export function useChunkMarkerLayer(map: L.Map, opts: HookOpts): () => void {
     }
 
     const load = async () => {
-      abortRef.current = false
+      // Starting a new load supersedes (aborts) any load still in flight.
+      const gen = ++genRef.current
 
       if (map.getZoom() < minZoom) {
         clearPool()
-        abortRef.current = true
         return
       }
 
       const bounds = viewportChunkBounds(map, maxChunkSpan)
       if (!bounds) return
 
-      await onLoadRef.current(poolRef.current, group, bounds, () => abortRef.current)
+      await onLoadRef.current(poolRef.current, group, bounds, () => gen !== genRef.current)
     }
 
     loadFnRef.current = load
 
-    const cleanup = setupDebouncedMapListeners(map, () => {
-      abortRef.current = true
-      void load()
-    }, debounceMs)
+    const cleanup = setupDebouncedMapListeners(map, () => { void load() }, debounceMs)
     void load()
 
     return () => {
-      abortRef.current = true
+      genRef.current++
       cleanup()
     }
-    // minZoom/maxChunkSpan/debounceMs are constants; onLoad/onClear accessed via refs.
+    // debounceMs is constant; onLoad/onClear accessed via refs. minZoom is in
+    // the deps because it's user-configurable at runtime (Settings stepper).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, worldDir, dimension, enabled])
+  }, [map, worldDir, dimension, enabled, minZoom, maxChunkSpan])
 
   // Unmount-only: clear all markers when the component is removed from the tree.
   useEffect(() => {
     return () => {
+      genRef.current++
       const group = layerGroupRef.current
       const pool  = poolRef.current
       pool.forEach(m => group?.removeLayer(m))
@@ -176,9 +190,13 @@ export function useChunkMarkerLayer(map: L.Map, opts: HookOpts): () => void {
     }
   }, [])
 
-  // Reload when watched regions change (block-edit hot-reload).
+  // Reload when watched regions change (block-edit hot-reload), debounced so a
+  // burst of region:changed events coalesces into one viewport reload that can
+  // actually run to completion and prune, instead of a storm of superseded reads.
   useEffect(() => {
-    if (changedRegions && changedRegions.length > 0) loadFnRef.current()
+    if (!changedRegions || changedRegions.length === 0) return
+    const t = setTimeout(() => loadFnRef.current(), REGION_RELOAD_DEBOUNCE_MS)
+    return () => clearTimeout(t)
   }, [changedRegions])
 
   return useCallback(() => { loadFnRef.current() }, [])

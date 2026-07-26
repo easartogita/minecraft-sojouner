@@ -22,12 +22,19 @@ fn main() {
 
     let cubiomes = "../cubiomes";
     let asan = env::var("CUBIOMES_ASAN").is_ok();
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
     let cubiomes_sources = [
         "biomenoise.c", "biomes.c", "finders.c", "generator.c",
         "layers.c", "noise.c", "quadbase.c", "util.c",
-        // terrain heightmaps; stronghold pieces/loot (pulled in by getStructurePieces)
-        "terrainnoise.c", "features/stronghold.c",
+        // terrain heightmaps, plus every piece/feature generator finders.c's
+        // getStructurePieces (and cubiomes_bridge.c directly) call out to —
+        // upstream split these into features/*.c and carver.c; they used to
+        // be inline in finders.c, so a straight submodule bump silently drops
+        // them from the link unless listed explicitly here.
+        "terrainnoise.c", "carver.c",
+        "features/stronghold.c", "features/abandoned_camp.c",
+        "features/end_city.c", "features/fortress.c", "features/ore.c",
     ];
 
     // Recompile when the submodule sources or headers change (e.g. after a
@@ -38,6 +45,7 @@ fn main() {
     println!("cargo:rerun-if-changed={cubiomes}/biomes.h");
     println!("cargo:rerun-if-changed={cubiomes}/biomenoise.h");
     println!("cargo:rerun-if-changed={cubiomes}/finders.h");
+    println!("cargo:rerun-if-changed={cubiomes}/carver.h");
     println!("cargo:rerun-if-changed={cubiomes}/generator.h");
     println!("cargo:rerun-if-changed={cubiomes}/tables");
     println!("cargo:rerun-if-changed={cubiomes}/loot");
@@ -59,6 +67,17 @@ fn main() {
     }
 
     if asan {
+        // -fsanitize=address and friends are GCC/Clang flags; MSVC's ASan uses
+        // a different flag (/fsanitize=address) and doesn't support the other
+        // two at all. Fail loudly here instead of either a cryptic "unrecognized
+        // command-line option" from the compiler or silently building without
+        // instrumentation (flag_if_supported would just drop them unnoticed,
+        // which is worse than not building at all for a debugging build).
+        if target_os == "windows" {
+            panic!("CUBIOMES_ASAN is not supported when building for Windows/MSVC — \
+                    -fsanitize=address (GCC/Clang) has no equivalent here. Unset \
+                    CUBIOMES_ASAN, or build under WSL/MSYS2 with a GCC/Clang toolchain instead.");
+        }
         build.opt_level(1)
             .flag("-fsanitize=address")
             .flag("-fno-omit-frame-pointer")
@@ -80,8 +99,6 @@ fn main() {
 
     // Only build if the submodules have been initialized.
     if std::path::Path::new(&format!("{ldb}/include/leveldb/c.h")).exists() {
-        let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-
         // Generate snappy-stubs-public.h if not present (normally produced by CMake).
         let stubs = format!("{snappy}/snappy-stubs-public.h");
         if !std::path::Path::new(&stubs).exists() {

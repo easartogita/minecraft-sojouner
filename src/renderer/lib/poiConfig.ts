@@ -31,7 +31,10 @@ const POI_CONFIG: Record<string, PoiConfig> = {
   mason:         { color: '#78909c', initial: 'M', label: 'Mason' },
   nitwit:        { color: '#66bb6a', initial: 'N', label: 'Nitwit' },
   // Special POI types
-  meeting_point: { color: '#f9a825', initial: 'B', label: 'Bell' },
+  // Matches the 'bell' entry in blockEntityConfig.ts (this is the marker
+  // actually rendered — see POI_SHADOWED_BE_TYPES in BlockEntityLayer.tsx).
+  // Deliberately not beehive's amber — the two used to be visually identical.
+  meeting_point: { color: '#4f46e5', initial: 'B', label: 'Bell' },
   home:          { color: '#e91e63', initial: 'Z', label: 'Bed' },
 }
 

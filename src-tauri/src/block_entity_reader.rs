@@ -11,6 +11,12 @@ pub struct BlockItem {
     pub slot:  i32,
     pub id:    String,
     pub count: i32,
+    /// Resolved potion type (e.g. "strong_healing") for potion/splash_potion/
+    /// lingering_potion/tipped_arrow stacks — read from the item's own NBT,
+    /// not simulated. Java only: Bedrock encodes potion type as a numeric
+    /// item aux value rather than a string tag, which isn't decoded here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub potion: Option<String>,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -100,11 +106,17 @@ fn map_str<'a>(m: &'a HashMap<String, Value>, key: &str) -> &'a str {
 }
 
 fn map_i32(m: &HashMap<String, Value>, key: &str) -> i32 {
+    map_i32_opt(m, key).unwrap_or(0)
+}
+
+/// Like `map_i32` but distinguishes an absent key from a present zero — needed
+/// for item counts, where the 1.20.5+ format omits `count` for single items.
+fn map_i32_opt(m: &HashMap<String, Value>, key: &str) -> Option<i32> {
     match m.get(key) {
-        Some(Value::Int(n))   => *n,
-        Some(Value::Short(n)) => *n as i32,
-        Some(Value::Byte(n))  => *n as i32,
-        _ => 0,
+        Some(Value::Int(n))   => Some(*n),
+        Some(Value::Short(n)) => Some(*n as i32),
+        Some(Value::Byte(n))  => Some(*n as i32),
+        _ => None,
     }
 }
 
@@ -119,6 +131,24 @@ fn map_list<'a>(m: &'a HashMap<String, Value>, key: &str) -> &'a [Value] {
     match m.get(key) {
         Some(Value::List(l)) => l,
         _ => &[],
+    }
+}
+
+/// Decorated pot `sherds`: pre-26.3-snapshot-1 worlds store a list of 4 item
+/// IDs; 26.3-snapshot-1+ stores an object with optional back/left/right/front
+/// item stack fields instead. Handle both.
+fn parse_pot_sherds(be: &HashMap<String, Value>) -> Vec<String> {
+    match be.get("sherds") {
+        Some(Value::List(l)) => l.iter()
+            .map(|v| strip_ns(nbt_str(v)).to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Some(Value::Compound(obj)) => ["back", "left", "right", "front"].iter()
+            .filter_map(|face| obj.get(*face).and_then(cmp))
+            .map(|item| strip_ns(map_str(item, "id")).to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -245,6 +275,31 @@ fn parse_banner_patterns(be: &HashMap<String, Value>) -> Option<Vec<BannerPatter
     }).collect())
 }
 
+// Item ids that carry a potion effect — bottled, splash, lingering, and tipped
+// arrows all use the same "Potion" tag / potion_contents component.
+const POTIONABLE_IDS: &[&str] = &["potion", "splash_potion", "lingering_potion", "tipped_arrow"];
+
+/// Reads the specific potion type (e.g. "strong_healing") off an item's own
+/// NBT — the exact rolled/brewed potion, not a loot-table prediction. Only
+/// Java's string-tag formats are handled: legacy `tag.Potion` and 1.20.5+
+/// `components."minecraft:potion_contents".potion`. Bedrock stores potion
+/// type as a numeric item aux value instead, which this does not decode.
+fn item_potion(m: &HashMap<String, Value>, id: &str) -> Option<String> {
+    if !POTIONABLE_IDS.contains(&id) { return None; }
+    if let Some(p) = m.get("components").and_then(cmp)
+        .and_then(|c| c.get("minecraft:potion_contents")).and_then(cmp)
+        .and_then(|pc| pc.get("potion"))
+    {
+        let s = strip_ns(nbt_str(p));
+        if !s.is_empty() { return Some(s.to_string()); }
+    }
+    if let Some(p) = m.get("tag").and_then(cmp).and_then(|t| t.get("Potion")) {
+        let s = strip_ns(nbt_str(p));
+        if !s.is_empty() { return Some(s.to_string()); }
+    }
+    None
+}
+
 // ── Item parsing ──────────────────────────────────────────────────────────────
 
 fn parse_items(be: &HashMap<String, Value>, key: &str) -> Vec<BlockItem> {
@@ -252,10 +307,16 @@ fn parse_items(be: &HashMap<String, Value>, key: &str) -> Vec<BlockItem> {
         let m = cmp(item)?;
         let id = strip_ns(map_str(m, "id")).to_string();
         if id.is_empty() { return None; }
+        let potion = item_potion(m, &id);
         Some(BlockItem {
             slot:  map_i32(m, "Slot"),
             id,
-            count: map_i32(m, "Count"),
+            // 1.20.5+ component format uses lowercase `count` (int), and omits it
+            // for single items (defaults to 1); pre-1.20.5 uses `Count` (byte).
+            count: map_i32_opt(m, "count")
+                .or_else(|| map_i32_opt(m, "Count"))
+                .unwrap_or(1),
+            potion,
         })
     }).collect()
 }
@@ -270,7 +331,12 @@ fn is_container(t: &str) -> bool {
         "yellow_shulker_box" | "lime_shulker_box" | "pink_shulker_box" | "gray_shulker_box" |
         "light_gray_shulker_box" | "cyan_shulker_box" | "purple_shulker_box" | "blue_shulker_box" |
         "brown_shulker_box" | "green_shulker_box" | "red_shulker_box" | "black_shulker_box" |
-        "chiseled_bookshelf" | "crafter"
+        "chiseled_bookshelf" | "crafter" |
+        // Copper Chest (26.3+): same 4-stage weathering × waxed/unwaxed naming as the
+        // rest of the copper block family (copper_bulb, chiseled_copper, …).
+        "copper_chest" | "exposed_copper_chest" | "weathered_copper_chest" | "oxidized_copper_chest" |
+        "waxed_copper_chest" | "waxed_exposed_copper_chest" | "waxed_weathered_copper_chest" |
+        "waxed_oxidized_copper_chest"
     )
 }
 
@@ -467,10 +533,7 @@ fn extract_block_entities(chunk: &Value) -> Vec<BlockEntity> {
             let ids: Vec<String> = parse_items(be, "Items").into_iter().map(|i| i.id).filter(|s| !s.is_empty()).collect();
             if !ids.is_empty() { entity.cooking_items = Some(ids); }
         } else if kind == "decorated_pot" {
-            let sherds: Vec<String> = map_list(be, "sherds").iter()
-                .map(|v| strip_ns(nbt_str(v)).to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+            let sherds = parse_pot_sherds(be);
             if !sherds.is_empty() { entity.sherds = Some(sherds); }
         } else if kind == "sculk_shrieker" {
             entity.can_summon = Some(map_bool(be, "can_summon"));

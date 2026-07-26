@@ -150,6 +150,16 @@ fn read_compound(r: &mut Cursor<&[u8]>) -> io::Result<LeNbt> {
     Ok(LeNbt::Compound(map))
 }
 
+/// Bytes left unread in `r`. Used to reject a declared element count/length
+/// that a corrupt or adversarial buffer claims but can't possibly back —
+/// without this, `Vec::with_capacity`/`vec![0; len]` on an untrusted length
+/// (e.g. length-prefixed ByteArray/IntArray/LongArray fields) can attempt a
+/// multi-GB allocation; on failure that calls Rust's `handle_alloc_error`,
+/// which *aborts* the process outright rather than returning a catchable error.
+fn remaining(r: &Cursor<&[u8]>) -> usize {
+    (r.get_ref().len() as u64).saturating_sub(r.position()) as usize
+}
+
 fn read_payload(r: &mut Cursor<&[u8]>, tag: u8) -> io::Result<LeNbt> {
     match tag {
         1  => Ok(LeNbt::Byte (read_u8(r)? as i8)),
@@ -160,6 +170,10 @@ fn read_payload(r: &mut Cursor<&[u8]>, tag: u8) -> io::Result<LeNbt> {
         6  => Ok(LeNbt::Double(read_le_f64(r)?)),
         7  => {
             let len = read_le_i32(r)?.max(0) as usize;
+            if len > remaining(r) {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof,
+                    format!("ByteArray length {len} exceeds remaining buffer")));
+            }
             let mut v = vec![0u8; len]; r.read_exact(&mut v)?;
             Ok(LeNbt::ByteArray(v))
         }
@@ -167,7 +181,12 @@ fn read_payload(r: &mut Cursor<&[u8]>, tag: u8) -> io::Result<LeNbt> {
         9  => {
             let elem_tag = read_u8(r)?;
             let count = read_le_i32(r)?.max(0) as usize;
-            let mut list = Vec::with_capacity(count);
+            // No upfront `with_capacity(count)`: element size varies by tag (a
+            // nested List/Compound isn't fixed-width), so we can't bound it the
+            // way the fixed-width arrays below can. Growing via `push` means a
+            // bogus `count` only allocates as far as real, parseable input
+            // actually takes it before `read_payload` hits EOF and errors out.
+            let mut list = Vec::new();
             for _ in 0..count {
                 list.push(read_payload(r, elem_tag)?);
             }
@@ -176,12 +195,20 @@ fn read_payload(r: &mut Cursor<&[u8]>, tag: u8) -> io::Result<LeNbt> {
         10 => read_compound(r),
         11 => {
             let len = read_le_i32(r)?.max(0) as usize;
+            if len > remaining(r) / 4 {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof,
+                    format!("IntArray length {len} exceeds remaining buffer")));
+            }
             let mut v = Vec::with_capacity(len);
             for _ in 0..len { v.push(read_le_i32(r)?); }
             Ok(LeNbt::IntArray(v))
         }
         12 => {
             let len = read_le_i32(r)?.max(0) as usize;
+            if len > remaining(r) / 8 {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof,
+                    format!("LongArray length {len} exceeds remaining buffer")));
+            }
             let mut v = Vec::with_capacity(len);
             for _ in 0..len { v.push(read_le_i64(r)?); }
             Ok(LeNbt::LongArray(v))

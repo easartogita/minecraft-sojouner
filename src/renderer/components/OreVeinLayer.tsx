@@ -22,8 +22,8 @@ const FOOTPRINT_MAX_BPP = 16
 // state.oreVeinMode. Keeping them separate means each gets its own cache/queue and
 // switching modes cleanly tears one down and builds the other (no compositing of
 // the semi-transparent tiles, which a single branch-per-tile layer would suffer).
-const blobQueue      = new TileJobQueue(4, () => tileStats.notify())
-const footprintQueue = new TileJobQueue(4, () => tileStats.notify())
+const blobQueue      = new TileJobQueue(4, () => tileStats.notify(), 'orevein/blob')
+const footprintQueue = new TileJobQueue(4, () => tileStats.notify(), 'orevein/footprint')
 const blobCache      = new Map<string, ImageData | string>()
 const footprintCache = new Map<string, ImageData | string>()
 tileStats.registerOverlay({

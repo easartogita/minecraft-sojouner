@@ -2,6 +2,7 @@ import { useEffect, useReducer } from 'react'
 import * as api from '../lib/tauriAPI'
 import * as tileStats from '../lib/tileStats'
 import { MCVersionKey, Dimension } from '../lib/constants'
+import { StructureType } from '../lib/structureConfig'
 import { WorldState, WorldAction, worldInitialState, worldReducer } from './worldSlice'
 import {
   OverlayState, OverlayAction, overlayInitialState, overlayReducer,
@@ -34,6 +35,12 @@ function loadWorldSession() {
       selectedVersion: s.selectedVersion as MCVersionKey | undefined,
       dimension: dim,
       structuresByDimension,
+      disabledStructureVariants: Array.isArray(s.disabledStructureVariants)
+        ? s.disabledStructureVariants as string[]
+        : undefined,
+      notableLootOnly: Array.isArray(s.notableLootOnly)
+        ? s.notableLootOnly as StructureType[]
+        : undefined,
     }
   } catch { return {} }
 }
@@ -81,21 +88,24 @@ export function useAppState() {
     saveOverlaySession(state, structuresByDim)
   }, [
     state.selectedVersion, state.dimension, state.enabledStructures, state.structuresByDimension,
+    state.disabledStructureVariants, state.notableLootOnly,
     state.showBiomes, state.biomeOpacity, state.chunkOpacity, state.slimeOpacity, state.oreOpacity,
     state.hideWater, state.showSlimeChunks, state.showCopperVeins, state.showIronVeins,
     state.showChunkData, state.chunkDataMinZoom, state.showChunkGrid, state.showRegionGrid,
-    state.showSpawnRadius, state.showMarkers, state.markerGroupDefs, state.enabledMarkerGroups,
-    state.markerYFilterEnabled, state.markerYFilterRadius,
+    state.showSpawnRadius, state.showMarkers, state.markerMinZoom, state.markerGroupDefs, state.enabledMarkerGroups,
+    state.markerYFilterEnabled, state.markerYLow, state.markerYHigh,
     state.showCaveEntrances, state.caveEntranceOpacity,
     state.showLocalDifficulty, state.biomeMode,
     state.zoom, state.uiScale,
+    state.rulerWaypoints, state.rulerLegModes, state.rulerCurrentMode, state.activeRouteId,
+    state.boatMinSegmentBlocks, state.rulerPlacementMode,
   ])
 
   // Wire up IPC event listeners.
   useEffect(() => {
     const unsub       = api.onSeedChanged(data  => dispatch({ type: 'SEED_UPDATED', data }))
     const unsubErr    = api.onSeedError(error   => dispatch({ type: 'SET_ERROR', error }))
-    const unsubRegion = api.onRegionChanged(regions => dispatch({ type: 'REGION_CHANGED', regions }))
+    const unsubRegion = api.onRegionChanged(change => dispatch({ type: 'REGION_CHANGED', dimension: change.dimension, regions: change.regions }))
     const unsubMetrics = api.onMcaMetrics(m => tileStats.updateMcaMetrics(m))
 
     api.getAutoLoadData().then(result => {

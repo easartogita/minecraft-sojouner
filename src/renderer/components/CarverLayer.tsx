@@ -10,7 +10,7 @@ import * as tileStats from '../lib/tileStats'
 
 const CHUNK_SIZE = 16
 const MAX_CACHE = 256
-const queue = new TileJobQueue(4, () => tileStats.notify())
+const queue = new TileJobQueue(4, () => tileStats.notify(), 'carver')
 const cache = new Map<string, ImageData | string>()
 tileStats.registerOverlay({ key: 'carver', label: 'Carvers', className: 'carver', queues: [queue], caches: [cache] })
 
@@ -25,11 +25,18 @@ function CarverLayer({ map, slot }: { map: L.Map; slot: number }) {
     tileSize: TILE_SIZE,
     opacity: state.carverOpacity,
     zIndex: 4,
-    deps: [map, slot, seed, state.overlayCacheVersion],
+    deps: [map, slot, seed, state.dimension, state.overlayCacheVersion],
+    // Dimension is already in cacheKeyFn below, so switching tabs doesn't need
+    // to wipe the other dimension's cached tiles — only a new seed or an
+    // explicit force-refresh should.
+    cacheEpochDeps: [seed, state.overlayCacheVersion],
     enabled: seed != null && slot >= 0,
     cache,
     maxCache: MAX_CACHE,
-    cacheKeyFn: (coords) => `${seed}:${coords.x}:${coords.y}:${coords.z}`,
+    // Dimension is part of the key: carvers now render in overworld and nether,
+    // and this cache is shared across dimension switches — without it, a nether
+    // tile could collide with the overworld tile at the same seed/coords.
+    cacheKeyFn: (coords) => `${seed}:${state.dimension}:${coords.x}:${coords.y}:${coords.z}`,
     skip: (coords) => BASE_BLOCKS_PER_PIXEL / Math.pow(2, coords.z) > 16,
     fetch: async (coords, signal) => {
       const t0 = performance.now()

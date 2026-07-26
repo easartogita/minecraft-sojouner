@@ -17,7 +17,7 @@ export interface BEGroupDef {
 }
 
 export const BE_GROUP_DEFS: Record<BEFilterGroup, BEGroupDef> = {
-  containers:  { label: 'Containers',    color: '#a0522d', description: 'Chests, barrels, shulker boxes, hoppers, droppers, dispensers, chiseled bookshelves, crafters' },
+  containers:  { label: 'Containers',    color: '#a0522d', description: 'Chests, copper chests, barrels, shulker boxes, hoppers, droppers, dispensers, chiseled bookshelves, crafters' },
   spawners:    { label: 'Spawners',      color: '#8b0000', description: 'Mob spawners and trial spawners' },
   signs:       { label: 'Signs',         color: '#d4a017', description: 'All sign variants (wall, hanging, wood types)' },
   bees:        { label: 'Bee Blocks',    color: '#f0a500', description: 'Beehives and bee nests' },
@@ -38,6 +38,7 @@ export function normalizeBEType(type: string): string {
     type.endsWith('_hanging_sign') || type.endsWith('_wall_hanging_sign')
   ) return 'sign'
   if (type === 'shulker_box' || type.endsWith('_shulker_box')) return 'shulker_box'
+  if (type === 'copper_chest' || type.endsWith('_copper_chest')) return 'copper_chest'
   if (type === 'wall_banner') return 'banner'
   if (type === 'player_head' || type === 'player_wall_head') return 'skull'
   return type
@@ -49,6 +50,7 @@ export const BE_TYPE_TO_GROUP: Record<string, BEFilterGroup> = {
   chest: 'containers', trapped_chest: 'containers', barrel: 'containers',
   hopper: 'containers', dropper: 'containers', dispenser: 'containers',
   shulker_box: 'containers', chiseled_bookshelf: 'containers', crafter: 'containers',
+  copper_chest: 'containers',
   mob_spawner: 'spawners', trial_spawner: 'spawners',
   sign: 'signs',
   beehive: 'bees', bee_nest: 'bees',
@@ -81,6 +83,7 @@ export const BE_TYPE_DEFS: BETypeDef[] = [
   { type: 'shulker_box',        group: 'containers', label: 'Shulker Box (all colors)' },
   { type: 'chiseled_bookshelf', group: 'containers', label: 'Chiseled Bookshelf' },
   { type: 'crafter',            group: 'containers', label: 'Crafter' },
+  { type: 'copper_chest',       group: 'containers', label: 'Copper Chest (all weathering stages)' },
   // spawners
   { type: 'mob_spawner',        group: 'spawners',   label: 'Mob Spawner' },
   { type: 'trial_spawner',      group: 'spawners',   label: 'Trial Spawner' },
@@ -144,7 +147,7 @@ export const ENTITY_GROUP_DEFS: Record<EntityFilterGroup, EntityGroupDef> = {
   villagers:    { label: 'Villagers',          color: '#3b82f6', description: 'Villagers, wandering traders, and zombie villagers (curing or any)' },
   frames:       { label: 'Paintings & Frames', color: '#92400e', description: 'Paintings, item frames, glow item frames' },
   armor_stands: { label: 'Armor Stands',       color: '#6b7280', description: 'Armor stands with their equipped items' },
-  mounts:       { label: 'Mounts',             color: '#d97706', description: 'Horses, donkeys, mules, skeleton/zombie horses, llamas, trader llamas, camels, happy ghasts' },
+  mounts:       { label: 'Mounts',             color: '#d97706', description: 'Horses, donkeys, mules, skeleton/zombie horses, llamas, trader llamas, camels, happy ghasts, boats & rafts' },
   pets:         { label: 'Pets & Companions',  color: '#ec4899', description: 'Wolves, cats, parrots (tamed or named), allays (carrying item or named)' },
   animals:      { label: 'Animals',            color: '#84cc16', description: 'Goats, axolotls, saddled striders, player-built iron/copper golems, shulkers, snow golems, phantoms, sulfur cubes' },
   livestock:    { label: 'Livestock',          color: '#a3803a', description: 'Cows, pigs, chickens, sheep, mooshrooms, rabbits, frogs, turtles, sniffers, armadillos, foxes, pandas, bees, tropical fish' },
@@ -162,6 +165,7 @@ export const ENTITY_TYPE_TO_GROUP: Record<string, EntityFilterGroup> = {
   armor_stand: 'armor_stands',
   horse: 'mounts', donkey: 'mounts', mule: 'mounts', zombie_horse: 'mounts',
   skeleton_horse: 'mounts', llama: 'mounts', trader_llama: 'mounts', camel: 'mounts', happy_ghast: 'mounts',
+  boat: 'mounts',
   wolf: 'pets', cat: 'pets', parrot: 'pets', allay: 'pets',
   strider: 'animals', goat: 'animals', axolotl: 'animals', iron_golem: 'animals', copper_golem: 'animals',
   shulker: 'animals', snow_golem: 'animals', phantom: 'animals', sulfur_cube: 'animals',
@@ -207,6 +211,7 @@ export const ENTITY_TYPE_DEFS: EntityTypeDef[] = [
   { type: 'trader_llama',      group: 'mounts',       label: 'Trader Llama' },
   { type: 'camel',             group: 'mounts',       label: 'Camel' },
   { type: 'happy_ghast',       group: 'mounts',       label: 'Happy Ghast' },
+  { type: 'boat',              group: 'mounts',       label: 'Boat / Raft' },
   // pets
   { type: 'wolf',              group: 'pets',         label: 'Wolf' },
   { type: 'cat',               group: 'pets',         label: 'Cat' },
@@ -268,7 +273,7 @@ export interface CustomMarkerGroup {
 export const DEFAULT_MARKER_GROUPS: CustomMarkerGroup[] = [
   {
     id: 'storage', name: 'Storage', color: '#a0522d',
-    beTypes: ['chest', 'trapped_chest', 'barrel', 'hopper', 'dropper', 'dispenser', 'shulker_box', 'chiseled_bookshelf', 'crafter'],
+    beTypes: ['chest', 'trapped_chest', 'barrel', 'hopper', 'dropper', 'dispenser', 'shulker_box', 'chiseled_bookshelf', 'crafter', 'copper_chest'],
     entityTypes: ['chest_minecart', 'hopper_minecart', 'chest_boat'],
   },
   {
@@ -285,7 +290,7 @@ export const DEFAULT_MARKER_GROUPS: CustomMarkerGroup[] = [
     id: 'animals', name: 'Animals', color: '#84cc16',
     beTypes: [],
     entityTypes: [
-      'horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse', 'llama', 'trader_llama', 'camel', 'happy_ghast',
+      'horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse', 'llama', 'trader_llama', 'camel', 'happy_ghast', 'boat',
       'wolf', 'cat', 'parrot', 'allay',
       'strider', 'goat', 'axolotl', 'iron_golem', 'copper_golem', 'shulker', 'snow_golem', 'phantom', 'sulfur_cube',
       'cow', 'pig', 'chicken', 'sheep', 'mooshroom', 'rabbit', 'frog', 'turtle',

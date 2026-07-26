@@ -1,6 +1,7 @@
-import { DEFAULT_CHUNK_DATA_MIN_ZOOM } from '../lib/constants'
+import { DEFAULT_CHUNK_DATA_MIN_ZOOM, DEFAULT_MARKER_MIN_ZOOM, CAVE_MODE_MIN_ZOOM, MAX_ZOOM } from '../lib/constants'
 import { CustomMarkerGroup, DEFAULT_MARKER_GROUPS } from '../lib/markerFilters'
 import { ORE_FEATURE_DEFS } from '../lib/oreFeatures'
+import { TravelMode } from '../lib/travelModes'
 
 const ALL_ORE_FEATURE_IDS = ORE_FEATURE_DEFS.map(d => d.id)
 
@@ -27,15 +28,31 @@ export interface OverlayState {
   showChunkGrid: boolean
   showRegionGrid: boolean
   showSpawnRadius: boolean
+  showSpawnChunks: boolean
+  showWorldBorder: boolean
   showStructures: boolean
   showMarkers: boolean
+  markerMinZoom: number
   markerGroupDefs: CustomMarkerGroup[]
   enabledMarkerGroups: Set<string>
   markerYFilterEnabled: boolean
-  markerYFilterRadius: number
+  /** Window offsets relative to the marker Y anchor (cave-gauge model). */
+  markerYLow: number
+  markerYHigh: number
+  /** true → window follows the live player Y; false → frozen at markerYAnchorY. */
+  markerYLockedToPlayer: boolean
+  /** Absolute Y captured at the moment of unlock; null while locked. */
+  markerYAnchorY: number | null
   caveMode: boolean
   caveScanLow: number
   caveScanHigh: number
+  /** true → scan window follows the player (offsets track live player Y);
+   *  false → window frozen at caveAnchorY, player indicator moves freely. */
+  caveLockedToPlayer: boolean
+  /** Absolute Y captured at the moment of unlock; null while locked. */
+  caveAnchorY: number | null
+  caveZoomMinOverworld: number
+  caveZoomMinNether: number
   showCaveEntrances: boolean
   caveEntranceOpacity: number
   showLocalDifficulty: boolean
@@ -47,7 +64,12 @@ export interface OverlayState {
   zoom: number
   uiScale: number
   rulerActive: boolean
+  rulerPlacementMode: boolean
   rulerWaypoints: { x: number; z: number }[]
+  rulerLegModes: TravelMode[]
+  rulerCurrentMode: TravelMode
+  activeRouteId: string | null
+  boatMinSegmentBlocks: number
 }
 
 export type OverlayAction =
@@ -72,18 +94,23 @@ export type OverlayAction =
   | { type: 'TOGGLE_HIDE_WATER' }
   | { type: 'TOGGLE_CHUNK_GRID' }
   | { type: 'TOGGLE_REGION_GRID' }
+  | { type: 'TOGGLE_SPAWN_CHUNKS' }
   | { type: 'TOGGLE_SPAWN_RADIUS' }
+  | { type: 'TOGGLE_WORLD_BORDER' }
   | { type: 'TOGGLE_STRUCTURES' }
   | { type: 'TOGGLE_MARKERS' }
+  | { type: 'SET_MARKER_MIN_ZOOM'; zoom: number }
   | { type: 'SET_MARKER_GROUP'; group: string; enabled: boolean }
   | { type: 'SET_ALL_MARKER_GROUPS'; enabled: boolean }
   | { type: 'ADD_MARKER_GROUP'; group: CustomMarkerGroup }
   | { type: 'UPDATE_MARKER_GROUP'; id: string; changes: Partial<Omit<CustomMarkerGroup, 'id'>> }
   | { type: 'DELETE_MARKER_GROUP'; id: string }
   | { type: 'RESET_MARKER_GROUPS' }
-  | { type: 'SET_MARKER_Y_FILTER'; enabled?: boolean; radius?: number }
+  | { type: 'SET_MARKER_Y_FILTER'; enabled?: boolean; low?: number; high?: number }
+  | { type: 'SET_MARKER_Y_LOCK'; locked: boolean; anchorY: number | null }
   | { type: 'TOGGLE_CAVE_MODE' }
   | { type: 'SET_CAVE_SCAN_RANGE'; low: number; high: number }
+  | { type: 'SET_CAVE_ZOOM_MIN'; dimension: 'overworld' | 'nether'; min: number }
   | { type: 'TOGGLE_CAVE_ENTRANCES' }
   | { type: 'SET_CAVE_ENTRANCE_OPACITY'; opacity: number }
   | { type: 'TOGGLE_LOCAL_DIFFICULTY' }
@@ -99,6 +126,50 @@ export type OverlayAction =
   | { type: 'RULER_ADD_WAYPOINT'; x: number; z: number }
   | { type: 'RULER_UNDO' }
   | { type: 'RULER_CLEAR' }
+  | { type: 'RULER_SET_CURRENT_MODE'; mode: TravelMode }
+  | { type: 'RULER_SET_LEG_MODE'; index: number; mode: TravelMode }
+  | { type: 'RULER_LOAD_ROUTE'; id: string; waypoints: { x: number; z: number }[]; legModes: TravelMode[] }
+  | { type: 'RULER_NEW' }
+  | { type: 'RULER_SET_ACTIVE_ROUTE'; id: string | null }
+  | { type: 'SET_BOAT_MIN_SEGMENT'; blocks: number }
+  | { type: 'RULER_START_EDITING' }
+  | { type: 'SET_CAVE_LOCK'; locked: boolean; anchorY: number | null }
+
+// Effective cave-mode zoom range for a dimension. 'end' has no range of its own
+// (cave mode has no effect there) and falls back to the overworld range.
+// The upper bound is always MAX_ZOOM — there's no reason to cap it lower.
+export function caveZoomRange(
+  state: Pick<OverlayState, 'caveZoomMinOverworld' | 'caveZoomMinNether'>,
+  dimension: string,
+): [number, number] {
+  return dimension === 'nether'
+    ? [state.caveZoomMinNether, MAX_ZOOM]
+    : [state.caveZoomMinOverworld, MAX_ZOOM]
+}
+
+// Marker-filter counterpart of effectiveCaveAnchorY below: the Y the marker
+// window is centred on. Null when the filter is off or no position is known —
+// markerYBounds treats null as "no filtering".
+export function effectiveMarkerAnchorY(
+  state: Pick<OverlayState, 'markerYFilterEnabled' | 'markerYLockedToPlayer' | 'markerYAnchorY'>,
+  playerY: number | null | undefined,
+): number | null {
+  if (!state.markerYFilterEnabled) return null
+  if (!state.markerYLockedToPlayer && state.markerYAnchorY != null) return state.markerYAnchorY
+  return playerY != null ? Math.floor(playerY) : null
+}
+
+// The Y the cave-scan window is centred on. Locked → live player Y (the window
+// follows them); unlocked → the anchor captured at unlock. Null when cave mode
+// is off or no position is known — callers already treat null as "no cave render".
+export function effectiveCaveAnchorY(
+  state: Pick<OverlayState, 'caveMode' | 'caveLockedToPlayer' | 'caveAnchorY'>,
+  playerY: number | null | undefined,
+): number | null {
+  if (!state.caveMode) return null
+  if (!state.caveLockedToPlayer && state.caveAnchorY != null) return state.caveAnchorY
+  return playerY != null ? Math.floor(playerY) : null
+}
 
 // ── Session persistence ───────────────────────────────────────────────────────
 
@@ -120,19 +191,33 @@ export interface OverlaySession {
   chunkDataMinZoom?: number
   showChunkGrid?: boolean
   showRegionGrid?: boolean
+  showSpawnChunks?: boolean
   showSpawnRadius?: boolean
+  showWorldBorder?: boolean
   showStructures?: boolean
   showMarkers?: boolean
+  markerMinZoom?: number
   markerGroupDefs?: CustomMarkerGroup[]
   enabledMarkerGroups?: string[]
   markerYFilterEnabled?: boolean
+  markerYLow?: number
+  markerYHigh?: number
+  /** Deprecated (pre-gauge symmetric radius) — read for migration, never written. */
   markerYFilterRadius?: number
   showCaveEntrances?: boolean
   caveEntranceOpacity?: number
+  caveZoomMinOverworld?: number
+  caveZoomMinNether?: number
   showLocalDifficulty?: boolean
   biomeMode?: 'surface' | 'underground' | 'deep'
   zoom?: number
   uiScale?: number
+  rulerWaypoints?: { x: number; z: number }[]
+  rulerLegModes?: TravelMode[]
+  rulerCurrentMode?: TravelMode
+  activeRouteId?: string | null
+  boatMinSegmentBlocks?: number
+  rulerPlacementMode?: boolean
 }
 
 export function loadOverlaySession(): OverlaySession {
@@ -143,13 +228,18 @@ export function loadOverlaySession(): OverlaySession {
 }
 
 export function saveOverlaySession(
-  state: OverlayState & { selectedVersion?: string; dimension?: string },
+  state: OverlayState & {
+    selectedVersion?: string; dimension?: string
+    disabledStructureVariants?: Set<string>; notableLootOnly?: Set<string>
+  },
   structuresByDimension: unknown,
 ): void {
   const session = {
     selectedVersion:         state.selectedVersion,
     dimension:               state.dimension,
     structuresByDimension,
+    disabledStructureVariants: [...(state.disabledStructureVariants ?? [])],
+    notableLootOnly:         [...(state.notableLootOnly ?? [])],
     showBiomes:              state.showBiomes,
     biomeOpacity:            state.biomeOpacity,
     chunkOpacity:            state.chunkOpacity,
@@ -168,18 +258,30 @@ export function saveOverlaySession(
     showChunkGrid:           state.showChunkGrid,
     showRegionGrid:          state.showRegionGrid,
     showSpawnRadius:         state.showSpawnRadius,
+    showSpawnChunks:         state.showSpawnChunks,
+    showWorldBorder:         state.showWorldBorder,
     showStructures:          state.showStructures,
     showMarkers:             state.showMarkers,
+    markerMinZoom:           state.markerMinZoom,
     markerGroupDefs:         state.markerGroupDefs,
     enabledMarkerGroups:     [...state.enabledMarkerGroups],
     markerYFilterEnabled:    state.markerYFilterEnabled,
-    markerYFilterRadius:     state.markerYFilterRadius,
+    markerYLow:              state.markerYLow,
+    markerYHigh:             state.markerYHigh,
     showCaveEntrances:       state.showCaveEntrances,
     caveEntranceOpacity:     state.caveEntranceOpacity,
+    caveZoomMinOverworld:    state.caveZoomMinOverworld,
+    caveZoomMinNether:       state.caveZoomMinNether,
     showLocalDifficulty:     state.showLocalDifficulty,
     biomeMode:               state.biomeMode,
     zoom:                    state.zoom,
     uiScale:                 state.uiScale,
+    rulerWaypoints:          state.rulerWaypoints,
+    rulerLegModes:           state.rulerLegModes,
+    rulerCurrentMode:        state.rulerCurrentMode,
+    activeRouteId:           state.activeRouteId,
+    boatMinSegmentBlocks:    state.boatMinSegmentBlocks,
+    rulerPlacementMode:      state.rulerPlacementMode,
   }
   localStorage.setItem('mcmap:session', JSON.stringify(session))
 }
@@ -210,8 +312,11 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
     showChunkGrid:           s.showChunkGrid             ?? false,
     showRegionGrid:          s.showRegionGrid            ?? false,
     showSpawnRadius:         s.showSpawnRadius           ?? false,
+    showSpawnChunks:         s.showSpawnChunks           ?? false,
+    showWorldBorder:         s.showWorldBorder           ?? false,
     showStructures:          s.showStructures             ?? true,
     showMarkers:             s.showMarkers               ?? false,
+    markerMinZoom:           s.markerMinZoom             ?? DEFAULT_MARKER_MIN_ZOOM,
     markerGroupDefs:         Array.isArray(s.markerGroupDefs) && s.markerGroupDefs.length > 0
       ? s.markerGroupDefs
       : DEFAULT_MARKER_GROUPS,
@@ -219,10 +324,18 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
       ? new Set(s.enabledMarkerGroups)
       : new Set(DEFAULT_MARKER_GROUPS.map(g => g.id)),
     markerYFilterEnabled:    s.markerYFilterEnabled      ?? false,
-    markerYFilterRadius:     s.markerYFilterRadius       ?? 32,
+    // Migration: old sessions stored a symmetric radius around the player.
+    markerYLow:              s.markerYLow  ?? (s.markerYFilterRadius != null ? -s.markerYFilterRadius : -32),
+    markerYHigh:             s.markerYHigh ?? (s.markerYFilterRadius != null ?  s.markerYFilterRadius :  32),
+    markerYLockedToPlayer:   true,
+    markerYAnchorY:          null,
     caveMode:                false,
     caveScanLow:             -40,
     caveScanHigh:            40,
+    caveLockedToPlayer:      true,
+    caveAnchorY:             null,
+    caveZoomMinOverworld:    s.caveZoomMinOverworld      ?? CAVE_MODE_MIN_ZOOM,
+    caveZoomMinNether:       s.caveZoomMinNether         ?? CAVE_MODE_MIN_ZOOM,
     showCaveEntrances:       s.showCaveEntrances         ?? false,
     caveEntranceOpacity:     s.caveEntranceOpacity       ?? 0.7,
     showLocalDifficulty:     s.showLocalDifficulty       ?? false,
@@ -234,7 +347,12 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
     zoom:                    s.zoom                     ?? 2,
     uiScale:                 s.uiScale                  ?? 1,
     rulerActive:             false,
-    rulerWaypoints:          [],
+    rulerPlacementMode:      s.rulerPlacementMode ?? false,
+    rulerWaypoints:          Array.isArray(s.rulerWaypoints) ? s.rulerWaypoints : [],
+    rulerLegModes:           Array.isArray(s.rulerLegModes) ? s.rulerLegModes : [],
+    rulerCurrentMode:        s.rulerCurrentMode ?? 'walk',
+    activeRouteId:           s.activeRouteId ?? null,
+    boatMinSegmentBlocks:    s.boatMinSegmentBlocks ?? 32,
   }
 }
 
@@ -247,18 +365,24 @@ const RESET: OverlayState = {
   oreVeinMode: 'density',
   showOreFeatures: false, oreFeatureTypes: ALL_ORE_FEATURE_IDS,
   showCarvers: false, carverOpacity: 1, showTerrain: false, terrainOpacity: 0.6,
-  hideWater: false, showChunkGrid: false, showRegionGrid: false, showSpawnRadius: false,
+  hideWater: false, showChunkGrid: false, showRegionGrid: false, showSpawnRadius: false, showSpawnChunks: false,
+  showWorldBorder: false,
   showStructures: true,
   showMarkers: false,
+  markerMinZoom: DEFAULT_MARKER_MIN_ZOOM,
   markerGroupDefs: DEFAULT_MARKER_GROUPS,
   enabledMarkerGroups: new Set(DEFAULT_MARKER_GROUPS.map(g => g.id)),
-  markerYFilterEnabled: false, markerYFilterRadius: 32,
+  markerYFilterEnabled: false, markerYLow: -32, markerYHigh: 32,
+  markerYLockedToPlayer: true, markerYAnchorY: null,
   caveMode: false, caveScanLow: -40, caveScanHigh: 40,
+  caveLockedToPlayer: true, caveAnchorY: null,
+  caveZoomMinOverworld: CAVE_MODE_MIN_ZOOM, caveZoomMinNether: CAVE_MODE_MIN_ZOOM,
   showCaveEntrances: false, caveEntranceOpacity: 0.7,
   showLocalDifficulty: false,
   biomeMode: 'surface',
   tileCacheVersion: 0, overlayCacheVersion: 0, structureRevision: 0, debugOverlayOpen: false, zoom: 2, uiScale: 1,
-  rulerActive: false, rulerWaypoints: [],
+  rulerActive: false, rulerPlacementMode: false, rulerWaypoints: [], rulerLegModes: [], rulerCurrentMode: 'walk', activeRouteId: null,
+  boatMinSegmentBlocks: 32,
 }
 
 export function overlayReducer<S extends OverlayState>(state: S, action: { type: string }): S {
@@ -325,10 +449,18 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
       return { ...state, showRegionGrid: !state.showRegionGrid }
     case 'TOGGLE_SPAWN_RADIUS':
       return { ...state, showSpawnRadius: !state.showSpawnRadius }
+    case 'TOGGLE_SPAWN_CHUNKS':
+      return { ...state, showSpawnChunks: !state.showSpawnChunks }
+    case 'TOGGLE_WORLD_BORDER':
+      return { ...state, showWorldBorder: !state.showWorldBorder }
     case 'TOGGLE_STRUCTURES':
       return { ...state, showStructures: !state.showStructures }
     case 'TOGGLE_MARKERS':
       return { ...state, showMarkers: !state.showMarkers }
+    case 'SET_MARKER_MIN_ZOOM': {
+      const a = action as OverlayAction & { type: 'SET_MARKER_MIN_ZOOM' }
+      return { ...state, markerMinZoom: a.zoom }
+    }
     case 'SET_MARKER_GROUP': {
       const a = action as OverlayAction & { type: 'SET_MARKER_GROUP' }
       const next = new Set(state.enabledMarkerGroups)
@@ -370,17 +502,38 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
       }
     case 'SET_MARKER_Y_FILTER': {
       const a = action as OverlayAction & { type: 'SET_MARKER_Y_FILTER' }
+      // Enabling always starts from the predictable default: locked to the
+      // player (mirrors TOGGLE_CAVE_MODE).
+      const enabling = a.enabled === true && !state.markerYFilterEnabled
       return {
         ...state,
         markerYFilterEnabled: a.enabled ?? state.markerYFilterEnabled,
-        markerYFilterRadius:  a.radius  ?? state.markerYFilterRadius,
+        markerYLow:           a.low     ?? state.markerYLow,
+        markerYHigh:          a.high    ?? state.markerYHigh,
+        ...(enabling ? { markerYLockedToPlayer: true, markerYAnchorY: null } : null),
       }
     }
+    case 'SET_MARKER_Y_LOCK': {
+      const a = action as OverlayAction & { type: 'SET_MARKER_Y_LOCK' }
+      return { ...state, markerYLockedToPlayer: a.locked, markerYAnchorY: a.locked ? null : a.anchorY }
+    }
     case 'TOGGLE_CAVE_MODE':
-      return { ...state, caveMode: !state.caveMode }
+      // Entering/leaving cave mode always resets to the predictable default:
+      // locked to the player.
+      return { ...state, caveMode: !state.caveMode, caveLockedToPlayer: true, caveAnchorY: null }
     case 'SET_CAVE_SCAN_RANGE': {
       const a = action as OverlayAction & { type: 'SET_CAVE_SCAN_RANGE' }
       return { ...state, caveScanLow: a.low, caveScanHigh: a.high }
+    }
+    case 'SET_CAVE_LOCK': {
+      const a = action as OverlayAction & { type: 'SET_CAVE_LOCK' }
+      return { ...state, caveLockedToPlayer: a.locked, caveAnchorY: a.locked ? null : a.anchorY }
+    }
+    case 'SET_CAVE_ZOOM_MIN': {
+      const a = action as OverlayAction & { type: 'SET_CAVE_ZOOM_MIN' }
+      return a.dimension === 'nether'
+        ? { ...state, caveZoomMinNether: a.min }
+        : { ...state, caveZoomMinOverworld: a.min }
     }
     case 'TOGGLE_CAVE_ENTRANCES':
       return { ...state, showCaveEntrances: !state.showCaveEntrances }
@@ -412,16 +565,68 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
       const a = action as OverlayAction & { type: 'SET_UI_SCALE' }
       return { ...state, uiScale: a.scale }
     }
-    case 'RULER_TOGGLE':
-      return { ...state, rulerActive: !state.rulerActive, rulerWaypoints: state.rulerActive ? [] : state.rulerWaypoints }
+    // Cross-cutting: a world/seed switch invalidates any in-progress route — its
+    // waypoints are coordinates in the *old* world, meaningless in the new one.
+    // Pins/SavedRoutes are already world-scoped storage and reload correctly on
+    // their own (worldSlice.ts); the active/in-progress ruler route isn't scoped
+    // that way, so it has to be explicitly cleared here or it silently carries
+    // over into whatever world loads next. Leaves rulerActive alone — if the
+    // panel was open, it stays open, just empty and ready for a new route.
+    case 'SET_SEED':
+    case 'SET_MANUAL_SEED':
+      return { ...state, rulerWaypoints: [], rulerLegModes: [], activeRouteId: null }
+    case 'RULER_TOGGLE': {
+      const active = !state.rulerActive
+      // Toggling via toolbar/hotkey has always meant "I'm about to click points" —
+      // keep that: turning the tool on enters placement mode, turning it off exits.
+      return { ...state, rulerActive: active, rulerPlacementMode: active }
+    }
     case 'RULER_ADD_WAYPOINT': {
       const a = action as OverlayAction & { type: 'RULER_ADD_WAYPOINT' }
-      return { ...state, rulerWaypoints: [...state.rulerWaypoints, { x: a.x, z: a.z }] }
+      const rulerLegModes = state.rulerWaypoints.length > 0
+        ? [...state.rulerLegModes, state.rulerCurrentMode]
+        : state.rulerLegModes
+      return { ...state, rulerWaypoints: [...state.rulerWaypoints, { x: a.x, z: a.z }], rulerLegModes }
     }
     case 'RULER_UNDO':
-      return { ...state, rulerWaypoints: state.rulerWaypoints.slice(0, -1) }
+      return {
+        ...state,
+        rulerWaypoints: state.rulerWaypoints.slice(0, -1),
+        rulerLegModes: state.rulerLegModes.slice(0, -1),
+      }
     case 'RULER_CLEAR':
-      return { ...state, rulerWaypoints: [] }
+      return { ...state, rulerWaypoints: [], rulerLegModes: [], activeRouteId: null }
+    case 'RULER_SET_CURRENT_MODE': {
+      const a = action as OverlayAction & { type: 'RULER_SET_CURRENT_MODE' }
+      return { ...state, rulerCurrentMode: a.mode }
+    }
+    case 'RULER_SET_LEG_MODE': {
+      const a = action as OverlayAction & { type: 'RULER_SET_LEG_MODE' }
+      return { ...state, rulerLegModes: state.rulerLegModes.map((m, i) => i === a.index ? a.mode : m) }
+    }
+    case 'RULER_LOAD_ROUTE': {
+      const a = action as OverlayAction & { type: 'RULER_LOAD_ROUTE' }
+      // View-only by default — promoting/selecting a route (map click on a thin
+      // alternate, or the panel's Load button) should not also drop you into
+      // "map clicks add a point" mode. See RULER_START_EDITING for the explicit
+      // opt-in to actually extend the route.
+      return {
+        ...state, rulerActive: true, rulerPlacementMode: false,
+        rulerWaypoints: a.waypoints, rulerLegModes: a.legModes, activeRouteId: a.id,
+      }
+    }
+    case 'RULER_NEW':
+      return { ...state, rulerActive: true, rulerPlacementMode: true, rulerWaypoints: [], rulerLegModes: [], activeRouteId: null }
+    case 'RULER_START_EDITING':
+      return { ...state, rulerPlacementMode: true }
+    case 'RULER_SET_ACTIVE_ROUTE': {
+      const a = action as OverlayAction & { type: 'RULER_SET_ACTIVE_ROUTE' }
+      return { ...state, activeRouteId: a.id }
+    }
+    case 'SET_BOAT_MIN_SEGMENT': {
+      const a = action as OverlayAction & { type: 'SET_BOAT_MIN_SEGMENT' }
+      return { ...state, boatMinSegmentBlocks: a.blocks }
+    }
     default:
       return state
   }

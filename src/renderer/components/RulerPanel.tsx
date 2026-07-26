@@ -1,5 +1,8 @@
 import React from 'react'
 import { useApp } from '../App'
+import { TRAVEL_MODE_ORDER, TRAVEL_MODES, TravelMode, legTravelTime } from '../lib/travelModes'
+import { useBiomeSplitSegments } from '../hooks/useBiomeSplitSegments'
+import { RouteSubSegment } from '../lib/biomeSplit'
 
 function legDist(a: { x: number; z: number }, b: { x: number; z: number }): number {
   return Math.sqrt((b.x - a.x) ** 2 + (b.z - a.z) ** 2)
@@ -17,58 +20,157 @@ function formatTime(seconds: number): string {
   return `${m}m ${s}s`
 }
 
-const WALK_SPEED = 4.317  // blocks/second
+function ModeSelect({ value, onChange, disabled }: {
+  value: TravelMode; onChange: (mode: TravelMode) => void; disabled?: boolean
+}) {
+  return (
+    <select
+      className="ruler-panel-mode-select"
+      value={value}
+      disabled={disabled}
+      style={{ color: TRAVEL_MODES[value].color }}
+      onChange={e => onChange(e.target.value as TravelMode)}
+    >
+      {TRAVEL_MODE_ORDER.map(id => (
+        <option key={id} value={id}>{TRAVEL_MODES[id].label}</option>
+      ))}
+    </select>
+  )
+}
+
+function segmentsTime(segments: RouteSubSegment[]): number {
+  return segments.reduce((s, seg) => s + legTravelTime(seg.distance, seg.mode), 0)
+}
 
 export default function RulerPanel() {
-  const { state, dispatch } = useApp()
-  const { rulerActive, rulerWaypoints: wps, dimension } = state
+  const { state, dispatch, generatorSlot } = useApp()
+  const {
+    rulerActive, rulerPlacementMode, rulerWaypoints: wps, rulerLegModes,
+    rulerCurrentMode, dimension, activeRouteId, savedRoutes,
+  } = state
+  const legSegments = useBiomeSplitSegments(generatorSlot, wps, rulerLegModes, state.boatMinSegmentBlocks)
 
   if (!rulerActive) return null
 
+  const activeRoute = activeRouteId ? savedRoutes.find(r => r.id === activeRouteId) : null
+
   const legs = wps.length >= 2
-    ? wps.slice(0, -1).map((a, i) => legDist(a, wps[i + 1]))
+    ? wps.slice(0, -1).map((a, i) => {
+      const dist = legDist(a, wps[i + 1])
+      const mode = rulerLegModes[i] ?? 'walk'
+      const segments = legSegments[i]
+      const isSplit = (mode === 'boat' || mode === 'walk') && segments && segments.length > 1
+      return {
+        dist, mode,
+        time: segments ? segmentsTime(segments) : legTravelTime(dist, mode),
+        isSplit,
+      }
+    })
     : []
-  const total = legs.reduce((s, d) => s + d, 0)
+  const total = legs.reduce((s, l) => s + l.dist, 0)
+  const totalTime = legs.reduce((s, l) => s + l.time, 0)
   const netherEquiv = dimension === 'overworld' && total > 0 ? total / 8 : null
 
   return (
     <div className="ruler-panel">
       <div className="ruler-panel-header">
-        <span className="ruler-panel-title">Ruler</span>
+        <span className="ruler-panel-title">{activeRoute ? `Routes — ${activeRoute.name}` : 'Routes'}</span>
         <div className="ruler-panel-header-actions">
-          {wps.length > 0 && (
-            <button className="ruler-panel-btn" title="Undo last point (Escape)"
-              onClick={() => dispatch({ type: 'RULER_UNDO' } as never)}>
-              ↩
-            </button>
+          {rulerPlacementMode ? (<>
+            {legs.length > 0 && (
+              <button className="ruler-panel-btn" title={activeRouteId ? 'Update this saved route' : 'Save as a named route'}
+                onClick={() => {
+                  if (activeRouteId) {
+                    dispatch({
+                      type: 'UPDATE_ROUTE', id: activeRouteId,
+                      changes: { waypoints: wps, legModes: rulerLegModes },
+                    } as never)
+                  } else {
+                    const first = wps[0], last = wps[wps.length - 1]
+                    const name = `${Math.round(first.x)},${Math.round(first.z)} → ${Math.round(last.x)},${Math.round(last.z)}`
+                    const id = `route-${Date.now()}`
+                    dispatch({
+                      type: 'ADD_ROUTE',
+                      route: { id, name, dimension, waypoints: wps, legModes: rulerLegModes, createdAt: Date.now() },
+                    } as never)
+                    dispatch({ type: 'RULER_SET_ACTIVE_ROUTE', id } as never)
+                  }
+                }}>
+                {activeRouteId ? 'Update' : 'Save'}
+              </button>
+            )}
+            {wps.length > 0 && (
+              <button className="ruler-panel-btn" title="Undo last point (Escape)"
+                onClick={() => dispatch({ type: 'RULER_UNDO' } as never)}>
+                ↩
+              </button>
+            )}
+            {wps.length > 0 && (
+              <button className="ruler-panel-btn" title="Clear all points"
+                onClick={() => dispatch({ type: 'RULER_CLEAR' } as never)}>
+                Clear
+              </button>
+            )}
+          </>) : (
+            wps.length > 0 && (
+              <button className="ruler-panel-btn" title="Click the map to extend this route"
+                onClick={() => dispatch({ type: 'RULER_START_EDITING' } as never)}>
+                Edit
+              </button>
+            )
           )}
-          {wps.length > 0 && (
-            <button className="ruler-panel-btn" title="Clear all points"
-              onClick={() => dispatch({ type: 'RULER_CLEAR' } as never)}>
-              Clear
-            </button>
-          )}
-          <button className="ruler-panel-btn ruler-panel-close" title="Close ruler (R)"
+          <button className="ruler-panel-btn ruler-panel-close" title="Close routes panel (R)"
             onClick={() => dispatch({ type: 'RULER_TOGGLE' } as never)}>
             ✕
           </button>
         </div>
       </div>
 
-      {wps.length === 0 && (
+      {rulerPlacementMode && wps.length === 0 && (
         <div className="ruler-panel-hint">Click on the map to place waypoints</div>
       )}
 
-      {wps.length === 1 && (
+      {rulerPlacementMode && wps.length === 1 && (
         <div className="ruler-panel-hint">Click again to measure distance</div>
+      )}
+
+      {!rulerPlacementMode && wps.length > 0 && (
+        <div className="ruler-panel-hint">Viewing — click "Edit" or right-click the map to extend this route</div>
+      )}
+
+      {rulerPlacementMode && (
+        <div className="ruler-panel-current-mode">
+          <span>Next leg</span>
+          <ModeSelect
+            value={rulerCurrentMode}
+            onChange={mode => dispatch({ type: 'RULER_SET_CURRENT_MODE', mode } as never)}
+          />
+        </div>
       )}
 
       {legs.length > 0 && (
         <div className="ruler-panel-legs">
-          {legs.map((dist, i) => (
+          {legs.map((leg, i) => (
             <div key={i} className="ruler-panel-leg">
-              <span className="ruler-panel-leg-num">{i + 1} → {i + 2}</span>
-              <span className="ruler-panel-leg-dist">{formatDist(dist)} blocks</span>
+              <div className="ruler-panel-leg-row">
+                <span className="ruler-panel-leg-num">{i + 1} → {i + 2}</span>
+                <span className="ruler-panel-leg-dist">{formatDist(leg.dist)} blocks</span>
+                <span className="ruler-panel-leg-time">{formatTime(leg.time)}</span>
+              </div>
+              <ModeSelect
+                value={leg.mode}
+                disabled={!rulerPlacementMode}
+                onChange={mode => dispatch({ type: 'RULER_SET_LEG_MODE', index: i, mode } as never)}
+              />
+              {leg.isSplit && (
+                <div className="ruler-panel-leg-split">
+                  {legSegments[i].map((seg, si) => (
+                    <span key={si} style={{ color: TRAVEL_MODES[seg.mode].color }}>
+                      {formatDist(seg.distance)} {TRAVEL_MODES[seg.mode].label.toLowerCase()}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -89,8 +191,8 @@ export default function RulerPanel() {
             </div>
           )}
           <div className="ruler-panel-total-row ruler-panel-time">
-            <span>Walk time</span>
-            <span>{formatTime(total / WALK_SPEED)}</span>
+            <span>Total time</span>
+            <span>{formatTime(totalTime)}</span>
           </div>
         </div>
       )}

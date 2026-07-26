@@ -2,13 +2,15 @@ import React, { useState, useRef, useEffect } from 'react'
 import { useApp } from '../App'
 import WorldFlyout from './rail/WorldFlyout'
 import LayersFlyout from './rail/LayersFlyout'
-import MarkersFlyout from './rail/MarkersFlyout'
+import StructuresFlyout from './rail/StructuresFlyout'
+import WorldDataFlyout from './rail/WorldDataFlyout'
+import SavedFlyout from './rail/SavedFlyout'
 import SettingsFlyout from './rail/SettingsFlyout'
 import ExportMapDialog from './ExportMapDialog'
 import WorldSettingsPanel from './WorldSettingsPanel'
-import MarkerGroupEditor from './MarkerGroupEditor'
+import { IconWorld, IconLayers, IconPlaces, IconWorldData, IconSaved, IconSettings } from './icons'
 
-type ActivePanel = 'world' | 'layers' | 'markers' | 'settings' | null
+type ActivePanel = 'world' | 'layers' | 'structures' | 'worldData' | 'saved' | 'settings' | null
 
 const PANEL_MIN      = 200
 const PANEL_MAX      = 600
@@ -24,7 +26,6 @@ export default function Rail() {
   const [renderTarget, setRenderTarget] = useState<ActivePanel>(null)
   const [exportOpen,        setExportOpen]        = useState(false)
   const [worldSettingsOpen, setWorldSettingsOpen] = useState(false)
-  const [markerEditorOpen,  setMarkerEditorOpen]  = useState(false)
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const s = localStorage.getItem(STORAGE_KEY)
@@ -83,10 +84,12 @@ export default function Rail() {
 
       {/* ── Icon column ── */}
       <div className="rail-icon-col">
-        <RailBtn icon="🌍" label="World"    active={active === 'world'}    onClick={() => toggle('world')} />
-        <RailBtn icon="◈"  label="Layers"   active={active === 'layers'}   onClick={() => toggle('layers')} />
-        <RailBtn icon="📌" label="Markers"  active={active === 'markers'}  onClick={() => toggle('markers')} />
-        <RailBtn icon="⚙"  label="Settings" active={active === 'settings'} onClick={() => toggle('settings')} />
+        <RailBtn icon={<IconWorld />}    label="World"    active={active === 'world'}    onClick={() => toggle('world')} />
+        <RailBtn icon={<IconLayers />}   label="Layers"   active={active === 'layers'}   onClick={() => toggle('layers')} />
+        <RailBtn icon={<IconPlaces />}   label="Structures" active={active === 'structures'} onClick={() => toggle('structures')} />
+        <RailBtn icon={<IconWorldData />} label="World Data" active={active === 'worldData'} onClick={() => toggle('worldData')} />
+        <RailBtn icon={<IconSaved />}    label="Saved"    active={active === 'saved'}    onClick={() => toggle('saved')} />
+        <RailBtn icon={<IconSettings />} label="Settings" active={active === 'settings'} onClick={() => toggle('settings')} />
       </div>
 
       {/* ── Content panel (in-flow, pushes map canvas) ── */}
@@ -102,11 +105,11 @@ export default function Rail() {
               onWorldSettings={() => { setWorldSettingsOpen(true); toggle('world') }}
             />
           )}
-          {renderTarget === 'layers'   && <LayersFlyout />}
-          {renderTarget === 'markers'  && <MarkersFlyout />}
-          {renderTarget === 'settings' && (
-            <SettingsFlyout onOpenMarkerEditor={() => { setMarkerEditorOpen(true); toggle('settings') }} />
-          )}
+          {renderTarget === 'layers'     && <LayersFlyout />}
+          {renderTarget === 'structures' && <StructuresFlyout />}
+          {renderTarget === 'worldData'  && <WorldDataFlyout />}
+          {renderTarget === 'saved'      && <SavedFlyout />}
+          {renderTarget === 'settings'   && <SettingsFlyout />}
 
           {/* Resize handle — only interactive when open */}
           {active && (
@@ -118,13 +121,12 @@ export default function Rail() {
 
       {exportOpen        && <ExportMapDialog    onClose={() => setExportOpen(false)} />}
       {worldSettingsOpen && state.worldDir && <WorldSettingsPanel onClose={() => setWorldSettingsOpen(false)} />}
-      {markerEditorOpen  && <MarkerGroupEditor  onClose={() => setMarkerEditorOpen(false)} />}
     </div>
   )
 }
 
 function RailBtn({ icon, label, active, onClick, indicator }: {
-  icon: string; label: string; active: boolean; onClick: () => void
+  icon: React.ReactNode; label: string; active: boolean; onClick: () => void
   indicator?: 'green' | 'red'
 }) {
   return (

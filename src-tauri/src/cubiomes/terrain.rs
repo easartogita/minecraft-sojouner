@@ -1,4 +1,4 @@
-use super::{CUBIOMES_LOCK, cm_get_surface_heights, cm_free_results};
+use super::{lock_cubiomes, cm_get_surface_heights, cm_free_results};
 
 /// Real preliminary surface heightmap for a `w`×`h` grid starting at `(x0, z0)`,
 /// where consecutive samples are `stride` blocks apart. Uses the generator
@@ -12,7 +12,7 @@ pub async fn cubiomes_get_surface_heights(
 ) -> Vec<i32> {
     tauri::async_runtime::spawn_blocking(move || {
         // Hold the lock across the whole call so the generator slot can't be recycled.
-        let _guard = CUBIOMES_LOCK.lock().unwrap();
+        let _guard = lock_cubiomes();
         let ptr = unsafe { cm_get_surface_heights(slot, x0, z0, w, h, stride) };
         if ptr.is_null() { return Vec::new(); }
         unsafe {

@@ -10,19 +10,23 @@
 }
 
 :root {
-  --bg-dark: #0d1117;
-  --bg-panel: #161b22;
-  --bg-hover: #21262d;
-  --border: #30363d;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted: #484f58;
-  --accent: #58a6ff;
-  --accent-hover: #79c0ff;
+  --bg-dark: #101114;
+  --bg-panel: #17191d;
+  --bg-hover: #212429;
+  --border: #2e3238;
+  --text-primary: #e8eaed;
+  --text-secondary: #9aa0a8;
+  --text-muted: #565b63;
+  --accent: #b48ce0;
+  --accent-hover: #c8a5f0;
   --green: #3fb950;
   --red: #f85149;
   --amber: #d29922;
   --rail-icon-col-width: 52px;
+
+  /* Type roles — see docs/design-language.md. Plex first if vendored, else system. */
+  --font-ui: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'DejaVu Sans Mono', ui-monospace, monospace;
 }
 
 html, body, #root {
@@ -31,7 +35,7 @@ html, body, #root {
   overflow: hidden;
   background: var(--bg-dark);
   color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-ui);
   font-size: 13px;
 }
 

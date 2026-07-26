@@ -15,6 +15,14 @@ interface PlayerInfo {
   z:         number
   dimension: string
   isHost:    boolean
+  mountType?: string   // entity type the player is riding, if mounted
+  mountName?: string   // the mount's custom name (name tag), if any
+  /** Bed/respawn-anchor spawn point — absent until the player has actually
+   *  slept in a bed or set a respawn anchor. Distinct from the world spawn. */
+  respawnX?: number
+  respawnY?: number
+  respawnZ?: number
+  respawnDimension?: string
 }
 
 interface SeedData {
@@ -25,6 +33,7 @@ interface SeedData {
   worldType: WorldType
   spawnX: number
   spawnZ: number
+  spawnChunkRadius: number | null
   playerX: number | null
   playerY: number | null
   playerZ: number | null
@@ -34,6 +43,14 @@ interface SeedData {
   worldTime: number | null // total ticks elapsed (Data.Time)
   edition: 'java' | 'bedrock'
   players: PlayerInfo[]
+  /** Non-vanilla server software (empty for vanilla singleplayer). */
+  serverBrands: string[]
+  borderCenterX: number
+  borderCenterZ: number
+  /** Vanilla default (60,000,000) when the world has no border set. */
+  borderSize: number
+  /** Every gamerule as its raw NBT string value (e.g. "true", "3"). */
+  gameRules: Record<string, string>
 }
 
 interface McaMetrics {
@@ -93,6 +110,7 @@ interface GameEntity {
   saddled?: boolean
   horseArmor?: string
   horseVariant?: string
+  temper?: number
   chestItems?: EntityItem[]
   llamaStrength?: number
   llamaDecor?: string
@@ -128,6 +146,8 @@ interface BlockItem {
   slot: number
   id: string
   count: number
+  /** e.g. "strong_healing" — read from the item's own NBT (Java only). */
+  potion?: string
 }
 
 interface PoiRecord {

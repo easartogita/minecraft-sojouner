@@ -5,10 +5,11 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
 use super::{
-    CUBIOMES_LOCK,
+    lock_cubiomes,
     cm_setup_generator, cm_find_structures, cm_get_strongholds, cm_free_results,
     cm_get_structure_loot, cm_get_structure_chests, cm_free_string, cm_item_name,
-    seed_parts,
+    cm_enchantment_name, cm_potion_name_for_effect,
+    cm_get_end_gateway_links, seed_parts,
 };
 
 struct StructureDef {
@@ -37,6 +38,7 @@ const STRUCTURE_DEFS: &[StructureDef] = &[
     StructureDef { name: "geode",                cubiomes_id: 17, region_size: Some(1),  dimension:  0 },
     StructureDef { name: "trail_ruins",          cubiomes_id: 23, region_size: Some(34), dimension:  0 },
     StructureDef { name: "trial_chambers",       cubiomes_id: 24, region_size: Some(24), dimension:  0 },
+    StructureDef { name: "abandoned_camp",       cubiomes_id: 25, region_size: Some(34), dimension:  0 },
     StructureDef { name: "stronghold",           cubiomes_id: -1, region_size: None,     dimension:  0 },
     StructureDef { name: "fortress",             cubiomes_id: 18, region_size: Some(27), dimension: -1 },
     StructureDef { name: "bastion",              cubiomes_id: 19, region_size: Some(27), dimension: -1 },
@@ -58,13 +60,23 @@ pub struct StructureHit {
     pub variant_color: Option<String>,
 }
 
+// Only one variant tag can be reported per instance (first match wins) — giant
+// and underground are mutually exclusive in cubiomes' own generation, but
+// air_pocket is independently rolled and can co-occur with either; it's
+// ordered last so giant/underground (rarer, more notable) still take priority
+// on the rare instance where both are true.
 fn resolve_variant(struct_type: &str, flags: i32) -> Option<(&'static str, &'static str)> {
     match struct_type {
-        "igloo"               if flags & 1 != 0 => Some(("basement",    "#f59e0b")),
-        "village"             if flags & 2 != 0 => Some(("zombie",      "#4ade80")),
-        "ruined_portal"       if flags & 4 != 0 => Some(("giant",       "#c084fc")),
-        "ruined_portal"       if flags & 8 != 0 => Some(("underground", "#6b7280")),
-        "ruined_portal_nether" if flags & 4 != 0 => Some(("giant",       "#c084fc")),
+        "igloo"                if flags & 1  != 0 => Some(("basement",    "#f59e0b")),
+        "village"              if flags & 2  != 0 => Some(("zombie",      "#4ade80")),
+        "ruined_portal"        if flags & 4  != 0 => Some(("giant",       "#c084fc")),
+        "ruined_portal"        if flags & 8  != 0 => Some(("underground", "#6b7280")),
+        "ruined_portal"        if flags & 16 != 0 => Some(("air_pocket",  "#38bdf8")),
+        "ruined_portal_nether" if flags & 4  != 0 => Some(("giant",       "#c084fc")),
+        "ruined_portal_nether" if flags & 16 != 0 => Some(("air_pocket",  "#38bdf8")),
+        // ~95% of geodes generate already cracked open; the notable minority is
+        // the ~5% that are fully sealed with no visible entrance.
+        "geode"                if flags & 1  != 0 => Some(("sealed",      "#6b7280")),
         _ => None,
     }
 }
@@ -79,7 +91,7 @@ pub fn find_all_structures(
     enabled: &[String],
 ) -> Vec<StructureHit> {
     let (lo, hi) = seed_parts(seed);
-    let _guard = CUBIOMES_LOCK.lock().unwrap();
+    let _guard = lock_cubiomes();
     let slot = unsafe { cm_setup_generator(lo, hi, mc_version, dimension, world_flags) };
     if slot < 0 { return vec![]; }
 
@@ -142,6 +154,15 @@ pub fn find_all_structures(
 /// user has enabled.
 const STRUCT_TILE_BLOCKS: i32 = 512;
 
+// Bump whenever cm_find_structures' selection logic changes (viability checks
+// added/removed, etc.) so previously cached tiles — computed under the old,
+// possibly-wrong logic — are treated as a cache miss and recomputed instead of
+// silently served stale forever. v2: added the End City / 1.18+ terrain
+// checks (isViableEndCityTerrain, isViableStructureTerrain) that were missing,
+// which had been over-reporting End Cities (and desert temples/jungle
+// temples/mansions on 1.18+) at biome-valid but terrain-invalid positions.
+const STRUCT_CACHE_VERSION: i32 = 2;
+
 #[derive(Serialize, Deserialize)]
 struct CachedHit {
     t: String,
@@ -169,7 +190,7 @@ fn struct_cache_dir(
     cache_root
         .join("structures")
         .join(seed_hex(seed_low, seed_high))
-        .join(format!("{dim_str}_v{mc_version}_f{world_flags}"))
+        .join(format!("{dim_str}_v{mc_version}_f{world_flags}_g{STRUCT_CACHE_VERSION}"))
 }
 
 fn tile_path(dir: &Path, tx: i32, tz: i32) -> PathBuf {
@@ -296,6 +317,13 @@ pub fn clear_structure_cache(cache_root: &Path, seed_low: i32, seed_high: i32) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// One rolled enchantment on a generated item.
+#[derive(Serialize)]
+pub struct EnchantmentInfo {
+    pub name:  String,
+    pub level: i32,
+}
+
 /// One generated loot item in a structure chest, with the item name resolved.
 #[derive(Serialize)]
 pub struct LootItem {
@@ -303,7 +331,21 @@ pub struct LootItem {
     pub chest_z: i32,
     pub item:    String,
     pub count:   i32,
+    /// Resolved potion name (e.g. "healing") when a `set_potion` loot function
+    /// applied one — cubiomes tracks the raw mob effect, not the potion's own
+    /// id, so this is recovered by matching back against the potion table.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub potion: Option<String>,
+    // Always serialized (even as `[]`) — the frontend's LootItem.enchantments
+    // is a required array field, not optional; omitting it when empty would
+    // leave it `undefined` there and crash formatLootItem's `.length` check.
+    pub enchantments: Vec<EnchantmentInfo>,
 }
+
+/// Fixed record width per generated item in cm_get_structure_loot's output —
+/// must match LOOT_ITEM_STRIDE in cubiomes_bridge.c: chestX, chestZ, itemId,
+/// count, effect, duration, enchCount, then 16 (enchantment, level) pairs.
+const LOOT_ITEM_STRIDE: usize = 4 + 2 + 1 + 16 * 2;
 
 /// Roll the chest loot for a structure at `(pos_x, pos_z)` using the generator
 /// already set up at `slot`. Returns one entry per generated item stack.
@@ -314,14 +356,14 @@ pub async fn cubiomes_get_structure_loot(
 ) -> Vec<LootItem> {
     tauri::async_runtime::spawn_blocking(move || {
         // The loot library is not thread-safe; hold the lock across the call.
-        let _guard = CUBIOMES_LOCK.lock().unwrap();
+        let _guard = lock_cubiomes();
         let ptr = unsafe { cm_get_structure_loot(slot, struct_type, pos_x, pos_z) };
         if ptr.is_null() { return Vec::new(); }
         let mut items = Vec::new();
         unsafe {
             let count = (*ptr).max(0) as usize;
             for i in 0..count {
-                let base = 1 + i * 4;
+                let base = 1 + i * LOOT_ITEM_STRIDE;
                 let id = *ptr.add(base + 2);
                 let name_ptr = cm_item_name(id, mc_version);
                 let item = if name_ptr.is_null() {
@@ -329,11 +371,36 @@ pub async fn cubiomes_get_structure_loot(
                 } else {
                     std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
                 };
+
+                let effect = *ptr.add(base + 4);
+                let duration = *ptr.add(base + 5);
+                let potion = if effect >= 0 {
+                    let p = cm_potion_name_for_effect(effect, duration);
+                    if p.is_null() { None } else {
+                        Some(std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned())
+                    }
+                } else {
+                    None
+                };
+
+                let ench_count = (*ptr.add(base + 6)).clamp(0, 16) as usize;
+                let mut enchantments = Vec::with_capacity(ench_count);
+                for k in 0..ench_count {
+                    let ench_id = *ptr.add(base + 7 + k * 2);
+                    let level   = *ptr.add(base + 7 + k * 2 + 1);
+                    let name_ptr = cm_enchantment_name(ench_id);
+                    if name_ptr.is_null() { continue; }
+                    let name = std::ffi::CStr::from_ptr(name_ptr).to_string_lossy().into_owned();
+                    enchantments.push(EnchantmentInfo { name, level });
+                }
+
                 items.push(LootItem {
                     chest_x: *ptr.add(base),
                     chest_z: *ptr.add(base + 1),
                     item,
                     count: *ptr.add(base + 3),
+                    potion,
+                    enchantments,
                 });
             }
             cm_free_results(ptr);
@@ -350,6 +417,11 @@ pub struct ChestSlot {
     pub chest_x: i32,
     pub chest_z: i32,
     pub table:   String,
+    /// True for a chest on an End City's End Ship piece — the piece with the
+    /// better-than-average odds of an Elytra. Tower chests share the same
+    /// "end_city_treasure" loot table name, so this can't be told apart from
+    /// `table` alone; it comes from the underlying structure piece type.
+    pub is_ship: bool,
 }
 
 /// Report the chest composition of a structure at `(pos_x, pos_z)`: one entry
@@ -361,7 +433,7 @@ pub async fn cubiomes_get_structure_chests(
     slot: i32, struct_type: i32, pos_x: i32, pos_z: i32,
 ) -> Vec<ChestSlot> {
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = CUBIOMES_LOCK.lock().unwrap();
+        let _guard = lock_cubiomes();
         let ptr = unsafe { cm_get_structure_chests(slot, struct_type, pos_x, pos_z) };
         if ptr.is_null() { return Vec::new(); }
         let mut slots = Vec::new();
@@ -372,11 +444,42 @@ pub async fn cubiomes_get_structure_chests(
                 let mut f = line.split('\t');
                 if let (Some(x), Some(z), Some(table)) = (f.next(), f.next(), f.next()) {
                     if let (Ok(chest_x), Ok(chest_z)) = (x.parse(), z.parse()) {
-                        slots.push(ChestSlot { chest_x, chest_z, table: table.to_string() });
+                        let is_ship = f.next() == Some("ship");
+                        slots.push(ChestSlot { chest_x, chest_z, table: table.to_string(), is_ship });
                     }
                 }
             }
         }
         slots
+    }).await.unwrap_or_default()
+}
+
+/// One of the 20 fixed End Gateways generated in a ring on the main End
+/// island the first time the Ender Dragon is defeated, paired with the outer
+/// destination the game will deterministically place a gateway at the moment
+/// a player steps through — computed straight from the seed, so this is known
+/// even for gateways nobody has visited yet.
+#[derive(Serialize)]
+pub struct GatewayLink {
+    pub src_x: i32,
+    pub src_z: i32,
+    pub dst_x: i32,
+    pub dst_z: i32,
+}
+
+/// The 20 ring End Gateway → outer destination pairs for the generator at
+/// `slot`. Empty if the slot isn't set up for the End dimension, or the MC
+/// version predates 1.13 (`getLinkedGatewayPos` is undefined before that).
+#[tauri::command]
+pub async fn cubiomes_get_end_gateway_links(slot: i32) -> Vec<GatewayLink> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = lock_cubiomes();
+        let mut buf = [0i32; 80];
+        let n = unsafe { cm_get_end_gateway_links(slot, buf.as_mut_ptr()) };
+        if n <= 0 { return Vec::new(); }
+        (0..n as usize).map(|i| GatewayLink {
+            src_x: buf[i * 4], src_z: buf[i * 4 + 1],
+            dst_x: buf[i * 4 + 2], dst_z: buf[i * 4 + 3],
+        }).collect()
     }).await.unwrap_or_default()
 }
