@@ -24,12 +24,9 @@ export interface StructureConfig {
   spawnRadius?: number
   summary: string
   variants?: StructureVariantDef[]
-  /** Present for structure types where "has the good loot" can't be known
-   *  until the async per-instance chest walk resolves (see NOTABLE_LOOT_CHECK
-   *  in StructureLayer.tsx) — unlike variants, which resolve synchronously
-   *  from cheap flags at find-time. Confirmed genuinely variable per-instance
-   *  by direct survey, not just "sometimes empty due to incomplete cubiomes
-   *  piece simulation" (that ruled out Bastion and Fortress). */
+  /** Set when "has the good loot" can't be known until the async per-instance chest
+   *  walk resolves (NOTABLE_LOOT_CHECK in StructureLayer.tsx) — unlike variants,
+   *  which resolve synchronously from cheap flags at find-time. */
   notableLoot?: { label: string; summary: string }
 }
 
@@ -130,8 +127,8 @@ export function getStructuresForDimension(dim: Dimension): StructureType[] {
 }
 
 const DEFAULT_STRUCTURES: Record<Dimension, StructureType[]> = {
-  overworld: ['village', 'ruined_portal'],
-  nether:    ['ruined_portal_nether'],
+  overworld: ['village'],
+  nether:    [],
   end:       [],
 }
 

@@ -101,7 +101,7 @@ function PinLayer({ map }: { map: L.Map }) {
         if (btn) {
           btn.onclick = () => {
             marker.closePopup()
-            dispatch({ type: 'REMOVE_PIN', id: pin.id } as never)
+            dispatch({ type: 'REMOVE_PIN', id: pin.id })
           }
         }
       })

@@ -12,12 +12,9 @@ export interface UseTileLayerOptions {
   deps: React.DependencyList
   enabled?: boolean
   cache?: Map<string, ImageData | string>
-  // Which deps actually invalidate `cache`'s contents — e.g. a new seed/world,
-  // or an explicit force-refresh counter (tileCacheVersion/overlayCacheVersion).
-  // Defaults to `deps` (old behavior: clear on ANY dep change). Pass a narrower
-  // list when `cacheKeyFn` already encodes some of `deps` (e.g. dimension,
-  // biomeMode toggles) — those don't need a clear, since old entries just sit
-  // under keys that stop being read rather than colliding with new ones.
+  // Which deps actually invalidate `cache`'s contents (defaults to `deps`, i.e.
+  // clear on any change). Pass a narrower list when `cacheKeyFn` already encodes
+  // some deps (e.g. dimension) — those entries just go unread, no clear needed.
   cacheEpochDeps?: React.DependencyList
   maxCache?: number
   cacheKeyFn?: (coords: L.Coords) => string
@@ -27,11 +24,10 @@ export interface UseTileLayerOptions {
   fetch: (coords: L.Coords, signal?: AbortSignal) => Promise<ImageData | string | null>
   onCleanup?: () => void
   loadingAnimation?: (ctx: CanvasRenderingContext2D, size: number, elapsed: number) => void
-  loadingGifs?: string[]   // if set, show a randomly-picked GIF while fetching (no JS animation loop)
   nativeZoom?: number      // tiles above this zoom are nearest-neighbor upscaled in JS from the native tile
 }
 
-function nearestNeighborScale(
+export function nearestNeighborScale(
   parent: ImageData, upscale: number,
   subX: number, subY: number, size: number,
 ): ImageData {
@@ -72,7 +68,6 @@ export function useTileLayer({
   fetch,
   onCleanup,
   loadingAnimation,
-  loadingGifs,
   nativeZoom,
 }: UseTileLayerOptions): React.RefObject<L.GridLayer | null> {
   const layerRef = useRef<L.GridLayer | null>(null)
@@ -107,83 +102,6 @@ export function useTileLayer({
         if (level?.el) level.el.style.imageRendering = 'pixelated'
       },
       createTile(coords: L.Coords, done: L.DoneCallback) {
-        // ── GIF loading path ─────────────────────────────────────────────────
-        // Base-zoom tiles only (nativeZoom upscale tiles load instantly from cache).
-        const isUpscale = nativeZoom !== undefined && coords.z > nativeZoom
-        if (loadingGifs?.length && !isUpscale) {
-          const wrap = document.createElement('div')
-          wrap.style.cssText = `width:${tileSize}px;height:${tileSize}px;overflow:hidden`
-
-          if (skip?.(coords)) {
-            queueMicrotask(() => done(undefined, wrap))
-            return wrap
-          }
-
-          const cacheKey = cacheKeyFn?.(coords)
-          if (cacheKey && cache?.has(cacheKey)) {
-            const cached = cache.get(cacheKey)!
-            if (typeof cached === 'string') {
-              const img = document.createElement('img')
-              img.src = cached
-              img.style.cssText = `position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated`
-              wrap.appendChild(img)
-            } else {
-              const cv = document.createElement('canvas')
-              cv.width = cv.height = tileSize
-              cv.style.imageRendering = 'pixelated'
-              cv.getContext('2d')!.putImageData(cached, 0, 0)
-              wrap.appendChild(cv)
-            }
-            queueMicrotask(() => done(undefined, wrap))
-            return wrap
-          }
-
-          // Defer done() — Leaflet populates _tiles[key] only after createTile
-          // returns, so calling done() synchronously means _tileReady finds nothing
-          // and the tile never becomes visible.
-          queueMicrotask(() => {
-            done(undefined, wrap)
-            if (!wrap.isConnected || stale) return
-            const centre = map.project(map.getCenter(), coords.z)
-            const dx = coords.x + 0.5 - centre.x / tileSize
-            const dy = coords.y + 0.5 - centre.y / tileSize
-            const controller = new AbortController()
-            const job = queue.enqueue(dx * dx + dy * dy, () => {
-              if (!wrap.isConnected || stale) { queue.release(); return }
-              // Only show animation once the job is actively running — not while queued.
-              // This bounds simultaneous GIFs to queue concurrency (never the full tile count).
-              const loadImg = document.createElement('img')
-              loadImg.src = loadingGifs[Math.floor(Math.random() * loadingGifs.length)]
-              loadImg.style.cssText = `position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated`
-              wrap.replaceChildren(loadImg)
-              fetch(coords, controller.signal)
-                .then(result => {
-                  queue.release()
-                  if (stale || !wrap.isConnected || !result) return
-                  if (cacheKey && cache) { cache.set(cacheKey, result); evictCache(cache, maxCacheRef.current) }
-                  if (typeof result === 'string') {
-                    const img = document.createElement('img')
-                    img.src = result
-                    img.style.cssText = `position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated`
-                    wrap.replaceChildren(img)
-                  } else {
-                    const cv = document.createElement('canvas')
-                    cv.width = cv.height = tileSize
-                    cv.style.imageRendering = 'pixelated'
-                    cv.getContext('2d')!.putImageData(result, 0, 0)
-                    wrap.replaceChildren(cv)
-                  }
-                })
-                .catch(() => { queue.release() })
-            })
-            job.abort = () => controller.abort()
-            ;(wrap as any)._tileJob = job
-          })
-
-          return wrap
-        }
-
-        // ── Canvas path (original) ───────────────────────────────────────────
         const canvas = document.createElement('canvas')
         canvas.width = tileSize
         canvas.height = tileSize
@@ -269,11 +187,12 @@ export function useTileLayer({
 
           const controller = new AbortController()
           const job = queue.enqueue(priority, () => {
-            if (!canvas.isConnected || stale) { queue.release(); done(undefined, canvas); return }
+            if (!canvas.isConnected || stale) {
+              queue.release(); done(undefined, canvas); return
+            }
 
-            // Tile is now actively being fetched — reveal it and start the animation.
-            // The canvas is a live DOM element, so putImageData below updates it in-place
-            // without needing a second done() call.
+            // Reveal the canvas and start the animation; putImageData below updates
+            // the live DOM element in-place, no second done() call needed.
             let animating = false
             if (loadingAnimation) {
               animating = true
@@ -288,17 +207,63 @@ export function useTileLayer({
               requestAnimationFrame(animate)
             }
 
+            // Cache writes happen even if this job's canvas has since been
+            // disconnected/superseded (Leaflet swaps canvases constantly) — the
+            // cache is keyed by tile identity, so a "wasted" fetch still pays off
+            // for the next canvas asking for the same coordinate.
             fetch(coords, controller.signal)
               .then(result => {
                 animating = false
+                const connected = !stale && canvas.isConnected
+                if (!result) {
+                  queue.release()
+                  if (connected) ctx.clearRect(0, 0, tileSize, tileSize)
+                  if (!loadingAnimation) done(undefined, canvas)
+                  return
+                }
+                if (typeof result === 'string') {
+                  // fetch+blob+createImageBitmap, not <img>+drawImage+getImageData: asset://
+                  // responses aren't CORS-cleared, so drawing into a 2D canvas taints it and
+                  // getImageData throws — which would wedge the tile forever.
+                  urlToImageData(result, tileSize)
+                    .then(imageData => {
+                      queue.release()
+                      if (cacheKey && cache) {
+                        cache.set(cacheKey, imageData)
+                        evictCache(cache, maxCacheRef.current)
+                      }
+                      if (!connected) {
+                        if (!loadingAnimation) done(undefined, canvas)
+                        // Canvas is gone but the data landed in cache — redraw()
+                        // makes Leaflet re-request visible tiles, which hit
+                        // createTile's cache-fast-path and repaint synchronously
+                        // (no network round-trip). Without this a tile that
+                        // resolves after its canvas is swapped stays blank.
+                        if (!stale) layer.redraw()
+                        return
+                      }
+                      ctx.putImageData(imageData, 0, 0)
+                      if (!loadingAnimation) done(undefined, canvas)
+                    })
+                    .catch(() => {
+                      queue.release()
+                      if (connected) ctx.clearRect(0, 0, tileSize, tileSize)
+                      if (!loadingAnimation) done(undefined, canvas)
+                    })
+                  return
+                }
                 queue.release()
-                if (stale || !canvas.isConnected) { if (!loadingAnimation) done(undefined, canvas); return }
-                if (!result || typeof result === 'string') { if (!loadingAnimation) done(undefined, canvas); return }
-                ctx.putImageData(result, 0, 0)
                 if (cacheKey && cache) {
                   cache.set(cacheKey, result)
                   evictCache(cache, maxCacheRef.current)
                 }
+                if (!connected) {
+                  if (!loadingAnimation) done(undefined, canvas)
+                  // See the matching comment in the urlToImageData branch above.
+                  if (!stale) layer.redraw()
+                  return
+                }
+                ctx.putImageData(result, 0, 0)
                 if (!loadingAnimation) done(undefined, canvas)
               })
               .catch(err => {
@@ -326,11 +291,8 @@ export function useTileLayer({
     layer.addTo(map)
     layerRef.current = layer
 
-    // Only clear the shared cache when a real epoch boundary was crossed (new
-    // world/seed, or an explicit force-refresh counter) — not on every dep
-    // change. Dep changes not in `cacheEpochDeps` (e.g. dimension, biomeMode)
-    // are assumed to already be encoded in `cacheKeyFn`, so old entries just
-    // sit unread rather than colliding with new ones.
+    // Only clear the shared cache on a real epoch boundary, not every dep change
+    // — deps outside `cacheEpochDeps` are assumed already encoded in `cacheKeyFn`.
     const epoch = cacheEpochDeps ?? deps
     const prevEpoch = epochRef.current
     const epochChanged = !prevEpoch || prevEpoch.length !== epoch.length ||

@@ -1,189 +1,114 @@
-import { memo, useEffect, useRef } from 'react'
+import { memo, useEffect } from 'react'
 import L from 'leaflet'
-import { convertFileSrc } from '@tauri-apps/api/core'
 import { useApp } from '../App'
 import * as tileStats from '../lib/tileStats'
-import { BIOME_TILE_SIZE, TILE_SIZE, MC_VERSIONS, MIN_ZOOM } from '../lib/constants'
+import { BIOME_TILE_SIZE, MC_VERSIONS, MIN_ZOOM } from '../lib/constants'
 import { TileJobQueue } from '../lib/tileJobQueue'
 import * as api from '../lib/tauriAPI'
 import { useTileLayer } from '../hooks/useTileLayer'
-import { postOverlay } from '../lib/overlayWorker'
-import { tileToMinecraftRect } from '../lib/tileCoords'
-
-// Block-Y levels for each underground mode (fixed, no slider)
-const UNDERGROUND_BLOCK_Y = -32   // dripstone / lush caves
-const DEEP_BLOCK_Y        = -52   // deep dark
 
 const surfaceCache     = new Map<string, ImageData | string>()
-const undergroundCache = new Map<string, ImageData>()
-const deepCache        = new Map<string, ImageData>()
+const undergroundCache = new Map<string, ImageData | string>()
 const MAX_SURFACE_CACHE = 1600
-const MAX_UG_CACHE      = 800
+const MAX_UG_CACHE      = 1600 // disk-cached PNG path now, cheap enough to match surface's cache size
 
 const surfaceQueue     = new TileJobQueue(16, () => tileStats.notify(), 'biome/surface')
 const undergroundQueue = new TileJobQueue(8,  () => tileStats.notify(), 'biome/underground')
-const deepQueue        = new TileJobQueue(8,  () => tileStats.notify(), 'biome/deep')
 
-const LOADING_GIFS = [
-  '/loading/biome-loading-256-0.gif',
-  '/loading/biome-loading-256-1.gif',
-  '/loading/biome-loading-256-2.gif',
-  '/loading/biome-loading-256-3.gif',
-  '/loading/biome-loading-256-4.gif',
-]
-
-export function getBiomeCacheSize() { return surfaceCache.size + undergroundCache.size + deepCache.size }
-export function clearBiomeCache() { surfaceCache.clear(); undergroundCache.clear(); deepCache.clear() }
+export function getBiomeCacheSize() { return surfaceCache.size + undergroundCache.size }
+export function clearBiomeCache() { surfaceCache.clear(); undergroundCache.clear() }
 
 const combinedBiomeQueue = {
-  get size() { return surfaceQueue.size + undergroundQueue.size + deepQueue.size },
-  pause()  { surfaceQueue.pause();  undergroundQueue.pause();  deepQueue.pause()  },
-  resume() { surfaceQueue.resume(); undergroundQueue.resume(); deepQueue.resume() },
+  get size() { return surfaceQueue.size + undergroundQueue.size },
+  pause()  { surfaceQueue.pause();  undergroundQueue.pause()  },
+  resume() { surfaceQueue.resume(); undergroundQueue.resume() },
 }
 export function getBiomeQueue() { return combinedBiomeQueue }
 
-function makeUndergroundFetch(
-  slot: () => number,
-  seed: () => number | null,
-  version: () => string,
-  blockY: number,
-) {
-  const cubiomesY = Math.floor(blockY / 4)
-  return async (coords: L.Coords): Promise<ImageData | null> => {
-    const { blockX, blockZ, blocksPerPixel } = tileToMinecraftRect(coords.x, coords.y, coords.z)
-    const biomeScale = ([256, 64, 16, 4, 1] as const).find(s => s <= blocksPerPixel) ?? 4
-    const queryW = Math.max(1, Math.ceil(TILE_SIZE * blocksPerPixel / biomeScale))
-    const queryH = queryW
-    const qx = Math.floor(blockX / biomeScale)
-    const qz = Math.floor(blockZ / biomeScale)
-
-    const [ugBiomes, surfBiomes] = await Promise.all([
-      api.getBiomeRegionAt(slot(), qx, qz, queryW, queryH, biomeScale, cubiomesY),
-      api.getBiomeRegion(slot(), qx, qz, queryW, queryH, biomeScale),
-    ])
-    const pixelsBuf = await postOverlay(
-      { type: 'underground-biome', ugBiomes: ugBiomes.buffer, surfBiomes: surfBiomes.buffer, queryW, queryH, blocksPerPixel, biomeScale },
-      [ugBiomes.buffer, surfBiomes.buffer],
-    )
-    if (!pixelsBuf) return null
-    return new ImageData(new Uint8ClampedArray(pixelsBuf), TILE_SIZE, TILE_SIZE)
-  }
-}
-
 function BiomeTileLayer({ map, unlimitedCache = false }: { map: L.Map; unlimitedCache?: boolean }) {
-  const { state, generatorSlot } = useApp()
+  const { state, dispatch, generatorSlot, generatorConfig, availableLayers } = useApp()
 
   const seed      = state.seedData?.seed ?? null
   const dimension = state.dimension
   const version   = state.selectedVersion
+  const worldType = state.worldType
   const opacity   = state.biomeOpacity
   const biomeMode = state.biomeMode
   const slot      = generatorSlot
-  const seedBig   = seed != null ? BigInt(seed) : 0n
-  const mcVersion = MC_VERSIONS[version]
-
-  const slotRef    = useRef(slot)
-  const seedRef    = useRef(seed)
-  const versionRef = useRef(version)
-  slotRef.current    = slot
-  seedRef.current    = seed
-  versionRef.current = version
+  const { seedBig, worldFlags, mcVersion } = generatorConfig
 
   const is1_18 = mcVersion >= MC_VERSIONS['MC_1_18']
   const showUg = dimension === 'overworld' && is1_18
-  // Underground/deep are overworld-only cave modes. Outside the overworld (or
-  // pre-1.18) they don't apply, so the surface layer must render regardless of
-  // the persisted biomeMode — otherwise the biome layer goes blank in the Nether.
-  const showSurface = biomeMode === 'surface' || !showUg
+  // A persisted 'underground' choice can outlive a static export that never baked it.
+  const ugAvailable = !api.IS_STATIC_SITE || availableLayers?.underground != null
+  // Underground only applies overworld/1.18+; fall back to surface so the biome
+  // layer doesn't go blank elsewhere (e.g. Nether) or when unavailable.
+  const showSurface = biomeMode === 'surface' || !showUg || !ugAvailable
 
-  // ── Surface ──────────────────────────────────────────────────────────────────
+  // Also correct persisted state itself, so the toolbar/Layers panel don't keep
+  // claiming "Underground" while the map silently shows Surface.
+  useEffect(() => {
+    if (biomeMode === 'underground' && showUg && !ugAvailable) {
+      dispatch({ type: 'SET_BIOME_MODE', mode: 'surface' })
+    }
+  }, [biomeMode, showUg, ugAvailable, dispatch])
 
   useTileLayer({
     map,
     queue: surfaceQueue,
-    tileSize: BIOME_TILE_SIZE,
+    tileSize: api.IS_STATIC_SITE ? (api.getTileSizes(dimension).biome ?? BIOME_TILE_SIZE) : BIOME_TILE_SIZE,
     opacity,
     zIndex: 1,
     layerOptions: { updateWhenIdle: true, updateWhenZooming: false, minZoom: MIN_ZOOM, minNativeZoom: 0 },
-    deps: [map, generatorSlot, seed, dimension, version, state.tileCacheVersion, biomeMode],
-    // dimension is already in cacheKeyFn below; biomeMode doesn't affect the
-    // fetched tile (renderBiomeTile doesn't take it) — only seed/version/an
-    // explicit force-refresh should actually wipe the (possibly Infinity-sized,
-    // see unlimitedCache) shared surface cache.
-    cacheEpochDeps: [seed, version, state.tileCacheVersion],
+    deps: [map, generatorSlot, seed, dimension, version, worldType, state.tileCacheVersion, biomeMode],
+    // biomeMode doesn't affect the fetched tile, so it's not an epoch dep; worldType
+    // (large_biomes etc.) does change the pixels for the same seed+coords, so it must
+    // wipe the cache like seed/version — otherwise stale tiles leak across world types.
+    cacheEpochDeps: [seed, version, worldType, state.tileCacheVersion],
     enabled: seed != null && slot != null && showSurface,
     cache: surfaceCache as Map<string, ImageData | string>,
     maxCache: unlimitedCache ? Infinity : MAX_SURFACE_CACHE,
-    cacheKeyFn: (coords) => `B:${seed}:${version}:${dimension}:${coords.x}:${coords.y}:${coords.z}`,
+    cacheKeyFn: (coords) => `B:${seed}:${version}:${worldType}:${dimension}:${coords.x}:${coords.y}:${coords.z}`,
     fetch: async (coords) => {
       tileStats.biomeLoadingStart()
       const t0 = performance.now()
-      const path = await api.renderBiomeTile(slot!, seedBig, mcVersion, dimension, coords.x, coords.y, coords.z)
-      tileStats.biomeLoadingDone(Math.round(performance.now() - t0))
-      return path ? convertFileSrc(path) : null
+      const tile = await api.renderBiomeTile(slot!, seedBig, mcVersion, worldFlags, dimension, coords.x, coords.y, coords.z)
+      tileStats.biomeLoadingSettle()
+      if (tile) tileStats.biomeLoadingDone(Math.round(performance.now() - t0))
+      // ?v=mtime busts WebKit's URL-keyed image cache — see RenderedTile's doc comment.
+      return tile ? `${api.tileSrc(tile.path)}?v=${tile.mtime}` : null
     },
     onCleanup: tileStats.resetBiomeLoading,
-    loadingGifs: LOADING_GIFS,
     nativeZoom: 2,
   })
 
-  // ── Underground (Y −32) ───────────────────────────────────────────────────────
-
-  const ugFetchRef = useRef(makeUndergroundFetch(
-    () => slotRef.current!,
-    () => seedRef.current,
-    () => versionRef.current,
-    UNDERGROUND_BLOCK_Y,
-  ))
-
-  const ugLayerRef = useTileLayer({
+  const undergroundLayerRef = useTileLayer({
     map,
     queue: undergroundQueue,
-    tileSize: TILE_SIZE,
+    tileSize: api.IS_STATIC_SITE ? (api.getTileSizes(dimension).underground ?? BIOME_TILE_SIZE) : BIOME_TILE_SIZE,
     opacity,
     zIndex: 1,
-    layerOptions: { updateWhenIdle: true, updateWhenZooming: false },
-    deps: [map, slot, seed, version, biomeMode],
+    layerOptions: { updateWhenIdle: true, updateWhenZooming: false, minZoom: MIN_ZOOM, minNativeZoom: 0 },
+    deps: [map, slot, seed, version, worldType, state.tileCacheVersion, biomeMode],
     // biomeMode only gates `enabled`, not the fetched content — see surface layer above.
-    cacheEpochDeps: [seed, version],
-    enabled: seed != null && slot != null && showUg && biomeMode === 'underground',
+    cacheEpochDeps: [seed, version, worldType, state.tileCacheVersion],
+    enabled: seed != null && slot != null && showUg && biomeMode === 'underground' && ugAvailable,
     cache: undergroundCache,
     maxCache: MAX_UG_CACHE,
-    cacheKeyFn: (coords) => `UG:${seed}:${version}:${coords.x}:${coords.y}:${coords.z}`,
-    loadingGifs: LOADING_GIFS,
-    fetch: ugFetchRef.current,
+    cacheKeyFn: (coords) => `UG:${seed}:${version}:${worldType}:${coords.x}:${coords.y}:${coords.z}`,
+    fetch: async (coords) => {
+      tileStats.biomeLoadingStart()
+      const t0 = performance.now()
+      const tile = await api.renderUndergroundBiomeTile(slot!, seedBig, mcVersion, worldFlags, dimension, coords.x, coords.y, coords.z)
+      tileStats.biomeLoadingSettle()
+      if (tile) tileStats.biomeLoadingDone(Math.round(performance.now() - t0))
+      return tile ? `${api.tileSrc(tile.path)}?v=${tile.mtime}` : null
+    },
+    onCleanup: tileStats.resetBiomeLoading,
+    nativeZoom: 2,
   })
 
-  useEffect(() => { ugLayerRef.current?.redraw() }, [biomeMode]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Deep (Y −52) ─────────────────────────────────────────────────────────────
-
-  const deepFetchRef = useRef(makeUndergroundFetch(
-    () => slotRef.current!,
-    () => seedRef.current,
-    () => versionRef.current,
-    DEEP_BLOCK_Y,
-  ))
-
-  const deepLayerRef = useTileLayer({
-    map,
-    queue: deepQueue,
-    tileSize: TILE_SIZE,
-    opacity,
-    zIndex: 1,
-    layerOptions: { updateWhenIdle: true, updateWhenZooming: false },
-    deps: [map, slot, seed, version, biomeMode],
-    // biomeMode only gates `enabled`, not the fetched content — see surface layer above.
-    cacheEpochDeps: [seed, version],
-    enabled: seed != null && slot != null && showUg && biomeMode === 'deep',
-    cache: deepCache,
-    maxCache: MAX_UG_CACHE,
-    cacheKeyFn: (coords) => `DEEP:${seed}:${version}:${coords.x}:${coords.y}:${coords.z}`,
-    loadingGifs: LOADING_GIFS,
-    fetch: deepFetchRef.current,
-  })
-
-  useEffect(() => { deepLayerRef.current?.redraw() }, [biomeMode]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { undergroundLayerRef.current?.redraw() }, [biomeMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return null
 }

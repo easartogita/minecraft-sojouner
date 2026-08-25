@@ -5,8 +5,6 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
-// ── Edition discriminant ──────────────────────────────────────────────────────
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum WorldEdition {
@@ -14,8 +12,6 @@ pub enum WorldEdition {
     Java,
     Bedrock,
 }
-
-// ── Public output types ───────────────────────────────────────────────────────
 
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -85,8 +81,6 @@ pub struct SeedData {
 
 type Result<T> = std::result::Result<T, String>;
 
-// ── Entry point ───────────────────────────────────────────────────────────────
-
 pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
     let path = Path::new(level_dat_path);
     let world_dir = path
@@ -108,11 +102,11 @@ pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
     let (seed, wgs_root) = extract_seed(data, world_dir, data_version)?;
     let (spawn_x, spawn_z) = extract_spawn(data);
     let world_type = extract_world_type(data, data_version, wgs_root.as_ref());
-    let day_time = extract_day_time(data);
+    let day_time = extract_day_time(data, world_dir);
     let world_time = get(data, "Time").and_then(as_i64);
     let difficulty = get(data, "Difficulty").and_then(as_i32).unwrap_or(2);
     // Gamerules are stored as strings (even numeric ones), so parse spawnChunkRadius.
-    let game_rules = extract_game_rules(data);
+    let game_rules = extract_game_rules(data, world_dir);
     let spawn_chunk_radius = game_rules
         .get("spawnChunkRadius")
         .and_then(|s| s.parse::<i32>().ok());
@@ -179,20 +173,43 @@ pub fn read_level_dat(level_dat_path: &str) -> Result<SeedData> {
     })
 }
 
-// ── Game rules / server brand / world border ──────────────────────────────────
-
-fn extract_game_rules(data: &Value) -> HashMap<String, String> {
-    get(data, "GameRules")
+fn extract_game_rules(data: &Value, world_dir: &Path) -> HashMap<String, String> {
+    let inline: HashMap<String, String> = get(data, "GameRules")
         .and_then(cmp)
         .map(|m| {
             m.iter()
                 .filter_map(|(k, v)| as_str(v).map(|s| (k.clone(), s.to_string())))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    if !inline.is_empty() {
+        return inline;
+    }
+
+    // Bleeding-edge snapshots moved GameRules out of level.dat entirely, into
+    // its own file — the same relocation 1.21.5+ did for the seed (see
+    // extract_seed's world_gen_settings.dat fallback). Unlike the old
+    // Data.GameRules compound (every value a String regardless of type),
+    // this file stores each rule natively typed (Byte for booleans, Int for
+    // numeric) under namespaced keys (e.g. "minecraft:keep_inventory").
+    let path = world_dir.join("data").join("minecraft").join("game_rules.dat");
+    let Ok(root) = read_gz_nbt(&path) else { return HashMap::new() };
+    let Some(rules) = get(&root, "data").and_then(cmp) else { return HashMap::new() };
+
+    rules.iter()
+        .filter_map(|(k, v)| {
+            let s = match v {
+                Value::Byte(b) => (*b != 0).to_string(),
+                Value::Int(n)  => n.to_string(),
+                Value::String(s) => s.clone(),
+                _ => return None,
+            };
+            Some((k.strip_prefix("minecraft:").unwrap_or(k).to_string(), s))
+        })
+        .collect()
 }
 
-// ── Seed extraction ───────────────────────────────────────────────────────────
 // Returns (seed, optional wgs root value for 1.21.5+ world-type detection)
 
 fn extract_seed(data: &Value, world_dir: &Path, data_version: i32) -> Result<(i64, Option<Value>)> {
@@ -225,8 +242,6 @@ fn extract_seed(data: &Value, world_dir: &Path, data_version: i32) -> Result<(i6
     }
 }
 
-// ── Spawn position ────────────────────────────────────────────────────────────
-
 fn extract_spawn(data: &Value) -> (i32, i32) {
     // 1.21.5+: spawn.pos = [x, y, z] IntArray
     if let Some(pos) = get(data, "spawn")
@@ -238,12 +253,16 @@ fn extract_spawn(data: &Value) -> (i32, i32) {
         }
     }
     // Older: SpawnX / SpawnZ int tags
-    let x = get(data, "SpawnX").and_then(as_i32).unwrap_or(0);
-    let z = get(data, "SpawnZ").and_then(as_i32).unwrap_or(0);
-    (x, z)
+    let x = get(data, "SpawnX").and_then(as_i32);
+    let z = get(data, "SpawnZ").and_then(as_i32);
+    if x.is_none() || z.is_none() {
+        crate::format_guard::format_warn(
+            "level.dat spawn",
+            "neither spawn.pos nor SpawnX/SpawnZ resolved — defaulting to (0,0)",
+        );
+    }
+    (x.unwrap_or(0), z.unwrap_or(0))
 }
-
-// ── World type ────────────────────────────────────────────────────────────────
 
 fn settings_str_to_world_type(s: &str) -> &'static str {
     match s {
@@ -286,23 +305,28 @@ fn extract_world_type(data: &Value, data_version: i32, wgs_root: Option<&Value>)
     }
 }
 
-// ── Day time ──────────────────────────────────────────────────────────────────
-
-fn extract_day_time(data: &Value) -> Option<i32> {
-    let ticks = get(data, "DayTime")
-        .or_else(|| get(data, "Time"))
-        .and_then(as_i64)?;
-    // Positive modulo — DayTime can be negative for paused worlds
+fn extract_day_time(data: &Value, world_dir: &Path) -> Option<i32> {
+    // Bleeding-edge snapshots split each dimension's clock out into world_clocks.dat;
+    // once a world visits another dimension, level.dat's Data.DayTime/Time goes stale
+    // (mirrors whichever dimension was last active), so prefer the overworld clock here.
+    let clocks_path = world_dir.join("data").join("minecraft").join("world_clocks.dat");
+    let ticks = read_gz_nbt(&clocks_path)
+        .ok()
+        .and_then(|root| get(&root, "data").map(|v| v.clone()))
+        .and_then(|d| get(&d, "minecraft:overworld").map(|v| v.clone()))
+        .and_then(|ow| get(&ow, "total_ticks").and_then(as_i64))
+        .or_else(|| {
+            get(data, "DayTime")
+                .or_else(|| get(data, "Time"))
+                .and_then(as_i64)
+        })?;
+    // Positive modulo — the source tick can be negative for paused worlds
     Some((((ticks % 24000) + 24000) % 24000) as i32)
 }
 
-// ── Player position ───────────────────────────────────────────────────────────
-
 fn uuid_from_int_array(ints: &[i32]) -> String {
-    // A well-formed UUID IntArray always has exactly 4 ints (128 bits); a
-    // truncated/hand-edited level.dat could have fewer, which would panic on
-    // the fixed-offset slices below instead of falling through to this
-    // function's caller's `.unwrap_or_default()`.
+    // A well-formed UUID IntArray always has 4 ints (128 bits); guard against a
+    // truncated/hand-edited level.dat panicking on the fixed-offset slices below.
     if ints.len() != 4 {
         return String::new();
     }
@@ -377,8 +401,6 @@ fn read_player_pos(
     (Some(pos[0]), Some(pos[1]), Some(pos[2]), Some(dim))
 }
 
-// ── Version name table ────────────────────────────────────────────────────────
-
 const VERSION_MAP: &[(i32, &str)] = &[
     // 26.x uses a new versioning scheme. cubiomes support (xpple fork) covers
     // these via MC_26_x; see dataVersionToMCVersionKey in constants.ts.
@@ -406,8 +428,6 @@ fn data_version_to_name(v: i32) -> &'static str {
     }
     if v >= 2566 { "1.16+" } else { "pre-1.16" }
 }
-
-// ── Multi-player enumeration ──────────────────────────────────────────────────
 
 fn load_usercache(world_dir: &Path) -> HashMap<String, String> {
     // Standard singleplayer: world is in .minecraft/saves/Name/ → usercache two levels up.
@@ -465,12 +485,25 @@ fn read_player_dat(path: &Path) -> Option<PlayerDatInfo> {
         .map(normalize_dimension)
         .unwrap_or_else(|| "minecraft:overworld".to_string());
     let (mount_type, mount_name) = read_mount(&nbt);
-    // Present only once the player has actually slept in a bed or set a
-    // respawn anchor — absent otherwise, not defaulted to the world spawn.
-    let respawn_x = get(&nbt, "SpawnX").and_then(as_i32);
-    let respawn_y = get(&nbt, "SpawnY").and_then(as_i32);
-    let respawn_z = get(&nbt, "SpawnZ").and_then(as_i32);
-    let respawn_dimension = get(&nbt, "SpawnDimension").map(normalize_dimension);
+    // Present only once the player has slept/set a respawn anchor, absent otherwise.
+    // 1.21.6+ moved this from flat SpawnX/Y/Z/Dimension into a "respawn" compound,
+    // mirroring the world spawn restructure in extract_spawn().
+    let (respawn_x, respawn_y, respawn_z, respawn_dimension) = if let Some(respawn) = get(&nbt, "respawn") {
+        match get(respawn, "pos").and_then(as_int_array) {
+            Some(pos) if pos.len() >= 3 => {
+                let dimension = get(respawn, "dimension").map(normalize_dimension);
+                (Some(pos[0]), Some(pos[1]), Some(pos[2]), dimension)
+            }
+            _ => (None, None, None, None),
+        }
+    } else {
+        (
+            get(&nbt, "SpawnX").and_then(as_i32),
+            get(&nbt, "SpawnY").and_then(as_i32),
+            get(&nbt, "SpawnZ").and_then(as_i32),
+            get(&nbt, "SpawnDimension").map(normalize_dimension),
+        )
+    };
     Some(PlayerDatInfo {
         x: pos[0], y: pos[1], z: pos[2], dimension, mount_type, mount_name,
         respawn_x, respawn_y, respawn_z, respawn_dimension,
@@ -520,8 +553,6 @@ fn read_all_players(data: &Value, world_dir: &Path, _data_version: i32) -> Vec<P
     });
     players
 }
-
-// ── NBT / GZ helpers ──────────────────────────────────────────────────────────
 
 pub fn read_gz_nbt(path: &Path) -> Result<Value> {
     let file = std::fs::File::open(path)

@@ -1,7 +1,5 @@
-// Bedrock block entity reader.
-//
-// Reads block entity data from LevelDB (key tag 0x31 per chunk).
-// Converts LE NBT → fastnbt::Value then delegates to extract_single_block_entity.
+// Reads block entities from LevelDB (key tag 0x31 per chunk), converts LE NBT
+// to fastnbt::Value, then delegates to the shared Java-format extractor.
 
 use super::chunk_reader::{chunk_key_prefix, dim_str_to_bedrock};
 use super::entity_reader::le_nbt_to_fastnbt;

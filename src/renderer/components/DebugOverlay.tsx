@@ -7,13 +7,18 @@ import { getBiomeCacheSize, clearBiomeCache, getBiomeQueue } from './BiomeTileLa
 import { getChunkCacheSize, clearChunkCache, getChunkQueue } from './ChunkOverlayLayer'
 import { getBELayerStats, resetBELayerStats, type BELayerStats } from './BlockEntityLayer'
 import { getEntityLayerStats, resetEntityLayerStats } from './EntityLayer'
+import { getPoiLayerStats, resetPoiLayerStats } from './PoiLayer'
+import { getStructureLayerStats, resetStructureLayerStats } from './StructureLayer'
+import { makeLayerStats } from '../lib/chunkMarkerLayer'
 import * as api from '../lib/tauriAPI'
 
 type FlashKey = 'biome' | 'chunk' | 'world' | 'stats' | 'struct' | 'overlay' | 'all'
 
 interface PollSnapshot {
-  be: BELayerStats
-  entity: ReturnType<typeof getEntityLayerStats>
+  be:        BELayerStats
+  entity:    ReturnType<typeof getEntityLayerStats>
+  poi:       ReturnType<typeof getPoiLayerStats>
+  structure: ReturnType<typeof getStructureLayerStats>
 }
 
 function ap(totalMs: number, count: number, peakMs: number) {
@@ -38,7 +43,7 @@ export default function DebugOverlay() {
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'F3') { e.preventDefault(); dispatch({ type: 'TOGGLE_DEBUG_OVERLAY' } as never) }
+      if (e.key === 'F3') { e.preventDefault(); dispatch({ type: 'TOGGLE_DEBUG_OVERLAY' }) }
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
@@ -47,7 +52,10 @@ export default function DebugOverlay() {
   useEffect(() => {
     if (!visible) { clearInterval(pollTimer.current ?? undefined); return }
     const tick = () => {
-      setPoll({ be: getBELayerStats(), entity: getEntityLayerStats() })
+      setPoll({
+        be: getBELayerStats(), entity: getEntityLayerStats(),
+        poi: getPoiLayerStats(), structure: getStructureLayerStats(),
+      })
     }
     tick()
     pollTimer.current = setInterval(tick, 2000)
@@ -64,8 +72,10 @@ export default function DebugOverlay() {
 
   const biomeActive  = biomeTilesLoaded > 0 || biomeLoadingCount > 0
   const chunkMissed  = mcaTilesLoaded   > 0
-  const be  = poll?.be
-  const ent = poll?.entity
+  const be    = poll?.be
+  const ent   = poll?.entity
+  const poi   = poll?.poi
+  const struc = poll?.structure
   const overlays = getOverlays()
 
   const doFlash = (key: FlashKey) => {
@@ -79,41 +89,38 @@ export default function DebugOverlay() {
   const handleClearBiome = async () => {
     clearBiomeCache()
     if (state.seedData?.seed != null) await api.clearBiomeTilePng(BigInt(state.seedData.seed))
-    dispatch({ type: 'CLEAR_TILE_CACHE' } as never)
+    dispatch({ type: 'CLEAR_TILE_CACHE' })
     doFlash('biome')
   }
   const handleClearChunk = async () => {
     clearChunkCache()
     if (state.worldDir) await api.clearTilePng(state.worldDir)
-    dispatch({ type: 'CLEAR_TILE_CACHE' } as never)
+    dispatch({ type: 'CLEAR_TILE_CACHE' })
     doFlash('chunk')
   }
   const handleClearStructures = () => {
     if (state.seedData?.seed != null) api.clearStructureCache(BigInt(state.seedData.seed))
-    dispatch({ type: 'CLEAR_STRUCTURE_CACHE' } as never)
+    dispatch({ type: 'CLEAR_STRUCTURE_CACHE' })
     doFlash('struct')
   }
   const handleClearOverlays = () => {
     clearOverlayCaches()
-    dispatch({ type: 'CLEAR_OVERLAY_CACHE' } as never)
+    dispatch({ type: 'CLEAR_OVERLAY_CACHE' })
     doFlash('overlay')
   }
   const handleReloadWorld = async () => {
     clearChunkCache()
     if (state.worldDir) {
       await api.invalidateChunks(state.worldDir)
-      dispatch({ type: 'CLEAR_TILE_CACHE' } as never)
+      dispatch({ type: 'CLEAR_TILE_CACHE' })
     }
     doFlash('world')
   }
   const handleResetStats = () => {
     resetAllStats()
-    resetBELayerStats()
-    resetEntityLayerStats()
+    resetBELayerStats(); resetEntityLayerStats(); resetPoiLayerStats(); resetStructureLayerStats()
     setPoll(p => p ? {
-      ...p,
-      be: { loadCount: 0, totalMs: 0, peakMs: 0, totalFetched: 0, lastCount: 0 },
-      entity: { loadCount: 0, totalMs: 0, peakMs: 0, totalFetched: 0, lastCount: 0 },
+      be: makeLayerStats(), entity: makeLayerStats(), poi: makeLayerStats(), structure: makeLayerStats(),
     } : null)
     doFlash('stats')
   }
@@ -127,14 +134,13 @@ export default function DebugOverlay() {
     }
     if (state.worldDir) clears.push(api.invalidateChunks(state.worldDir))
     await Promise.all(clears)
-    dispatch({ type: 'CLEAR_TILE_CACHE' } as never)
-    dispatch({ type: 'CLEAR_OVERLAY_CACHE' } as never)
-    dispatch({ type: 'CLEAR_STRUCTURE_CACHE' } as never)
+    dispatch({ type: 'CLEAR_TILE_CACHE' })
+    dispatch({ type: 'CLEAR_OVERLAY_CACHE' })
+    dispatch({ type: 'CLEAR_STRUCTURE_CACHE' })
     resetAllStats()
-    resetBELayerStats(); resetEntityLayerStats()
+    resetBELayerStats(); resetEntityLayerStats(); resetPoiLayerStats(); resetStructureLayerStats()
     setPoll(p => p ? {
-      be: { loadCount: 0, totalMs: 0, peakMs: 0, totalFetched: 0, lastCount: 0 },
-      entity: { loadCount: 0, totalMs: 0, peakMs: 0, totalFetched: 0, lastCount: 0 },
+      be: makeLayerStats(), entity: makeLayerStats(), poi: makeLayerStats(), structure: makeLayerStats(),
     } : null)
     doFlash('all')
   }
@@ -189,8 +195,11 @@ export default function DebugOverlay() {
           )}
         </div>
 
-        {/* Markers */}
-        {state.showMarkers && state.worldDir && (
+        {/* Markers — gated on worldDir alone, not showMarkers: POI has its own
+            visibility toggles independent of the Show Markers switch, so a
+            section gated on showMarkers would hide POI stats while POI was
+            actively loading. */}
+        {state.worldDir && (
           <div className="debug-sb-section">
             <div className="debug-sb-title">Markers</div>
             {be && be.loadCount > 0 ? (
@@ -198,15 +207,30 @@ export default function DebugOverlay() {
                 <div className="debug-sb-row"><span>Block entities</span><span>{be.lastCount} vis / {be.totalFetched} fetched</span></div>
                 <div className="debug-sb-row"><span>Load avg / peak</span><span>{ap(be.totalMs, be.loadCount, be.peakMs)}</span></div>
               </>
-            ) : (
+            ) : state.showMarkers ? (
               <div className="debug-sb-empty">{state.zoom >= state.markerMinZoom ? 'None loaded' : `Zoom ≥ ${state.markerMinZoom >= 0 ? '+' : ''}${state.markerMinZoom} to load`}</div>
-            )}
+            ) : null}
             {ent && ent.loadCount > 0 && (
               <>
                 <div className="debug-sb-row"><span>Entities</span><span>{ent.lastCount} vis / {ent.totalFetched} fetched</span></div>
                 <div className="debug-sb-row"><span>Load avg / peak</span><span>{ap(ent.totalMs, ent.loadCount, ent.peakMs)}</span></div>
               </>
             )}
+            {poi && poi.loadCount > 0 && (
+              <>
+                <div className="debug-sb-row"><span>POI</span><span>{poi.lastCount} vis / {poi.totalFetched} fetched</span></div>
+                <div className="debug-sb-row"><span>Load avg / peak</span><span>{ap(poi.totalMs, poi.loadCount, poi.peakMs)}</span></div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Structures */}
+        {state.showStructures && state.seedData && struc && struc.loadCount > 0 && (
+          <div className="debug-sb-section">
+            <div className="debug-sb-title debug-sb-title--structure">Structures</div>
+            <div className="debug-sb-row"><span>Rendered</span><span>{struc.lastCount} vis / {struc.totalFetched} candidates</span></div>
+            <div className="debug-sb-row"><span>Scan avg / peak</span><span>{ap(struc.totalMs, struc.loadCount, struc.peakMs)}</span></div>
           </div>
         )}
 

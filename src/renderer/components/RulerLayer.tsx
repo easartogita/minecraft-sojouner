@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import L from 'leaflet'
 import { useApp } from '../App'
 import { minecraftToLeaflet } from '../lib/tileCoords'
@@ -14,17 +14,17 @@ function legDist(a: { x: number; z: number }, b: { x: number; z: number }): numb
   return Math.sqrt((b.x - a.x) ** 2 + (b.z - a.z) ** 2)
 }
 
-export default function RulerLayer({ map, mouseCoords }: {
+function RulerLayer({ map, mouseCoords }: {
   map: L.Map
   mouseCoords: { x: number; z: number } | null
 }) {
-  const { state, generatorSlot } = useApp()
+  const { state, generatorConfig } = useApp()
   const groupRef = useRef<L.LayerGroup | null>(null)
   const ghostCasingRef = useRef<L.Polyline | null>(null)
   const ghostGapRef = useRef<L.Polyline | null>(null)
   const ghostRef = useRef<L.Polyline | null>(null)
   const legSegments = useBiomeSplitSegments(
-    generatorSlot, state.rulerWaypoints, state.rulerLegModes, state.boatMinSegmentBlocks,
+    generatorConfig, state.rulerWaypoints, state.rulerLegModes, state.boatMinSegmentBlocks,
   )
 
   useEffect(() => {
@@ -65,18 +65,13 @@ export default function RulerLayer({ map, mouseCoords }: {
         for (const seg of subSegments) {
           const color = TRAVEL_MODES[seg.mode].color
           const latLngs = [toLatLng(seg.from.x, seg.from.z), toLatLng(seg.to.x, seg.to.z)]
-          // Dark casing underneath every segment — a mode color that reads fine against
-          // one biome (dark ocean, bright badlands, snow) can wash out against another;
-          // a solid dark outline keeps the line legible regardless of what's under it.
+          // Dark casing so the mode color stays legible against any biome background.
           L.polyline(latLngs, {
             color: '#000', weight: 6, opacity: 0.45, lineCap: 'butt', interactive: false,
           }).addTo(group)
-          // Candy-cane two-tone dash: the gap is filled with a neutral color instead
-          // of showing whatever's underneath, so the dash rhythm itself — how long
-          // each dash actually is — reads clearly at a glance, independent of mode
-          // color or biome background. Ice's gap color is deliberately heavier/colder
-          // than the default so icy terrain feels slow even in the gaps, not just via
-          // the long dash length.
+          // Candy-cane gap fill (neutral, not see-through) so the dash rhythm itself
+          // reads clearly regardless of mode color or biome. Ice's gap color is heavier
+          // to feel slow even between dashes.
           const gapPattern = gapDashPatternForMode(seg.mode)
           L.polyline(latLngs, {
             color: gapFillColorForMode(seg.mode), weight: 4, opacity: 0.85,
@@ -84,10 +79,8 @@ export default function RulerLayer({ map, mouseCoords }: {
             lineCap: 'butt',
             interactive: false,
           }).addTo(group)
-          // Every mode gets its own dash rhythm, keyed to speed (longer dashes = slower,
-          // near-solid = fastest) — a color-independent way to read which mode a segment
-          // is, since some mode colors (walk vs. boat) are close enough in hue to be hard
-          // to tell apart on a busy biome background.
+          // Dash rhythm is keyed to speed (longer dashes = slower) — lets you tell modes
+          // apart by pattern when their colors are too close in hue.
           L.polyline(latLngs, {
             color, weight: 4, opacity: 0.95,
             dashArray: dashPatternForMode(seg.mode),
@@ -159,3 +152,4 @@ export default function RulerLayer({ map, mouseCoords }: {
 
   return null
 }
+export default memo(RulerLayer)

@@ -1,26 +1,31 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
 import L, { Map as LeafletMap } from 'leaflet'
-import { useAppState, AppState } from './hooks/useSeed'
+import 'leaflet/dist/leaflet.css'
+import { useAppState, AppState, Action, WorldType } from './hooks/useSeed'
 import { minecraftToLeaflet } from './lib/tileCoords'
-import { useGenerator } from './hooks/useGenerator'
+import { useGenerator, GeneratorHandle } from './hooks/useGenerator'
 import { MC_VERSION_LABELS, MC_VERSIONS, MCVersionKey } from './lib/constants'
-import { WorldType } from './hooks/useSeed'
 import * as api from './lib/tauriAPI'
-import { listen } from '@tauri-apps/api/event'
+import { timeAgo } from './lib/timeAgo'
 import { getAllQueues } from './lib/tileJobQueue'
 import MapView from './components/MapView'
 import Rail from './components/Rail'
+import RightRail from './components/RightRail'
 import { IconPickaxe, IconDice } from './components/icons'
 import './styles/app.css'
 
 // Contexts
 interface AppContextValue {
   state: AppState
-  dispatch: React.Dispatch<Parameters<typeof useAppState>[0] extends undefined ? never : never>
+  dispatch: React.Dispatch<Action>
   loadWorld: (path: string) => Promise<void>
   openLevelDat: () => Promise<void>
   generatorSlot: number | null
+  // Layers that talk to cubiomes should consume this rather than re-deriving
+  // seedBig/dimId/worldFlags/mcVersion from `state` themselves.
+  generatorConfig: GeneratorHandle
   mapRef: React.MutableRefObject<LeafletMap | null>
+  availableLayers: ReturnType<typeof api.getTileSizes> | null   // tile layers this build can actually serve, per dimension — null live
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,13 +34,31 @@ export const useApp = () => useContext(AppContext)
 
 export default function App() {
   const { state, dispatch, loadWorld, openLevelDat } = useAppState()
-  const generatorSlot = useGenerator(
+  const generatorConfig = useGenerator(
     state.seedData?.seed ?? null,
     state.selectedVersion,
     state.dimension,
     state.worldType,
   )
+  const generatorSlot = generatorConfig.slot
   const mapRef = useRef<LeafletMap | null>(null)
+  const availableLayers = api.IS_STATIC_SITE ? api.getTileSizes(state.dimension) : null
+
+  const [appVersion, setAppVersion] = useState<string | null>(null)
+  useEffect(() => { api.getAppVersion().then(setAppVersion).catch(() => {}) }, [])
+
+  // Static-site boot: no level.dat to read, so seed the same SET_SEED reducer
+  // action the live open-world flow uses, from manifest.json instead.
+  const [staticBootFailed, setStaticBootFailed] = useState(false)
+  useEffect(() => {
+    if (!api.IS_STATIC_SITE) return
+    api.getStaticWorldSeedData()
+      .then(result => {
+        if (result) dispatch({ type: 'SET_SEED', path: result.path, data: result.data })
+        else setStaticBootFailed(true)
+      })
+      .catch(() => setStaticBootFailed(true))
+  }, [dispatch])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -54,14 +77,14 @@ export default function App() {
 
       switch (e.key.toLowerCase()) {
         case 'b':
-          dispatch({ type: 'TOGGLE_BIOMES' } as never)
+          dispatch({ type: 'TOGGLE_BIOMES' })
           break
         case 'h':
-          dispatch({ type: 'TOGGLE_HIDE_WATER' } as never)
+          dispatch({ type: 'TOGGLE_HIDE_WATER' })
           break
         case 's':
           if (state.dimension === 'overworld')
-            dispatch({ type: 'TOGGLE_SLIME_CHUNKS' } as never)
+            dispatch({ type: 'TOGGLE_SLIME_CHUNKS' })
           break
         case 'g': {
           e.preventDefault()
@@ -78,33 +101,26 @@ export default function App() {
           break
         }
         case 'c':
-          if (state.worldDir && state.seedData?.playerY != null)
-            dispatch({ type: 'TOGGLE_CAVE_MODE' } as never)
+          if (state.worldDir && (api.IS_STATIC_SITE || state.seedData?.playerY != null))
+            dispatch({ type: 'TOGGLE_CAVE_MODE' })
           break
         case 'd':
           if (state.worldDir)
-            dispatch({ type: 'TOGGLE_CHUNK_DATA' } as never)
+            dispatch({ type: 'TOGGLE_CHUNK_DATA' })
           break
         case 'v':
           if (state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18']) {
-            if (!state.showOreVeins) {
-              dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)
-              dispatch({ type: 'SET_ORE_VEIN_MODE', mode: 'density' } as never)
-            } else if (state.oreVeinMode === 'density') {
-              dispatch({ type: 'SET_ORE_VEIN_MODE', mode: 'footprint' } as never)
-            } else {
-              dispatch({ type: 'TOGGLE_ORE_VEINS' } as never)
-            }
+            dispatch({ type: 'TOGGLE_ORE_VEINS' })
           }
           break
         case 'r':
-          dispatch({ type: 'RULER_TOGGLE' } as never)
+          dispatch({ type: 'RULER_TOGGLE' })
           break
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [dispatch, openLevelDat, state.dimension, state.worldDir, state.selectedVersion, state.seedData?.playerY, state.showOreVeins, state.oreVeinMode])
+  }, [dispatch, openLevelDat, state.dimension, state.worldDir, state.selectedVersion, state.seedData?.playerY])
 
   // Pause ALL tile queues while the window is hidden to prevent WebKit from
   // crashing when createImageBitmap / canvas ops fire while the renderer is
@@ -121,61 +137,53 @@ export default function App() {
 
   // Global file-drop listener (tauri://file-drop)
   useEffect(() => {
-    let unlisten: (() => void) | undefined
-    listen<string[]>('tauri://file-drop', async (event) => {
-      const paths = event.payload
+    return api.onFileDrop(async paths => {
       const levelDat = paths.find(p => p.endsWith('level.dat') || p.endsWith('.dat'))
       if (levelDat) {
         try {
           await loadWorld(levelDat)
         } catch { /* ignore invalid drops */ }
       }
-    }).then(fn => { unlisten = fn })
-    return () => { unlisten?.() }
+    })
   }, [dispatch])
 
   return (
-    <AppContext.Provider value={{ state, dispatch: dispatch as never, loadWorld, openLevelDat, generatorSlot, mapRef }}>
+    <AppContext.Provider value={{ state, dispatch, loadWorld, openLevelDat, generatorSlot, generatorConfig, mapRef, availableLayers }}>
       <div className="app-layout">
         <Rail />
         <div className="map-area">
           {state.seedData ? (
             <MapView />
+          ) : api.IS_STATIC_SITE ? (
+            <div className="empty-state">
+              <div className="empty-icon"><IconPickaxe size={48} /></div>
+              <h2 className="wordmark">Sojourner</h2>
+              <p className="empty-desc">{staticBootFailed ? 'Could not load manifest.json.' : 'Loading map…'}</p>
+            </div>
           ) : (
-            <EmptyState onOpen={openLevelDat} onLoad={loadWorld} dispatch={dispatch as never} recentWorlds={state.recentWorlds} />
+            <EmptyState onOpen={openLevelDat} onLoad={loadWorld} dispatch={dispatch} />
           )}
         </div>
+        <RightRail />
       </div>
+      {appVersion && (
+        <div className="app-version-tag">
+          v{appVersion}
+          {import.meta.env.DEV && <span className="app-version-tag-dev"> · DEV</span>}
+        </div>
+      )}
     </AppContext.Provider>
   )
 }
 
-function worldNameFromPath(path: string): string {
-  const parts = path.replace(/\\/g, '/').split('/')
-  // level.dat is the last segment; world folder is one above it
-  const idx = parts.lastIndexOf('level.dat')
-  return idx > 0 ? parts[idx - 1] : parts[parts.length - 2] ?? path
-}
-
-function timeAgo(secs: number): string {
-  const diff = Math.floor(Date.now() / 1000 - secs)
-  if (diff < 60)         return 'just now'
-  if (diff < 3600)       return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400)      return `${Math.floor(diff / 3600)}h ago`
-  if (diff < 86400 * 7)  return `${Math.floor(diff / 86400)}d ago`
-  if (diff < 86400 * 30) return `${Math.floor(diff / 604800)}w ago`
-  return `${Math.floor(diff / 2592000)}mo ago`
-}
-
-function EmptyState({ onOpen, onLoad, dispatch, recentWorlds }: {
+function EmptyState({ onOpen, onLoad, dispatch }: {
   onOpen: () => void
   onLoad: (path: string) => Promise<void>
-  dispatch: React.Dispatch<never>
-  recentWorlds: string[]
+  dispatch: React.Dispatch<Action>
 }) {
   const [showSeedForm, setShowSeedForm] = useState(false)
   const [manualSeed, setManualSeed] = useState('')
-  const [manualVersion, setManualVersion] = useState<MCVersionKey>('MC_1_21')
+  const [manualVersion, setManualVersion] = useState<MCVersionKey>(MC_VERSION_LABELS[0].key)
   const [manualWorldType, setManualWorldType] = useState<WorldType>('default')
   const [seedError, setSeedError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -215,7 +223,7 @@ function EmptyState({ onOpen, onLoad, dispatch, recentWorlds }: {
       seed: seedNum.toString(),
       version: manualVersion,
       worldType: manualWorldType,
-    } as never)
+    })
   }
 
   // Same behavior as the World flyout's dice: fill the field and load immediately.
@@ -230,7 +238,7 @@ function EmptyState({ onOpen, onLoad, dispatch, recentWorlds }: {
       seed,
       version: manualVersion,
       worldType: manualWorldType,
-    } as never)
+    })
   }
 
   const WORLD_TYPE_OPTIONS: WorldType[] = ['default', 'large_biomes', 'amplified', 'flat', 'single_biome', 'custom']

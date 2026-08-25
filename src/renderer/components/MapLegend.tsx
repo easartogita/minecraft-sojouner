@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import L from 'leaflet'
 import { useApp } from '../App'
-import { BASE_BLOCKS_PER_PIXEL } from '../lib/constants'
+import { lngToBlockX, latToBlockZ } from '../lib/tileCoords'
 import { BIOME_NAMES, biomeToRGB } from '../lib/biomeColors'
 import * as api from '../lib/tauriAPI'
 
@@ -16,7 +16,7 @@ interface LegendBiome {
 }
 
 export default function MapLegend({ map }: Props) {
-  const { state, generatorSlot } = useApp()
+  const { state, generatorSlot, generatorConfig } = useApp()
   const [visibleBiomes, setVisibleBiomes] = useState<LegendBiome[]>([])
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -24,10 +24,10 @@ export default function MapLegend({ map }: Props) {
     if (generatorSlot == null || !state.showBiomes) { setVisibleBiomes([]); return }
     const slot = generatorSlot
     const bounds = map.getBounds()
-    const blockMinX = Math.floor(bounds.getWest()  * BASE_BLOCKS_PER_PIXEL)
-    const blockMaxX = Math.ceil (bounds.getEast()  * BASE_BLOCKS_PER_PIXEL)
-    const blockMinZ = Math.floor(-bounds.getNorth() * BASE_BLOCKS_PER_PIXEL)
-    const blockMaxZ = Math.ceil (-bounds.getSouth() * BASE_BLOCKS_PER_PIXEL)
+    const blockMinX = Math.floor(lngToBlockX(bounds.getWest()))
+    const blockMaxX = Math.ceil (lngToBlockX(bounds.getEast()))
+    const blockMinZ = Math.floor(latToBlockZ(bounds.getNorth()))
+    const blockMaxZ = Math.ceil (latToBlockZ(bounds.getSouth()))
 
     const SCALE = 64
     const qx = Math.floor(blockMinX / SCALE)
@@ -37,7 +37,8 @@ export default function MapLegend({ map }: Props) {
 
     if (qw * qh > 4096) { setVisibleBiomes([]); return }
 
-    api.getBiomeRegion(slot, qx, qz, qw, qh, SCALE)
+    const { seedBig, dimId, worldFlags, mcVersion } = generatorConfig
+    api.getBiomeRegion(slot, seedBig, dimId, worldFlags, mcVersion, qx, qz, qw, qh, SCALE)
       .then(biomes => {
         const seen = new Set<number>()
         for (let i = 0; i < biomes.length; i++) seen.add(biomes[i])
@@ -52,7 +53,7 @@ export default function MapLegend({ map }: Props) {
         setVisibleBiomes(list)
       })
       .catch(() => setVisibleBiomes([]))
-  }, [map, generatorSlot, state.showBiomes, state.dimension])
+  }, [map, generatorSlot, state.showBiomes, state.dimension, generatorConfig])
 
   useEffect(() => {
     const schedule = () => {
@@ -67,7 +68,7 @@ export default function MapLegend({ map }: Props) {
       map.off('zoomend', schedule)
       if (timerRef.current) clearTimeout(timerRef.current)
     }
-  }, [map, generatorSlot, state.showBiomes, state.dimension])
+  }, [map, generatorSlot, state.showBiomes, state.dimension, generatorConfig])
 
   useEffect(() => { sampleBiomes() }, [sampleBiomes])
 

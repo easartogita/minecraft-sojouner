@@ -8,15 +8,18 @@ import * as api from '../lib/tauriAPI'
 import { useChunkMarkerLayer, type LayerStats, makeLayerStats, updateLayerStats, markerYBounds } from '../lib/chunkMarkerLayer'
 import { getConfig, buildPopup, buildTooltip, createIcon, getVillagerLevelData, getHorseRatings } from '../lib/entityConfig'
 import { attachMarkerContextMenu } from '../lib/contextMenuBus'
-
-// ── Module-level stats (read by DebugOverlay) ─────────────────────────────────
+import { TileJobQueue } from '../lib/tileJobQueue'
+import * as tileStats from '../lib/tileStats'
 
 export type EntityLayerStats = LayerStats
 let _stats: LayerStats = makeLayerStats()
 export function getEntityLayerStats(): LayerStats { return { ..._stats } }
 export function resetEntityLayerStats(): void { _stats = makeLayerStats() }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// Single-slot queue purely so an in-flight load shows up in TileLoadingHud/DebugOverlay
+// via the same registerOverlay mechanism the tile-queue layers use.
+const loadQueue = new TileJobQueue(1, () => tileStats.notify(), 'entity')
+tileStats.registerOverlay({ key: 'entity', label: 'Entities', className: 'entity', queues: [loadQueue], caches: [] })
 
 function EntityLayer({ map }: { map: L.Map }) {
   const { state } = useApp()
@@ -31,6 +34,7 @@ function EntityLayer({ map }: { map: L.Map }) {
     dimension,
     changedRegions,
     minZoom: markerMinZoom,
+    loadQueue,
     onClear: () => { _stats.lastCount = 0 },
     onLoad: async (pool, group, bounds, isAborted) => {
       const { minCx, maxCx, minCz, maxCz } = bounds

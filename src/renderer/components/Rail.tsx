@@ -2,15 +2,14 @@ import React, { useState, useRef, useEffect } from 'react'
 import { useApp } from '../App'
 import WorldFlyout from './rail/WorldFlyout'
 import LayersFlyout from './rail/LayersFlyout'
-import StructuresFlyout from './rail/StructuresFlyout'
+import SeedFlyout from './rail/SeedFlyout'
 import WorldDataFlyout from './rail/WorldDataFlyout'
 import SavedFlyout from './rail/SavedFlyout'
 import SettingsFlyout from './rail/SettingsFlyout'
-import ExportMapDialog from './ExportMapDialog'
-import WorldSettingsPanel from './WorldSettingsPanel'
+import { getWorldDisplayName } from '../lib/worldName'
 import { IconWorld, IconLayers, IconPlaces, IconWorldData, IconSaved, IconSettings } from './icons'
 
-type ActivePanel = 'world' | 'layers' | 'structures' | 'worldData' | 'saved' | 'settings' | null
+type ActivePanel = 'world' | 'layers' | 'seed' | 'worldData' | 'saved' | 'settings' | null
 
 const PANEL_MIN      = 200
 const PANEL_MAX      = 600
@@ -22,10 +21,12 @@ export default function Rail() {
   const { state } = useApp()
   // active drives the CSS width (0 or panelWidth).
   // renderTarget lags on close so content stays visible during the collapse.
-  const [active,       setActive]       = useState<ActivePanel>(null)
-  const [renderTarget, setRenderTarget] = useState<ActivePanel>(null)
-  const [exportOpen,        setExportOpen]        = useState(false)
-  const [worldSettingsOpen, setWorldSettingsOpen] = useState(false)
+  const [active,       setActive]       = useState<ActivePanel>('seed')
+  const [renderTarget, setRenderTarget] = useState<ActivePanel>('seed')
+
+  const worldDataLabel = state.worldDir
+    ? (getWorldDisplayName(state.worldDir, state.seedData?.levelName) || 'World Data')
+    : 'World Data'
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const s = localStorage.getItem(STORAGE_KEY)
@@ -82,31 +83,24 @@ export default function Rail() {
   return (
     <div className="rail" style={{ zoom: state.uiScale }}>
 
-      {/* ── Icon column ── */}
       <div className="rail-icon-col">
         <RailBtn icon={<IconWorld />}    label="World"    active={active === 'world'}    onClick={() => toggle('world')} />
         <RailBtn icon={<IconLayers />}   label="Layers"   active={active === 'layers'}   onClick={() => toggle('layers')} />
-        <RailBtn icon={<IconPlaces />}   label="Structures" active={active === 'structures'} onClick={() => toggle('structures')} />
-        <RailBtn icon={<IconWorldData />} label="World Data" active={active === 'worldData'} onClick={() => toggle('worldData')} />
+        <RailBtn icon={<IconPlaces />}   label="Seed" active={active === 'seed'} onClick={() => toggle('seed')} />
+        <RailBtn icon={<IconWorldData />} label={worldDataLabel} active={active === 'worldData'} onClick={() => toggle('worldData')} />
         <RailBtn icon={<IconSaved />}    label="Saved"    active={active === 'saved'}    onClick={() => toggle('saved')} />
         <RailBtn icon={<IconSettings />} label="Settings" active={active === 'settings'} onClick={() => toggle('settings')} />
       </div>
 
-      {/* ── Content panel (in-flow, pushes map canvas) ── */}
       <div
         className={`rail-panel${isResizing ? ' rail-panel--resizing' : ''}`}
         style={{ width: active ? panelWidth : 0 }}
       >
         <div className="rail-panel-inner" style={{ width: panelWidth }}>
 
-          {renderTarget === 'world'    && (
-            <WorldFlyout
-              onExport={() => { setExportOpen(true); toggle('world') }}
-              onWorldSettings={() => { setWorldSettingsOpen(true); toggle('world') }}
-            />
-          )}
+          {renderTarget === 'world'      && <WorldFlyout />}
           {renderTarget === 'layers'     && <LayersFlyout />}
-          {renderTarget === 'structures' && <StructuresFlyout />}
+          {renderTarget === 'seed'       && <SeedFlyout />}
           {renderTarget === 'worldData'  && <WorldDataFlyout />}
           {renderTarget === 'saved'      && <SavedFlyout />}
           {renderTarget === 'settings'   && <SettingsFlyout />}
@@ -118,9 +112,6 @@ export default function Rail() {
 
         </div>
       </div>
-
-      {exportOpen        && <ExportMapDialog    onClose={() => setExportOpen(false)} />}
-      {worldSettingsOpen && state.worldDir && <WorldSettingsPanel onClose={() => setWorldSettingsOpen(false)} />}
     </div>
   )
 }

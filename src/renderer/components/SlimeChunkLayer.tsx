@@ -1,7 +1,8 @@
 import { memo, useEffect, useRef } from 'react'
 import L from 'leaflet'
 import { useApp } from '../App'
-import { TILE_SIZE, BASE_BLOCKS_PER_PIXEL } from '../lib/constants'
+import { TILE_SIZE } from '../lib/constants'
+import { tileChunkRange } from '../lib/tileCoords'
 import * as api from '../lib/tauriAPI'
 
 const CHUNK_SIZE = 16
@@ -33,18 +34,10 @@ function SlimeChunkLayer({ map }: { map: L.Map }) {
         canvas.height = TILE_SIZE
         const ctx = canvas.getContext('2d')!
 
-        const zoom = coords.z
-        const blocksPerPixel = BASE_BLOCKS_PER_PIXEL / Math.pow(2, zoom)
-        const totalBlocksW = TILE_SIZE * blocksPerPixel
+        const { blocksPerPixel, originX, originZ, cx0, cx1, cz0, cz1 } = tileChunkRange(coords)
 
         if (blocksPerPixel > 64) { done(null, canvas); return canvas }
 
-        const originX = coords.x * totalBlocksW
-        const originZ = coords.y * totalBlocksW
-        const cx0 = Math.floor(originX / CHUNK_SIZE)
-        const cx1 = Math.ceil((originX + totalBlocksW) / CHUNK_SIZE) - 1
-        const cz0 = Math.floor(originZ / CHUNK_SIZE)
-        const cz1 = Math.ceil((originZ + totalBlocksW) / CHUNK_SIZE) - 1
         const width = cx1 - cx0 + 1
 
         api.getSlimeChunks(worldSeed, cx0, cz0, cx1, cz1).then(slime => {

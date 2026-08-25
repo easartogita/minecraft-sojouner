@@ -9,34 +9,33 @@ import { getBEGroup, getBEConfig, buildPopup, buildTooltip, createIcon, type Loo
 import { effectiveMarkerAnchorY } from '../hooks/overlaySlice'
 import { attachMarkerContextMenu } from '../lib/contextMenuBus'
 import { MarkerSpider, collapseOpenSpider, ensureSpiderPanes, SPIDER_PANE } from '../lib/markerSpider'
-
-// ── Module-level stats (read by DebugOverlay) ─────────────────────────────────
+import { TileJobQueue } from '../lib/tileJobQueue'
+import * as tileStats from '../lib/tileStats'
 
 export type BELayerStats = LayerStats
 let _stats: LayerStats = makeLayerStats()
 export function getBELayerStats(): LayerStats { return { ..._stats } }
 export function resetBELayerStats(): void { _stats = makeLayerStats() }
 
-// Blocks whose semantic identity is a POI the PoiLayer already renders — every
-// placed one auto-registers a POI record (bell → meeting point, job-site blocks
-// → profession markers), so rendering the block entity too doubles the marker.
-// Suppressed only while the jobsite group is visible; hide jobsites and the
-// physical block marker comes back.
+// Single-slot queue purely so an in-flight load shows up in TileLoadingHud/DebugOverlay
+// via the same registerOverlay mechanism the tile-queue layers use.
+const loadQueue = new TileJobQueue(1, () => tileStats.notify(), 'blockentity')
+tileStats.registerOverlay({ key: 'blockentity', label: 'Block entities', className: 'blockentity', queues: [loadQueue], caches: [] })
+
+// These block types also auto-register a POI (bell → meeting point, job sites →
+// profession markers), which PoiLayer already renders — suppress the duplicate
+// block-entity marker while that POI group is visible.
 const POI_SHADOWED_BE_TYPES = new Set(['bell', 'smoker', 'blast_furnace', 'brewing_stand', 'lectern'])
 
-// ── Marker builders ───────────────────────────────────────────────────────────
-
-// One real marker (icon + tooltip + popup + context menu) for a block entity.
-// Callers pre-filter, so a config is guaranteed. `pane` places stack children in
-// the raised spider pane so they sit above the dimmer and the other markers.
+// `pane` places stack children in the raised spider pane so they sit above the dimmer.
 function buildBEMarker(be: BlockEntity, pane?: string): L.Marker {
   const cfg = getBEConfig(be)!
   const { x: lng, y: lat } = minecraftToLeaflet(be.x, be.z)
   const unopened = getBEGroup(be.type) === 'containers' && !!be.lootTable
   const tier = (unopened ? (be.lootTier ?? 'B') : 'B') as LootTier
   const tooltip = buildTooltip(be, cfg, unopened, tier)
-  // Only set `pane` when given — passing `pane: undefined` overwrites Leaflet's
-  // default 'markerPane' with undefined and throws on add (map.getPane(undefined)).
+  // Only set `pane` when given — `pane: undefined` overwrites Leaflet's default
+  // 'markerPane' and throws on add.
   const opts: L.MarkerOptions = { icon: createIcon(cfg, tooltip, unopened, tier) }
   if (pane) opts.pane = pane
   const marker = L.marker(L.latLng(lat, lng), opts)
@@ -45,23 +44,19 @@ function buildBEMarker(be: BlockEntity, pane?: string): L.Marker {
     const subLabel = be.spawnType ? ` (${formatLabel(be.spawnType)})` : ''
     return { blockX: be.x, blockZ: be.z, blockY: be.y, kind: 'block_entity', label: beLabel + subLabel, pinId: null }
   })
-  // maxHeight keeps a heavily-stacked container (e.g. a double chest full of
-  // shulker boxes) from rendering past the window edge — see the matching
-  // note on the structure popup in StructureLayer.tsx for why this is a
-  // Leaflet-level cap rather than an inner scroll box.
+  // maxHeight keeps a heavily-stacked container from rendering past the window edge.
   marker.bindPopup(buildPopup(be, cfg), { maxWidth: 280, maxHeight: 420 })
   return marker
 }
 
-// Collapsed anchor for a vertical stack: the topmost entry's look plus a count
-// badge. Clicking it (wired by MarkerSpider) fans the real markers out.
 function buildStackAnchor(bes: BlockEntity[]): L.Marker {
   const top = bes[0]
   const cfg = getBEConfig(top)!
   const { x: lng, y: lat } = minecraftToLeaflet(top.x, top.z)
+  const stackTitle = `${bes.length} stacked here — click to expand`
   const icon = L.divIcon({
     className: '',
-    html: `<div class="be-marker" style="background:${cfg.color}" title="${bes.length} stacked here — click to expand">${cfg.initial}<span class="be-marker-badge" style="background:#334155">${bes.length}</span></div>`,
+    html: `<div class="be-marker" style="background:${cfg.color}" title="${stackTitle}" role="button" aria-label="${stackTitle}">${cfg.initial}<span class="be-marker-badge" style="background:#334155">${bes.length}</span></div>`,
     iconSize: [16, 16],
     iconAnchor: [8, 8],
   })
@@ -72,8 +67,6 @@ function buildStackAnchor(bes: BlockEntity[]): L.Marker {
   }))
   return anchor
 }
-
-// ── Component ─────────────────────────────────────────────────────────────────
 
 function BlockEntityLayer({ map }: { map: L.Map }) {
   const { state } = useApp()
@@ -100,6 +93,7 @@ function BlockEntityLayer({ map }: { map: L.Map }) {
     dimension,
     changedRegions,
     minZoom: markerMinZoom,
+    loadQueue,
     onClear: () => { _stats.lastCount = 0 },
     onLoad: async (pool, group, bounds, isAborted) => {
       const { minCx, maxCx, minCz, maxCz } = bounds

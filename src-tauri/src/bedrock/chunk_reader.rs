@@ -1,16 +1,12 @@
-// Bedrock Edition chunk reader.
-//
-// Reads block data from a Bedrock world's LevelDB database, finds the surface
-// block per column, and returns ChunkColors in the same format as the Java
-// region reader so tile_renderer.rs can consume both without modification.
+// Reads block data from a Bedrock world's LevelDB database and returns
+// ChunkColors in the same format as the Java region reader, so tile_renderer.rs
+// can consume both without modification.
 
 use super::leveldb::LdbDatabase;
 use crate::block_colors::{block_name_to_rgb, normalize_bedrock_block};
 use crate::region_reader::{ChunkInfo, ChunkResult};
 
 pub type ChunkColors = Vec<u8>; // 16×16×4 RGBA, alpha encodes Y
-
-// ── LevelDB key helpers ──────────────────────────────────────────────────────
 
 /// Dimension integers as stored in Bedrock LevelDB keys (not the same as Java).
 /// 0=overworld (key has no dim bytes), 1=nether, 2=end.
@@ -39,9 +35,6 @@ fn subchunk_key(cx: i32, cz: i32, dim: i32, sy: i8) -> Vec<u8> {
     k
 }
 
-
-// ── Subchunk parsing ─────────────────────────────────────────────────────────
-
 /// One storage layer within a subchunk.
 struct PaletteLayer {
     bpb:     u8,         // bits per block (0 = single-value)
@@ -67,12 +60,11 @@ fn parse_subchunk(data: &[u8]) -> Option<Subchunk> {
         if pos >= data.len() { break; }
 
         let bits_raw = data[pos]; pos += 1;
-        // Bit 0 of bits_raw is a "use network bit format" flag; actual bpb = bits_raw >> 1
+        // Bit 0 is a "use network bit format" flag; actual bpb = bits_raw >> 1
         let bpb = bits_raw >> 1;
 
-        // Valid Bedrock bpb values top out at 32 (one value per word); a corrupt
-        // or adversarial subchunk byte can claim up to 127 (bits_raw >> 1), which
-        // would make vals_per_word floor to 0 and panic on the division below.
+        // A corrupt byte can claim bpb up to 127; reject >32 to avoid vals_per_word
+        // flooring to 0 and panicking on the division below.
         if bpb > 32 { return None; }
 
         let words_count = if bpb == 0 {
@@ -92,7 +84,6 @@ fn parse_subchunk(data: &[u8]) -> Option<Subchunk> {
         }
         pos += words_bytes;
 
-        // Palette count (LE i32)
         if pos + 4 > data.len() { return None; }
         let pal_count = i32::from_le_bytes(data[pos..pos+4].try_into().ok()?) as usize;
         pos += 4;
@@ -109,7 +100,6 @@ fn parse_subchunk(data: &[u8]) -> Option<Subchunk> {
             pos += 2 + name_len;
             if pos > data.len() { break; }
 
-            // Parse the compound payload to extract "name" field
             let remaining = &data[pos..];
             let (block_name, consumed) = extract_palette_entry_name(remaining);
             pos += consumed;
@@ -222,8 +212,6 @@ fn get_block_in_layer(layer: &PaletteLayer, local_y: usize, bx: usize, bz: usize
     layer.palette.get(pal_idx).map(|s| s.as_str()).unwrap_or("air")
 }
 
-// ── Surface finding ──────────────────────────────────────────────────────────
-
 const AIR_BLOCKS: &[&str] = &["air", "cave_air", "void_air"];
 
 fn is_air(name: &str) -> bool {
@@ -250,22 +238,16 @@ pub fn extract_bedrock_surface(
     let mut surface = vec![("".to_string(), 0i32); 256];
     let mut found   = vec![false; 256];
 
-    // Overworld Y range: subchunk indices -4 to 20 (Y -64 to 319)
-    // Nether: 0 to 7 (Y 0 to 127)
-    // End:    0 to 15 (Y 0 to 255), but only 0-7 actually have blocks
+    // Subchunk index range differs per dimension: Overworld -4..20 (Y -64..319),
+    // Nether 0..7 (Y 0..127), End 0..15 (Y 0..255, though only 0-7 have blocks).
     let (sy_top, sy_bot) = match dim {
         1 => (7i8, 0i8),  // Nether
         2 => (15i8, 0i8), // End
         _ => (20i8, -4i8), // Overworld
     };
 
-    // For cave mode, determine target Y range
-    let cave_target = cave_y;
-
-    // Iterate subchunks top-to-bottom
     let mut sy = sy_top;
     loop {
-        // If all columns filled, done
         if found.iter().all(|&f| f) { break; }
 
         let key = subchunk_key(cx, cz, dim, sy);
@@ -273,12 +255,11 @@ pub fn extract_bedrock_surface(
             if let Some(sc) = parse_subchunk(&data) {
                 if !sc.layers.is_empty() {
                     let layer = &sc.layers[0];
-                    // Scan local_y from top (15) to bottom (0)
                     for local_y in (0..=15usize).rev() {
                         let global_y = sy as i32 * 16 + local_y as i32;
 
-                        // Cave mode: only scan within the cave window
-                        if let Some(cy) = cave_target {
+                        // Cave mode: skip anything above the target Y window
+                        if let Some(cy) = cave_y {
                             if global_y > cy { continue; }
                         }
 
@@ -306,8 +287,6 @@ pub fn extract_bedrock_surface(
 
     surface
 }
-
-// ── Public chunk color entry points ─────────────────────────────────────────
 
 pub fn get_bedrock_chunk_colors(
     db:             &LdbDatabase,
@@ -377,19 +356,16 @@ pub fn get_bedrock_block_at(
 pub fn list_bedrock_regions(db: &LdbDatabase, dim: i32) -> Vec<(i32, i32)> {
     use std::collections::HashSet;
 
-    // Prefix for overworld chunks (no dim bytes): 8 bytes or 12 bytes for other dims
-    // We iterate all keys and filter by length + tag byte = 0x2f at position 8 or 12
-    // This is a full scan but only happens once per world load / export.
+    // Full key scan filtering by length + subchunk tag byte (0x2f); only happens
+    // once per world load / export so the cost is acceptable.
     let mut regions: HashSet<(i32, i32)> = HashSet::new();
 
-    let prefix: Vec<u8> = Vec::new(); // scan all keys
+    let prefix: Vec<u8> = Vec::new();
     for (key, _) in db.iter_prefix(&prefix) {
         let expected_len = if dim == 0 { 9 } else { 13 }; // prefix + tag(1) = 8/12 + 1
         let tag_pos      = if dim == 0 { 8 } else { 12 };
-        // Subchunks have an extra byte for the subchunk Y after the tag
         if key.len() < expected_len { continue; }
         if key[tag_pos] != 0x2f { continue; }
-        // Confirm dimension bytes match (for non-overworld)
         if dim != 0 {
             if key.len() < 12 { continue; }
             let key_dim = i32::from_le_bytes(key[8..12].try_into().unwrap_or([0;4]));
@@ -407,10 +383,7 @@ pub fn list_bedrock_regions(db: &LdbDatabase, dim: i32) -> Vec<(i32, i32)> {
     regions.into_iter().collect()
 }
 
-// ── LevelDB mtime ─────────────────────────────────────────────────────────────
-
-/// Returns the mtime of the most recently modified LevelDB manifest file.
-/// Used in place of `max_mca_mtime` for freshness checking on Bedrock tiles.
+/// Bedrock equivalent of `max_mca_mtime`, for tile freshness checking.
 pub fn max_ldb_mtime(world_dir: &str) -> u64 {
     let db_dir = std::path::Path::new(world_dir).join("db");
     let Ok(entries) = std::fs::read_dir(&db_dir) else { return 0 };
@@ -428,8 +401,6 @@ pub fn max_ldb_mtime(world_dir: &str) -> u64 {
         .max()
         .unwrap_or(0)
 }
-
-// ── Bulk chunk colors (replaces read_chunk_colors_from_mca) ─────────────────
 
 pub fn read_bedrock_chunk_colors(
     db:             &LdbDatabase,

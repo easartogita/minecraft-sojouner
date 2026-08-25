@@ -1,8 +1,5 @@
-// Module-level tile loading / performance stats store.
-// Layer components (BiomeTileLayer, ChunkOverlayLayer) write here directly
-// instead of dispatching to the global AppState reducer, so tile operations
-// don't cause app-wide re-renders.
-// Only TileLoadingHud and DebugOverlay subscribe.
+// Module-level tile loading/perf stats store. Layers write here directly instead of
+// dispatching to the global AppState reducer, so tile ops don't cause app-wide re-renders.
 
 import type { TileJobQueue } from './tileJobQueue'
 
@@ -46,8 +43,6 @@ export function subscribe(fn: () => void): () => void {
 
 export function getStats(): Readonly<TileStats> { return stats }
 
-// ── MCA (chunk tile) operations ───────────────────────────────────────────────
-
 export function mcaLoadingStart() {
   stats.mcaLoadingCount++
   notify()
@@ -72,8 +67,6 @@ export function resetMcaLoading() {
   notify()
 }
 
-// ── PNG decode operations ─────────────────────────────────────────────────────
-
 export function pngDecodeStart() {
   stats.pngDecodeCount++
   notify()
@@ -86,15 +79,21 @@ export function pngDecodeDone(ms: number) {
   notify()
 }
 
-// ── Biome tile operations ─────────────────────────────────────────────────────
-
 export function biomeLoadingStart() {
   stats.biomeLoadingCount++
   notify()
 }
 
-export function biomeLoadingDone(ms: number) {
+// Call on both success and a race-rejected/empty result (slot_matches bailed) to
+// keep the in-flight count honest.
+export function biomeLoadingSettle() {
   stats.biomeLoadingCount = Math.max(0, stats.biomeLoadingCount - 1)
+  notify()
+}
+
+// Call only when a tile was actually rendered — a race-rejected fetch did no real
+// cubiomes work and would drag avg/peak timing toward non-representative numbers.
+export function biomeLoadingDone(ms: number) {
   stats.biomeTilesLoaded++
   stats.biomeTotalMs += ms
   if (ms > stats.biomePeakMs) stats.biomePeakMs = ms
@@ -106,13 +105,8 @@ export function resetBiomeLoading() {
   notify()
 }
 
-// ── Generic overlay layers (ore veins, ore features, carvers, terrain) ────────
-// These all share the useTileLayer + TileJobQueue pattern, so instead of a
-// hand-written counter set per layer they self-register here at module load.
-// queues drive the "loading" indicators; caches drive the Memory readout; stat
-// accumulates completed-render timings. TileLoadingHud and DebugOverlay read
-// these via getOverlays().
-
+// Overlay layers (ore veins, ore features, carvers, terrain) share the useTileLayer +
+// TileJobQueue pattern and self-register here instead of each hand-writing counters.
 export interface OverlayStat {
   tilesLoaded: number
   totalMs:     number
@@ -179,9 +173,7 @@ function resetOverlayStats() {
   }
 }
 
-// ── Tauri push metrics (called from useSeed.ts event handler) ─────────────────
-// No notify — DebugOverlay polls every 2 s and these don't affect ChunkDataOverlay.
-
+// No notify — DebugOverlay polls every 2s and these don't affect ChunkDataOverlay.
 export function updateMcaMetrics(m: {
   colorCacheHits: number; colorCacheMisses: number; pngCacheHits: number
 }) {
@@ -189,8 +181,6 @@ export function updateMcaMetrics(m: {
   stats.mcaColorCacheMisses = m.colorCacheMisses
   stats.mcaPngCacheHits     = m.pngCacheHits
 }
-
-// ── Reset cumulative stats (DebugOverlay "Reset stats" button) ────────────────
 
 export function resetAllStats() {
   stats.mcaTilesLoaded    = 0; stats.mcaCacheHits     = 0

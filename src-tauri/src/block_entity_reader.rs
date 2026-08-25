@@ -11,10 +11,9 @@ pub struct BlockItem {
     pub slot:  i32,
     pub id:    String,
     pub count: i32,
-    /// Resolved potion type (e.g. "strong_healing") for potion/splash_potion/
-    /// lingering_potion/tipped_arrow stacks — read from the item's own NBT,
-    /// not simulated. Java only: Bedrock encodes potion type as a numeric
-    /// item aux value rather than a string tag, which isn't decoded here.
+    /// Resolved potion type for potion/splash_potion/lingering_potion/tipped_arrow
+    /// stacks. Java only — Bedrock encodes potion type as a numeric aux value, not
+    /// a string tag, and isn't decoded here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub potion: Option<String>,
 }
@@ -279,11 +278,8 @@ fn parse_banner_patterns(be: &HashMap<String, Value>) -> Option<Vec<BannerPatter
 // arrows all use the same "Potion" tag / potion_contents component.
 const POTIONABLE_IDS: &[&str] = &["potion", "splash_potion", "lingering_potion", "tipped_arrow"];
 
-/// Reads the specific potion type (e.g. "strong_healing") off an item's own
-/// NBT — the exact rolled/brewed potion, not a loot-table prediction. Only
-/// Java's string-tag formats are handled: legacy `tag.Potion` and 1.20.5+
-/// `components."minecraft:potion_contents".potion`. Bedrock stores potion
-/// type as a numeric item aux value instead, which this does not decode.
+/// Reads the exact brewed potion type off an item's own NBT (legacy `tag.Potion`
+/// or 1.20.5+ `components."minecraft:potion_contents".potion`), not a prediction.
 fn item_potion(m: &HashMap<String, Value>, id: &str) -> Option<String> {
     if !POTIONABLE_IDS.contains(&id) { return None; }
     if let Some(p) = m.get("components").and_then(cmp)

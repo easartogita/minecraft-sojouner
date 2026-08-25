@@ -2,8 +2,6 @@ import L from 'leaflet'
 import { normalizeBEType, BE_TYPE_TO_GROUP, type BEFilterGroup } from './markerFilters'
 import { tooltipText } from './chunkMarkerLayer'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
 export type LootTier = 'S' | 'A' | 'B' | 'C'
 
 export interface BEConfig {
@@ -12,12 +10,8 @@ export interface BEConfig {
   label: string
 }
 
-// ── Loot tier display ─────────────────────────────────────────────────────────
-
 export const TIER_COLOR: Record<LootTier, string> = { S: '#ffd700', A: '#f59e0b', B: '#9ca3af', C: '#6b7280' }
 export const TIER_LABEL: Record<LootTier, string> = { S: '★★★ Exceptional', A: '★★ High', B: '★ Moderate', C: '◇ Common' }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 export function formatLabel(type: string): string {
   return type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -32,13 +26,9 @@ export function formatLootTable(table: string): string {
   return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
-// ── Group lookup ──────────────────────────────────────────────────────────────
-
 export function getBEGroup(type: string): BEFilterGroup | undefined {
   return BE_TYPE_TO_GROUP[normalizeBEType(type)]
 }
-
-// ── Per-type display config ───────────────────────────────────────────────────
 
 export function getBEConfig(be: BlockEntity): BEConfig | null {
   const type = be.type
@@ -49,24 +39,19 @@ export function getBEConfig(be: BlockEntity): BEConfig | null {
     if (type === 'hopper')               return { color: '#6b7280', initial: 'H', label: 'Hopper' }
     if (type === 'dropper')              return { color: '#6b7280', initial: 'D', label: 'Dropper' }
     if (type === 'dispenser')            return { color: '#6b7280', initial: 'D', label: 'Dispenser' }
-    // Copper Chest (26.3+): weathering-stage-specific label (e.g. "Waxed Oxidized
-    // Copper Chest"), but one copper-toned color regardless of stage — matches the
-    // copper block family's color convention (block_colors.rs renders all stages
-    // the same way it renders other copper blocks: distinctly, not chest-brown).
+    // Copper Chest: label varies by weathering stage, but color stays copper-toned
+    // regardless, matching how block_colors.rs renders the copper block family.
     if (type.endsWith('copper_chest'))   return { color: '#c17b52', initial: 'C', label: formatLabel(type) }
     return { color: '#a0522d', initial: 'C', label: formatLabel(type) }
   }
   if (type === 'mob_spawner')            return { color: '#8b0000', initial: 'M', label: 'Spawner' }
   if (type === 'trial_spawner')          return { color: '#cc4400', initial: 'T', label: 'Trial Spawner' }
   if (group === 'signs')                 return { color: '#d4a017', initial: 'S', label: 'Sign' }
-  // 'H' for Hive — 'B' is taken by Bell, and the two share this same
-  // honey-amber color family, so the letter is the only thing telling them
-  // apart at a glance.
+  // 'H' for Hive — 'B' is taken by Bell, and both share this honey-amber color family.
   if (type === 'beehive' || type === 'bee_nest')
                                          return { color: '#f0a500', initial: 'H', label: formatLabel(type) }
-  // Bell is usually POI-shadowed (see POI_SHADOWED_BE_TYPES in
-  // BlockEntityLayer.tsx) — the marker actually shown comes from
-  // meeting_point in poiConfig.ts, which must match this color.
+  // Usually POI-shadowed (see POI_SHADOWED_BE_TYPES in BlockEntityLayer.tsx) — the
+  // marker actually shown comes from meeting_point in poiConfig.ts and must match this color.
   if (type === 'bell')                   return { color: '#4f46e5', initial: 'B', label: 'Bell' }
   if (type === 'lectern')                return { color: '#795548', initial: 'L', label: 'Lectern' }
   if (type === 'brewing_stand')          return { color: '#4a148c', initial: 'W', label: 'Brewing Stand' }
@@ -101,15 +86,12 @@ export function getBEConfig(be: BlockEntity): BEConfig | null {
   return null
 }
 
-// ── Popup ─────────────────────────────────────────────────────────────────────
-
 function itemsHtml(items: BlockItem[]): string {
   if (!items.length) return '<div class="be-empty">Empty</div>'
-  // Show every slot — containers are per-slot but in practice short (hoppers hold
-  // 5, chests are rarely packed), so the old "…and N more" cutoff just hid detail.
+  // Shows every slot, no "...and N more" cutoff — containers are per-slot but short in practice.
   return items.map(i => {
-    // "Potion" -> "Potion of Strong Healing" — resolved from the item's own
-    // NBT (see item_potion in block_entity_reader.rs), not a loot prediction.
+    // Potion detail is resolved from the item's own NBT (item_potion in
+    // block_entity_reader.rs), not a loot prediction.
     const label = i.potion ? `${formatItemId(i.id)} of ${formatLabel(i.potion)}` : formatItemId(i.id)
     return `<div class="be-item"><span class="be-item-count">×${i.count}</span> ${label}</div>`
   }).join('')
@@ -266,8 +248,6 @@ export function buildPopup(be: BlockEntity, cfg: BEConfig): string {
   return header + body + '</div>'
 }
 
-// ── Tooltip ───────────────────────────────────────────────────────────────────
-
 export function buildTooltip(be: BlockEntity, cfg: BEConfig, unopened: boolean, tier: LootTier): string {
   const group = getBEGroup(be.type)
   if (unopened)
@@ -314,8 +294,6 @@ export function buildTooltip(be: BlockEntity, cfg: BEConfig, unopened: boolean, 
   }
 }
 
-// ── Icon ──────────────────────────────────────────────────────────────────────
-
 export function createIcon(cfg: BEConfig, tooltip: string, unopened = false, tier: LootTier = 'B'): L.DivIcon {
   const tierColor = TIER_COLOR[tier]
   const borderColor = unopened ? tierColor : 'rgba(255,255,255,0.7)'
@@ -327,7 +305,7 @@ export function createIcon(cfg: BEConfig, tooltip: string, unopened = false, tie
     : ''
   return L.divIcon({
     className: '',
-    html: `<div class="be-marker" style="${style}" title="${tooltip}">${cfg.initial}${badge}</div>`,
+    html: `<div class="be-marker" style="${style}" title="${tooltip}" role="button" aria-label="${tooltip}">${cfg.initial}${badge}</div>`,
     iconSize: [16, 16],
     iconAnchor: [8, 8],
   })

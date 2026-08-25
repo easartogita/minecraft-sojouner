@@ -7,12 +7,9 @@ import { minecraftToLeaflet } from '../lib/tileCoords'
 // real boundary, so there's nothing useful to draw.
 const VANILLA_DEFAULT_BORDER_SIZE = 60_000_000
 
-/**
- * The world border: a square centered on (borderCenterX, borderCenterZ) with
- * side length borderSize, read from level.dat. Applies in both Overworld and
- * Nether (the border is enforced in each dimension's own block coordinates,
- * unscaled by the 1:8 Nether ratio); the End has no border.
- */
+// Square centered on (borderCenterX, borderCenterZ) with side length borderSize, from
+// level.dat. Enforced in each dimension's own block coordinates, unscaled by the 1:8
+// Nether ratio; the End has no border.
 function WorldBorderLayer({ map }: { map: L.Map }) {
   const { state } = useApp()
   const layerRef = useRef<L.Rectangle | null>(null)

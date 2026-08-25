@@ -1,5 +1,68 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getVersion } from '@tauri-apps/api/app'
+import type {
+  SavesWorldEntry, RegionChange, RenderedTile, ChunkInfo, ExportParams,
+  CaveRangePreset, StaticExportParams, StaticExportProgress, StructurePos, StructureHit,
+  EnchantmentInfo, LootItem, ChestSlot, GatewayLink, McaMetricsExtended, OverlayTileKind, TileSizes,
+  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo,
+} from './tauriAPI.types'
+
+export type {
+  SavesWorldEntry, RegionChange, RenderedTile, ChunkInfo, ExportParams,
+  CaveRangePreset, StaticExportParams, StaticExportProgress, StructurePos, StructureHit,
+  EnchantmentInfo, LootItem, ChestSlot, GatewayLink, OverlayTileKind, TileSizes,
+  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo,
+} from './tauriAPI.types'
+
+/** False here, true in tauriAPI.static.ts — the one flag distinguishing live-world
+ *  mode from booted-from-manifest.json mode, kept in this seam instead of a
+ *  separate build flag so there's exactly one thing to stay in sync. */
+export const IS_STATIC_SITE = false
+
+export function getAppVersion(): Promise<string> {
+  return getVersion()
+}
+
+/** Static-site-only: booting from an exported bundle instead of a real
+ *  world, so there's no level.dat to read — never called in the live app
+ *  (gated by IS_STATIC_SITE), kept here only so the module shapes match. */
+export function getStaticWorldSeedData(): Promise<{ path: string; data: SeedData } | null> {
+  return Promise.resolve(null)
+}
+
+/** Static-site-only: the live app computes its presets directly from
+ *  defaultCaveRangePresets(dimension) — no manifest to read them from —
+ *  never called here, kept only so the module shapes match. */
+export function getCaveRangePresets(_dimension: string): Promise<CaveRangePreset[]> {
+  return Promise.resolve([])
+}
+
+/** Static-site-only: these overlays render from raw per-chunk arrays in the
+ *  live app (getOreVeinColumns/generateOreFeatures/getCarvedColumns/
+ *  getLocalDifficulties + overlayTileWorker.ts) — never called here, kept
+ *  only so the module shapes match. */
+export function renderOverlayTile(
+  _kind: OverlayTileKind, _dimension: string, _tileX: number, _tileY: number, _zoom: number,
+): Promise<RenderedTile | null> {
+  return Promise.resolve(null)
+}
+
+/** Static-site-only: live components already know their own tile size (the
+ *  BIOME_TILE_SIZE/TILE_SIZE constants in constants.ts) — never called here,
+ *  kept only so the module shapes match. */
+export function getTileSizes(_dimension: string): TileSizes {
+  return {}
+}
+
+/** Turns a tile's on-disk path (as returned by renderTile/renderBiomeTile/etc.)
+ *  into a URL the webview can load. The static-site build aliases this whole
+ *  module to a counterpart that returns tile paths as-is (already relative
+ *  URLs into the exported bundle) — every other Tauri touchpoint in the
+ *  renderer funnels through this file for exactly that reason. */
+export function tileSrc(path: string): string {
+  return convertFileSrc(path)
+}
 
 // ── Level.dat / seed ──────────────────────────────────────────────────────────
 
@@ -9,13 +72,6 @@ export function selectLevelDat(): Promise<string | null> {
 
 export function selectWorldDir(): Promise<string | null> {
   return invoke<string | null>('select_world_dir')
-}
-
-export interface SavesWorldEntry {
-  name:          string
-  levelDatPath:  string
-  modifiedSecs:  number
-  edition:       'java' | 'bedrock'
 }
 
 export function listSavesWorlds(): Promise<SavesWorldEntry[]> {
@@ -53,11 +109,6 @@ export function onSeedError(cb: (error: string) => void): () => void {
   return () => { unlisten?.() }
 }
 
-/** A region-change notification: the affected dimension plus the changed region
- *  coords. `dimension` is 'overworld'/'nether'/'end', a custom dim name, or '*'
- *  (dimension unknown → full invalidation of the active view). */
-export interface RegionChange { dimension: string; regions: [number, number][] }
-
 export function onRegionChanged(cb: (change: RegionChange) => void): () => void {
   let unlisten: UnlistenFn | undefined
   listen<RegionChange>('region:changed', e => cb(e.payload)).then(fn => { unlisten = fn })
@@ -70,21 +121,38 @@ export function onMcaMetrics(cb: (m: McaMetrics) => void): () => void {
   return () => { unlisten?.() }
 }
 
+/** OS-level file drop onto the window (dropping a level.dat/world folder to
+ *  load it) — a native Tauri event, not a DOM 'drop' event. */
+export function onFileDrop(cb: (paths: string[]) => void): () => void {
+  let unlisten: UnlistenFn | undefined
+  listen<string[]>('tauri://file-drop', e => cb(e.payload)).then(fn => { unlisten = fn })
+  return () => { unlisten?.() }
+}
+
 // ── Tile rendering ────────────────────────────────────────────────────────────
 
 export function renderBiomeTile(
-  slot: number, seed: bigint, mcVersion: number, dimension: string,
+  slot: number, seed: bigint, mcVersion: number, worldFlags: number, dimension: string,
   tileX: number, tileY: number, zoom: number,
-): Promise<string | null> {
+): Promise<RenderedTile | null> {
   const { seedLow, seedHigh } = splitSeed(seed)
-  return invoke<string | null>('render_biome_tile', {
-    slot, seedLow, seedHigh, mcVersion, dimension, tileX, tileY, zoom,
-  })
+  return invoke<[string, number] | null>('render_biome_tile', {
+    slot, seedLow, seedHigh, mcVersion, worldFlags, dimension, tileX, tileY, zoom,
+  }).then(res => res ? { path: res[0], mtime: res[1] } : null)
 }
 
-/** A rendered tile: disk path plus the source .mca mtime it is valid as of.
- *  The mtime lets the in-memory tile cache detect a later region rewrite. */
-export interface RenderedTile { path: string; mtime: number }
+/** Unified "underground" biome view — server-rendered and disk-cached like
+ * renderBiomeTile, scanning multiple Y levels per column bounded by the real
+ * terrain surface. Overworld-only; returns null for other dimensions. */
+export function renderUndergroundBiomeTile(
+  slot: number, seed: bigint, mcVersion: number, worldFlags: number, dimension: string,
+  tileX: number, tileY: number, zoom: number,
+): Promise<RenderedTile | null> {
+  const { seedLow, seedHigh } = splitSeed(seed)
+  return invoke<[string, number] | null>('render_underground_biome_tile', {
+    slot, seedLow, seedHigh, mcVersion, worldFlags, dimension, tileX, tileY, zoom,
+  }).then(res => res ? { path: res[0], mtime: res[1] } : null)
+}
 
 export function renderTile(
   worldDir: string, edition: string, dimension: string,
@@ -108,15 +176,6 @@ export function tileSourceMtime(
   return invoke<number>('tile_source_mtime', {
     worldDir, edition, dimension, tileX, tileY, zoom,
   })
-}
-
-export interface ChunkInfo {
-  blockName: string | null
-  inhabitedTime: number | null
-  specialMultiplier?: number
-  regionalDifficulty?: number
-  /** Surface Y of the queried block. Null when chunk isn't generated or the column is air. */
-  blockY?: number | null
 }
 
 export function getBlockAt(
@@ -154,14 +213,6 @@ export function getLocalDifficulties(
   return invoke<number[]>('get_local_difficulties', {
     worldDir, dimension, cx0, cz0, cx1, cz1, gameDifficulty, worldTime,
   })
-}
-
-export function getCaveEntrances(
-  worldDir: string, dimension: string,
-  cx0: number, cz0: number, cx1: number, cz1: number,
-): Promise<Int32Array> {
-  return invoke<number[]>('get_cave_entrances', { worldDir, dimension, cx0, cz0, cx1, cz1 })
-    .then(arr => new Int32Array(arr))
 }
 
 export function getInhabitedTimes(
@@ -208,16 +259,80 @@ export function selectExportPath(defaultName: string): Promise<string | null> {
   return invoke<string | null>('select_export_path', { defaultName })
 }
 
-export interface ExportParams {
-  worldDir: string
-  edition: string
-  dimension: string
-  outputPath: string
-  hideWater: boolean
-  blocksPerPixel: number
-  seed: bigint
-  mcVersion: number
-  worldFlags: number
+// ── Structure copy (dev-only) ────────────────────────────────────────────────
+// Rust command is #[cfg(debug_assertions)]'d out of release builds; the UI entry
+// point is import.meta.env.DEV-gated so it's never actually reachable there.
+
+export function copyRegions(
+  srcLevelDatPath: string, srcDimension: string,
+  dstLevelDatPath: string, dstDimension: string,
+  regions: [number, number][],
+): Promise<CopyRegionsReport> {
+  return invoke<CopyRegionsReport>('copy_regions', {
+    srcLevelDatPath, srcDimension, dstLevelDatPath, dstDimension, regions,
+  })
+}
+
+export function copyChunks(
+  srcLevelDatPath: string, srcDimension: string,
+  dstLevelDatPath: string, dstDimension: string,
+  chunks: [number, number][], dx: number, dz: number,
+  // v2: section-aligned Y-range trim. Both set → merges only the sections
+  // touching [yMin, yMax] into the *existing* destination chunk instead of
+  // replacing it whole; either omitted → v1's full-column relocate.
+  yMin?: number, yMax?: number,
+): Promise<CopyChunksReport> {
+  return invoke<CopyChunksReport>('copy_chunks', {
+    srcLevelDatPath, srcDimension, dstLevelDatPath, dstDimension, chunks, dx, dz,
+    yMin: yMin ?? null, yMax: yMax ?? null,
+  })
+}
+
+export function copyBlocks(
+  srcLevelDatPath: string, srcDimension: string,
+  dstLevelDatPath: string, dstDimension: string,
+  srcBox: [number, number, number, number, number, number], // x0,y0,z0,x1,y1,z1
+  dstOrigin: [number, number, number],                      // x,y,z
+  rotationDeg: 0 | 90 | 180 | 270,
+  mirror: 'x' | 'z' | null,
+): Promise<CopyBlocksReport> {
+  return invoke<CopyBlocksReport>('copy_blocks', {
+    srcLevelDatPath, srcDimension, dstLevelDatPath, dstDimension,
+    srcBox, dstOrigin, rotationDeg, mirror,
+  })
+}
+
+// ── Structure templates — save/load a box selection as a portable .nbt file.
+// Dialog commands mirror select_export_path/select_level_dat's two-step shape.
+
+export function selectTemplateSavePath(defaultName: string): Promise<string | null> {
+  return invoke<string | null>('select_template_save_path', { defaultName })
+}
+
+export function selectTemplateFile(): Promise<string | null> {
+  return invoke<string | null>('select_template_file')
+}
+
+export function saveStructureTemplate(
+  srcLevelDatPath: string, srcDimension: string,
+  srcBox: [number, number, number, number, number, number],
+  outPath: string,
+): Promise<SavedTemplateInfo> {
+  return invoke<SavedTemplateInfo>('save_structure_template', {
+    srcLevelDatPath, srcDimension, srcBox, outPath,
+  })
+}
+
+export function pasteStructureTemplate(
+  templatePath: string,
+  dstLevelDatPath: string, dstDimension: string,
+  dstOrigin: [number, number, number],
+  rotationDeg: 0 | 90 | 180 | 270,
+  mirror: 'x' | 'z' | null,
+): Promise<CopyBlocksReport> {
+  return invoke<CopyBlocksReport>('paste_structure_template', {
+    templatePath, dstLevelDatPath, dstDimension, dstOrigin, rotationDeg, mirror,
+  })
 }
 
 export function exportWorldMap(p: ExportParams): Promise<void> {
@@ -260,6 +375,58 @@ export function onExportError(cb: (msg: string) => void): () => void {
   return () => { unlisten?.() }
 }
 
+// ── Static-site export ──────────────────────────────────────────────────────────
+// See src/renderer/lib/staticExport/schema.ts for the bundle shape this
+// produces, and src-tauri/src/static_export.rs for the writer.
+
+export function selectExportDir(defaultPath?: string | null): Promise<string | null> {
+  return invoke<string | null>('select_export_dir', { defaultPath: defaultPath ?? null })
+}
+
+export function exportStaticSite(p: StaticExportParams): Promise<void> {
+  const { seedLow, seedHigh } = splitSeed(p.seed)
+  return invoke<void>('export_static_site', {
+    params: {
+      worldDir: p.worldDir, edition: p.edition, outputDir: p.outputDir,
+      seedLow, seedHigh, mcVersion: p.mcVersion, worldFlags: p.worldFlags,
+      levelName: p.levelName, dataVersion: p.dataVersion, versionName: p.versionName,
+      worldType: p.worldType, difficulty: p.difficulty, worldTime: p.worldTime,
+      borderCenterX: p.borderCenterX, borderCenterZ: p.borderCenterZ, borderSize: p.borderSize,
+      gameRules: p.gameRules, dimensions: p.dimensions,
+      includeBiomeTiles: p.includeBiomeTiles, includeUndergroundTiles: p.includeUndergroundTiles,
+      includeChunkTiles: p.includeChunkTiles, includeChunkHideWaterTiles: p.includeChunkHideWaterTiles,
+      caveRangePresets: p.caveRangePresets,
+      includeOreVeins: p.includeOreVeins,
+      includeCarvers: p.includeCarvers,
+      includeLocalDifficulty: p.includeLocalDifficulty,
+      rollLootFor: p.rollLootFor,
+      defaultSettings: p.defaultSettings, markerGroups: p.markerGroups,
+    },
+  })
+}
+
+export function cancelStaticExport(): Promise<void> {
+  return invoke('cancel_static_export')
+}
+
+export function onStaticExportProgress(cb: (p: StaticExportProgress) => void): () => void {
+  let unlisten: UnlistenFn | undefined
+  listen<StaticExportProgress>('static-export:progress', e => cb(e.payload)).then(fn => { unlisten = fn })
+  return () => { unlisten?.() }
+}
+
+export function onStaticExportDone(cb: () => void): () => void {
+  let unlisten: UnlistenFn | undefined
+  listen<void>('static-export:done', () => cb()).then(fn => { unlisten = fn })
+  return () => { unlisten?.() }
+}
+
+export function onStaticExportError(cb: (msg: string) => void): () => void {
+  let unlisten: UnlistenFn | undefined
+  listen<string>('static-export:error', e => cb(e.payload)).then(fn => { unlisten = fn })
+  return () => { unlisten?.() }
+}
+
 // ── Cache / metrics ───────────────────────────────────────────────────────────
 
 export function clearTilePng(worldDir: string): Promise<void> {
@@ -286,13 +453,7 @@ export function invalidateMcaTiles(worldDir: string, regions: [number, number][]
   return invoke('invalidate_mca_tiles', { worldDir, regions })
 }
 
-export function getMcaMetrics(): Promise<{
-  metrics: McaMetrics
-  colorCacheSize: number
-  memRssMb: number
-  memHeapUsedMb: number
-  memHeapTotalMb: number
-}> {
+export function getMcaMetrics(): Promise<McaMetricsExtended> {
   return invoke('get_mca_metrics')
 }
 
@@ -301,14 +462,6 @@ export function resetMcaMetrics(): Promise<void> {
 }
 
 // ── cubiomes / biome generation ───────────────────────────────────────────────
-
-export interface StructurePos {
-  x:            number
-  z:            number
-  flags:        number
-  variantTag?:  string
-  variantColor?: string
-}
 
 /** Split a BigInt seed into two i32s as required by the cubiomes Rust commands. */
 function toI32(u: bigint): number {
@@ -331,78 +484,40 @@ export function setupGenerator(
   return invoke<number>('cubiomes_setup_generator', { seedLow, seedHigh, mcVersion, dimension, flags })
 }
 
+/** `seed`/`dimension`/`worldFlags`/`mcVersion` must match what `slot` is
+ *  currently set up for — the backend verifies this under its lock and
+ *  returns the empty/zero-filled fallback if a concurrent switch repointed
+ *  the slot in between (see the Carver/Terrain layers' matching guard). */
 export function getBiomeRegion(
-  slot: number, x: number, z: number, width: number, height: number, scale: number
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  x: number, z: number, width: number, height: number, scale: number,
 ): Promise<Int32Array> {
+  const { seedLow, seedHigh } = splitSeed(seed)
   return invoke<{ biomes: number[]; width: number; height: number } | null>(
-    'cubiomes_get_biomes', { slot, x, z, width, height, scale }
+    'cubiomes_get_biomes', { slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, x, z, width, height, scale }
   ).then(r => r ? new Int32Array(r.biomes) : new Int32Array(width * height).fill(1))
 }
 
 /** Like getBiomeRegion but queries at an explicit biome Y coordinate.
  *  y is in cubiomes biome space: Math.floor(minecraftBlockY / 4) for scale > 1. */
 export function getBiomeRegionAt(
-  slot: number, x: number, z: number, width: number, height: number, scale: number, y: number
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  x: number, z: number, width: number, height: number, scale: number, y: number,
 ): Promise<Int32Array> {
+  const { seedLow, seedHigh } = splitSeed(seed)
   return invoke<{ biomes: number[]; width: number; height: number } | null>(
-    'cubiomes_get_biomes_at', { slot, x, z, width, height, scale, y }
+    'cubiomes_get_biomes_at', { slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, x, z, width, height, scale, y }
   ).then(r => r ? new Int32Array(r.biomes) : new Int32Array(width * height).fill(1))
 }
 
 export function getHeightRegion(
-  slot: number, x: number, z: number, w: number, h: number
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  x: number, z: number, w: number, h: number,
 ): Promise<Float32Array> {
+  const { seedLow, seedHigh } = splitSeed(seed)
   return invoke<number[] | null>(
-    'cubiomes_get_height_region', { slot, x, z, w, h }
+    'cubiomes_get_height_region', { slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, x, z, w, h }
   ).then(r => r ? new Float32Array(r) : new Float32Array(w * h).fill(0))
-}
-
-// Valid cubiomes biome query scales, largest first.
-// Picking the largest scale ≤ blocksPerPixel keeps queryW ≈ tileSize (fast query, full coverage).
-const CUBIOMES_SCALES = [256, 64, 16, 4, 1] as const
-// cubiomes always samples height at 4-block resolution; not meaningful at low zoom.
-const HEIGHT_SCALE = 4
-const HEIGHT_MAX_BLOCKS_PER_PIXEL = 16
-
-export interface BiomeTileData {
-  biomes:     Int32Array
-  queryW:     number
-  queryH:     number
-  biomeScale: number
-}
-
-/** Fetch biome data for a single tile, choosing the optimal cubiomes scale internally. */
-export function getBiomesForTile(
-  slot: number, blockX: number, blockZ: number,
-  blocksPerPixel: number, tileSize: number,
-): Promise<BiomeTileData> {
-  const biomeScale = CUBIOMES_SCALES.find(s => s <= blocksPerPixel) ?? 4
-  const queryW = Math.max(1, Math.ceil(tileSize * blocksPerPixel / biomeScale))
-  const queryH = queryW
-  return getBiomeRegion(
-    slot, Math.floor(blockX / biomeScale), Math.floor(blockZ / biomeScale), queryW, queryH, biomeScale,
-  ).then(biomes => ({ biomes, queryW, queryH, biomeScale }))
-}
-
-/** Fetch height data for a tile, or null if the dimension/zoom makes it irrelevant. */
-export function getHeightsForTile(
-  slot: number, blockX: number, blockZ: number,
-  blocksPerPixel: number, tileSize: number, dimension: string,
-): Promise<Float32Array | null> {
-  if (dimension !== 'overworld' || blocksPerPixel > HEIGHT_MAX_BLOCKS_PER_PIXEL) return Promise.resolve(null)
-  const queryW = Math.max(1, Math.ceil(tileSize * blocksPerPixel / HEIGHT_SCALE))
-  return getHeightRegion(
-    slot, Math.floor(blockX / HEIGHT_SCALE), Math.floor(blockZ / HEIGHT_SCALE), queryW, queryW,
-  ).catch(() => null)
-}
-
-export interface StructureHit {
-  struct_type:    string
-  x:              number
-  z:              number
-  flags:          number
-  variant_tag?:   string
-  variant_color?: string
 }
 
 export function findAllStructures(
@@ -421,35 +536,16 @@ export function findAllStructures(
   })
 }
 
-export function getSpawn(slot: number): Promise<StructurePos> {
-  return invoke<[number, number]>('cubiomes_get_spawn', { slot })
-    .then(([x, z]) => ({ x, z, flags: 0 }))
-}
-
-/** Returns [copper_y, copper_size, iron_y, iron_size].
- *  size: 0=no ore (tuff only), 1=small, 2=medium, 3=large. y is i32::MIN when size==0. */
-export function getOreVeinsAt(
-  seed: bigint, cx: number, cz: number
-): Promise<{ copperY: number | null; copperSize: number; ironY: number | null; ironSize: number }> {
+/** Returns null if `slot` doesn't currently match seed/dimension/worldFlags/mcVersion
+ *  (a concurrent switch repointed it) — callers should treat that as "not known yet"
+ *  rather than drawing a marker at a stale/wrong (0, 0). */
+export function getSpawn(
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+): Promise<StructurePos | null> {
   const { seedLow, seedHigh } = splitSeed(seed)
-  const INT_MIN = -2147483648
-  return invoke<[number, number, number, number]>('cubiomes_get_ore_veins_at', { seedLow, seedHigh, cx, cz })
-    .then(([copperY, copperSize, ironY, ironSize]) => ({
-      copperY:   copperY   !== INT_MIN ? copperY   : null,
-      copperSize,
-      ironY:     ironY     !== INT_MIN ? ironY     : null,
-      ironSize,
-    }))
-}
-
-/** Returns a flat Int32Array [copper_y, copper_size, iron_y, iron_size, ...] per chunk.
- *  size: 0=no ore (tuff only), 1=small, 2=medium, 3=large. y is i32::MIN when size==0. */
-export function getOreVeinsEx(
-  seed: bigint, cx0: number, cz0: number, cx1: number, cz1: number
-): Promise<Int32Array> {
-  const { seedLow, seedHigh } = splitSeed(seed)
-  return invoke<number[]>('cubiomes_get_ore_veins_ex', { seedLow, seedHigh, cx0, cz0, cx1, cz1 })
-    .then(arr => new Int32Array(arr))
+  return invoke<[number, number] | null>(
+    'cubiomes_get_spawn', { slot, seedLow, seedHigh, dimension, worldFlags, mcVersion }
+  ).then(r => r ? { x: r[0], z: r[1], flags: 0 } : null)
 }
 
 // Monotonic ids tagging each heavy overlay tile fetch, so it can be cancelled
@@ -468,64 +564,87 @@ export function cubiomesCancelRequest(reqId: number): void {
  *  The cave-layer analogue of getCarvedColumns: resolves each vein's true 3-D
  *  shape. Returns [nx, nz, then nx*nz * 256 * 2 per-column (copper,iron) counts]. */
 export function getOreVeinColumns(
-  slot: number, cx0: number, cz0: number, cx1: number, cz1: number, reqId = 0,
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  cx0: number, cz0: number, cx1: number, cz1: number, reqId = 0,
 ): Promise<Int32Array> {
-  return invoke<number[]>('cubiomes_get_ore_vein_columns', { slot, cx0, cz0, cx1, cz1, reqId })
-    .then(arr => new Int32Array(arr))
+  const { seedLow, seedHigh } = splitSeed(seed)
+  return invoke<number[]>('cubiomes_get_ore_vein_columns', {
+    slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, cx0, cz0, cx1, cz1, reqId,
+  }).then(arr => new Int32Array(arr))
+}
+
+/** Ore-vein detail for the single column under the cursor (bx, bz), using
+ *  generator `slot`. The hover-resolution analogue of getOreVeinColumns —
+ *  same real per-block probe, but keeps each vein's Y range instead of
+ *  collapsing it to a footprint count. Null when the backend has nothing
+ *  (pre-1.18, or a stale/mismatched slot). */
+export function getOreVeinColumnAt(
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  bx: number, bz: number,
+): Promise<OreVeinColumn | null> {
+  const { seedLow, seedHigh } = splitSeed(seed)
+  return invoke<number[]>('cubiomes_get_ore_vein_column_at', {
+    slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, bx, bz,
+  }).then(arr => {
+    if (arr.length < 6) return null
+    const NONE = -2147483648 // i32::MIN sentinel
+    return {
+      copperCount: arr[0],
+      copperMinY: arr[1] === NONE ? null : arr[1],
+      copperMaxY: arr[2] === NONE ? null : arr[2],
+      ironCount: arr[3],
+      ironMinY: arr[4] === NONE ? null : arr[4],
+      ironMaxY: arr[5] === NONE ? null : arr[5],
+    }
+  })
 }
 
 /** Ore-feature placement (normal ore blobs) for `oreTypes` over a chunk range,
- *  using generator `slot`. Returns a flat Int32Array [oreType, x, y, z, ...]. */
+ *  using generator `slot`. `seed`/`dimension`/`worldFlags`/`mcVersion` must match
+ *  what `slot` is currently configured for — the backend verifies this and
+ *  returns empty if a queued render raced ahead of an async generator
+ *  reconfigure (world-type or version switch etc.), rather than silently
+ *  computing (and letting callers cache) values under the wrong generator
+ *  state. Returns a flat Int32Array [oreType, x, y, z, ...]. */
 export function generateOreFeatures(
-  slot: number, oreTypes: number[], cx0: number, cz0: number, cx1: number, cz1: number, reqId = 0,
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  oreTypes: number[], cx0: number, cz0: number, cx1: number, cz1: number, reqId = 0,
 ): Promise<Int32Array> {
-  return invoke<number[]>('cubiomes_generate_ore_features', { slot, oreTypes, cx0, cz0, cx1, cz1, reqId })
-    .then(arr => new Int32Array(arr))
+  const { seedLow, seedHigh } = splitSeed(seed)
+  return invoke<number[]>('cubiomes_generate_ore_features', {
+    slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, oreTypes, cx0, cz0, cx1, cz1, reqId,
+  }).then(arr => new Int32Array(arr))
 }
 
 /** Carver (cave/ravine/canyon) coverage for a chunk range, using generator `slot`.
+ *  See generateOreFeatures for why seed/dimension/worldFlags/mcVersion are required.
  *  Returns [nx, nz, then nx*nz * 256 per-column carved-block counts]. */
 export function getCarvedColumns(
-  slot: number, cx0: number, cz0: number, cx1: number, cz1: number, reqId = 0,
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  cx0: number, cz0: number, cx1: number, cz1: number, reqId = 0,
 ): Promise<Int32Array> {
-  return invoke<number[]>('cubiomes_get_carved_columns', { slot, cx0, cz0, cx1, cz1, reqId })
-    .then(arr => new Int32Array(arr))
-}
-
-/** Real preliminary surface heightmap: a w×h grid from (x0,z0), samples `stride`
- *  blocks apart. Uses generator `slot`. Returns w*h surface Y values (row-major). */
-export function getSurfaceHeights(
-  slot: number, x0: number, z0: number, w: number, h: number, stride: number,
-): Promise<Int32Array> {
-  return invoke<number[]>('cubiomes_get_surface_heights', { slot, x0, z0, w, h, stride })
-    .then(arr => new Int32Array(arr))
-}
-
-export interface EnchantmentInfo { name: string; level: number }
-
-export interface LootItem {
-  chestX: number; chestZ: number; item: string; count: number
-  /** e.g. "healing" — set when a set_potion loot function applied one. */
-  potion?: string
-  enchantments: EnchantmentInfo[]
+  const { seedLow, seedHigh } = splitSeed(seed)
+  return invoke<number[]>('cubiomes_get_carved_columns', {
+    slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, cx0, cz0, cx1, cz1, reqId,
+  }).then(arr => new Int32Array(arr))
 }
 
 /** Rolled chest loot for a structure at (posX, posZ). */
 export function getStructureLoot(
-  slot: number, structType: number, posX: number, posZ: number, mcVersion: number,
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  structType: number, posX: number, posZ: number,
 ): Promise<LootItem[]> {
+  const { seedLow, seedHigh } = splitSeed(seed)
   return invoke<{
     chest_x: number; chest_z: number; item: string; count: number
     potion?: string; enchantments: { name: string; level: number }[]
   }[]>(
-    'cubiomes_get_structure_loot', { slot, structType, posX, posZ, mcVersion },
+    'cubiomes_get_structure_loot', { slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, structType, posX, posZ },
   ).then(rows => rows.map(r => ({
     chestX: r.chest_x, chestZ: r.chest_z, item: r.item, count: r.count,
     potion: r.potion, enchantments: r.enchantments,
   })))
 }
-
-export interface ChestSlot { chestX: number; chestZ: number; table: string; isShip: boolean }
 
 /** Chest composition (loot tables present) for a structure at (posX, posZ),
  *  without rolling the loot — cheap enough to call for every visible marker.
@@ -533,32 +652,26 @@ export interface ChestSlot { chestX: number; chestZ: number; table: string; isSh
  *  Elytra) — the tower chests share the same loot table name, so this can't
  *  be told apart from `table` alone. */
 export function getStructureChests(
-  slot: number, structType: number, posX: number, posZ: number,
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  structType: number, posX: number, posZ: number,
 ): Promise<ChestSlot[]> {
+  const { seedLow, seedHigh } = splitSeed(seed)
   return invoke<{ chest_x: number; chest_z: number; table: string; is_ship: boolean }[]>(
-    'cubiomes_get_structure_chests', { slot, structType, posX, posZ },
+    'cubiomes_get_structure_chests', { slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, structType, posX, posZ },
   ).then(rows => rows.map(r => ({ chestX: r.chest_x, chestZ: r.chest_z, table: r.table, isShip: r.is_ship })))
 }
-
-export interface GatewayLink { srcX: number; srcZ: number; dstX: number; dstZ: number }
 
 /** The 20 End Gateways generated in a ring on the main End island the first
  *  time the Ender Dragon is defeated, paired with each one's outer linked
  *  destination — computed straight from the seed, so this is known even for
  *  gateways nobody has visited. Empty outside the End dimension or MC < 1.13. */
-export function getEndGatewayLinks(slot: number): Promise<GatewayLink[]> {
+export function getEndGatewayLinks(
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+): Promise<GatewayLink[]> {
+  const { seedLow, seedHigh } = splitSeed(seed)
   return invoke<{ src_x: number; src_z: number; dst_x: number; dst_z: number }[]>(
-    'cubiomes_get_end_gateway_links', { slot },
+    'cubiomes_get_end_gateway_links', { slot, seedLow, seedHigh, dimension, worldFlags, mcVersion },
   ).then(rows => rows.map(r => ({ srcX: r.src_x, srcZ: r.src_z, dstX: r.dst_x, dstZ: r.dst_z })))
-}
-
-export function getBiomeAt(slot: number, x: number, z: number): Promise<number> {
-  return getBiomeRegion(slot, x, z, 1, 1, 1).then(arr => arr[0] ?? 0)
-}
-
-/** Query biome at an explicit cubiomes Y (Math.floor(blockY / 4)) for 3D underground lookups. */
-export function getBiomeAtY(slot: number, x: number, z: number, y: number): Promise<number> {
-  return getBiomeRegionAt(slot, x, z, 1, 1, 1, y).then(arr => arr[0] ?? 0)
 }
 
 /**
@@ -566,14 +679,22 @@ export function getBiomeAtY(slot: number, x: number, z: number, y: number): Prom
  * "surface" uses the same 2D query as the tile renderer. "underground"/"deep" use
  * fixed Y depths and return -1 for non-cave biomes.
  */
-export function getHoverBiome(slot: number, x: number, z: number, mode: string): Promise<number> {
-  return invoke<number>('cubiomes_get_hover_biome', { slot, x, z, mode })
+export function getHoverBiome(
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  x: number, z: number, mode: string,
+): Promise<number> {
+  const { seedLow, seedHigh } = splitSeed(seed)
+  return invoke<number>('cubiomes_get_hover_biome', { slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, x, z, mode })
 }
 
 /** Batched surface-biome sampling for many points in one call — one CUBIOMES_LOCK
  *  acquisition instead of one per point. Used to classify long map-drawn lines
  *  (Route Planner boat legs) without N separate IPC round-trips. */
-export function getBiomesAlongLine(slot: number, points: { x: number; z: number }[]): Promise<Int32Array> {
-  return invoke<number[]>('cubiomes_get_biomes_along_line', { slot, points })
+export function getBiomesAlongLine(
+  slot: number, seed: bigint, dimension: number, worldFlags: number, mcVersion: number,
+  points: { x: number; z: number }[],
+): Promise<Int32Array> {
+  const { seedLow, seedHigh } = splitSeed(seed)
+  return invoke<number[]>('cubiomes_get_biomes_along_line', { slot, seedLow, seedHigh, dimension, worldFlags, mcVersion, points })
     .then(ids => new Int32Array(ids))
 }

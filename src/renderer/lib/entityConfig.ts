@@ -660,7 +660,7 @@ export function createIcon(
     : ''
   return L.divIcon({
     className: '',
-    html: `<div class="entity-marker" style="background:${cfg.color};${borderStyle}" title="${tooltip}">${cfg.initial}${badgeHtml}${badge2Html}</div>`,
+    html: `<div class="entity-marker" style="background:${cfg.color};${borderStyle}" title="${tooltip}" role="button" aria-label="${tooltip}">${cfg.initial}${badgeHtml}${badge2Html}</div>`,
     iconSize: [16, 16],
     iconAnchor: [8, 8],
   })

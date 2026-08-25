@@ -51,9 +51,7 @@ pub struct GameEntity {
     pub horse_armor:           Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub horse_variant:         Option<String>,
-    /// Taming progress on a wild horse (NBT `Temper`): rises with interaction
-    /// until it passes a random 0–99 threshold and the horse tames. Only set
-    /// when > 0 (a fresh, untouched wild horse has no meaningful temper).
+    /// Wild-horse taming progress (NBT `Temper`); only set when > 0.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temper:                Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -170,11 +168,9 @@ fn strip_ns(s: &str) -> &str {
     s.strip_prefix("minecraft:").unwrap_or(s)
 }
 
-/// Collapse boat entity ids to canonical `boat` / `chest_boat`, returning the wood
-/// variant when known. MC 1.21.2 split the single `boat`/`chest_boat` types into
-/// per-wood ids (`oak_boat`, `bamboo_raft`, `oak_chest_boat`, `bamboo_chest_raft`,
-/// …). Older worlds (and Bedrock) still use the single id with a `Type` tag for the
-/// wood. Returns `None` for anything that isn't a boat/raft.
+/// Collapse boat ids to canonical `boat`/`chest_boat` + wood variant. MC 1.21.2
+/// split boats into per-wood ids (`oak_boat`, `bamboo_raft`, …); older worlds
+/// and Bedrock still use one id with a `Type` tag. `None` if not a boat/raft.
 fn normalize_boat(kind: &str, e: &HashMap<String, Value>) -> Option<(&'static str, Option<String>)> {
     // Legacy single ids: wood (if any) lives in the `Type` tag.
     if kind == "chest_boat" || kind == "boat" {
@@ -203,10 +199,8 @@ pub fn parse_json_text(raw: &str) -> String {
     if raw.is_empty() || raw == "\"\"" || raw == "null" {
         return String::new();
     }
-    // 1.13–1.21.4: CustomName is a JSON text-component string (`{"text":"Alex"}`
-    // or a quoted `"Alex"`). 1.21.5+ stores text components as native NBT, so a
-    // *simple* name arrives here as a plain, non-JSON string (`Alex`) — which must
-    // be taken literally, not run through a JSON parse that fails and drops it.
+    // Pre-1.21.5: CustomName is a JSON text component (`{"text":"Alex"}`). 1.21.5+
+    // stores it as native NBT, so a simple name arrives as a plain string.
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(v) => {
             if let Some(s) = v.as_str() { return s.to_string(); }
@@ -218,12 +212,10 @@ pub fn parse_json_text(raw: &str) -> String {
                         .unwrap_or_default()
                 }).collect::<Vec<_>>().join("");
             }
-            // Parsed as a bare number/bool (e.g. a mob literally named "123") — not a
-            // real component, so take it literally. Only a JSON object is a component.
+            // Bare number/bool (e.g. a mob named "123") is literal; only an object is a component.
             if v.is_object() { String::new() } else { raw.to_string() }
         }
-        // Not JSON at all → 1.21.5+ plain-string component; use it verbatim.
-        Err(_) => raw.to_string(),
+        Err(_) => raw.to_string(), // not JSON → 1.21.5+ plain-string component
     }
 }
 
@@ -471,15 +463,20 @@ fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
     let raw_id = map_str(e, "id");
     if raw_id.is_empty() { return None; }
     let raw_kind = strip_ns(raw_id).to_string();
-    // Boats/rafts come in many per-wood ids (MC 1.21.2+); collapse to canonical
-    // `boat`/`chest_boat` so the per-type handling and frontend grouping apply.
     let (kind, boat_wood) = match normalize_boat(&raw_kind, e) {
         Some((canon, wood)) => (canon.to_string(), wood),
         None => (raw_kind, None),
     };
 
     // Position from Pos list
-    let pos = e.get("Pos").and_then(|v| if let Value::List(l) = v { Some(l) } else { None })?;
+    let pos = e.get("Pos").and_then(|v| if let Value::List(l) = v { Some(l) } else { None });
+    let Some(pos) = pos else {
+        crate::format_guard::format_warn(
+            "entity Pos",
+            "an entity with a resolved id has no Pos list — it is silently dropped (looks like a mob-free area)",
+        );
+        return None;
+    };
     if pos.len() < 3 { return None; }
     let x = match &pos[0] { Value::Double(d) => d.round() as i32, Value::Float(f) => f.round() as i32, _ => return None };
     let y = match &pos[1] { Value::Double(d) => d.round() as i32, Value::Float(f) => f.round() as i32, _ => return None };
@@ -611,9 +608,8 @@ fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
         let spd = get_attribute_base(e, &["movement_speed", "generic.movement_speed", "generic.movementSpeed"])
             .or_else(|| FIXED_MOUNT_SPEED.iter().find(|(k, _)| *k == kind).map(|(_, v)| *v));
         if let Some(s) = spd { entity.speed = Some(attr_to_speed(s)); }
-        // Zombie/skeleton horses randomize jump strength like regular horses
-        // (0.4–1.0); only their speed (0.2) and health (15) are fixed. Donkeys
-        // and mules have a fixed 0.5 jump — no signal, so no stat for them.
+        // Zombie/skeleton horses randomize jump strength like regular horses; donkeys/mules
+        // have a fixed jump with no stored value, so no stat is reported for them.
         if matches!(kind.as_str(), "zombie_horse" | "skeleton_horse") {
             let jump = get_attribute_base(e, &["jump_strength", "generic.jump_strength", "horse.jumpStrength"]);
             if let Some(j) = jump { entity.jump_height = Some(jump_strength_to_height(j)); }
@@ -887,10 +883,9 @@ fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
     }
 
     if kind == "copper_golem" {
-        // Copper golems are always player-crafted; no natural spawn exists
-        entity.is_player_created = Some(true);
-        // Oxidation level: 0=unoxidized, 1=exposed, 2=weathered, 3=oxidized (statue)
-        // Minecraft 1.21.5 uses snake_case for new entity data; also try PascalCase as fallback
+        entity.is_player_created = Some(true); // no natural spawn exists
+        // 0=unoxidized, 1=exposed, 2=weathered, 3=oxidized (statue). 1.21.5 introduced
+        // snake_case keys for this entity; PascalCase kept as a fallback.
         let oxidation = match e.get("oxidation_level").or_else(|| e.get("OxidationLevel")) {
             Some(Value::Byte(n))  => *n as i32,
             Some(Value::Int(n))   => *n,
@@ -922,10 +917,8 @@ fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
         return Some(entity);
     }
 
-    // Default-allow: any remaining entity is shown — the frontend handles grouping
-    // and filtering (e.g. the "Named Mobs" and "Uncategorized" groups). Known
-    // ephemeral "noise" types — projectiles, dropped items, XP orbs, particle-like
-    // and display/marker entities — are dropped unless they carry a custom name.
+    // Default-allow: unrecognized kinds are still shown (frontend groups them as
+    // "Uncategorized"); only known ephemeral/noise types are dropped, and only when unnamed.
     if custom_name.is_none() && EPHEMERAL_ENTITIES.contains(&kind.as_str()) {
         return None;
     }
@@ -973,14 +966,14 @@ fn get_entity_list(chunk_val: &Value) -> &[Value] {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Read interesting entities for all chunks within [minCx..maxCx] × [minCz..maxCz].
-/// Tries entities/*.mca first (1.17+), falls back to region/*.mca.
-/// Public bridge for Bedrock entity reader: call extract_entity on a pre-built
-/// fastnbt::Value::Compound (with normalized "id" field already inserted).
+/// Bridge for the Bedrock entity reader: runs extract_entity on a pre-built
+/// compound with a normalized "id" field already inserted.
 pub fn extract_entity_from_compound(v: &Value) -> Option<GameEntity> {
     if let Value::Compound(m) = v { extract_entity(m) } else { None }
 }
 
+/// Reads entities for all chunks in [minCx..maxCx] × [minCz..maxCz].
+/// Tries entities/*.mca first (1.17+), falls back to region/*.mca.
 pub fn get_entities(
     world_dir: &str,
     dimension: &str,

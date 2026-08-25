@@ -8,7 +8,7 @@ import { IconPin, IconRoute } from '../icons'
 export default function SavedFlyout() {
   const { state, dispatch, mapRef } = useApp()
 
-  // ── Pins ────────────────────────────────────────────────────────────────────
+  // Pins
 
   const [editingPinId, setEditingPinId] = useState<string | null>(null)
   const [editingLabel, setEditingLabel] = useState('')
@@ -19,13 +19,13 @@ export default function SavedFlyout() {
     mapRef.current.flyTo(L.latLng(lat, lng), Math.max(mapRef.current.getZoom(), 3))
   }, [mapRef])
 
-  // ── Saved routes ────────────────────────────────────────────────────────────
+  // Saved routes
 
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null)
   const [editingRouteName, setEditingRouteName] = useState('')
 
   const loadRoute = useCallback((id: string, waypoints: { x: number; z: number }[], legModes: TravelMode[]) => {
-    dispatch({ type: 'RULER_LOAD_ROUTE', id, waypoints, legModes } as never)
+    dispatch({ type: 'RULER_LOAD_ROUTE', id, waypoints, legModes })
     if (mapRef.current && waypoints.length > 0) {
       const bounds = L.latLngBounds(waypoints.map(w => {
         const { x: lng, y: lat } = minecraftToLeaflet(w.x, w.z)
@@ -36,7 +36,7 @@ export default function SavedFlyout() {
   }, [dispatch, mapRef])
 
   const startNewRoute = useCallback(() => {
-    dispatch({ type: 'RULER_NEW' } as never)
+    dispatch({ type: 'RULER_NEW' })
   }, [dispatch])
 
   function formatRouteDist(blocks: number): string {
@@ -59,7 +59,7 @@ export default function SavedFlyout() {
 
       <div className="flyout-body">
 
-        {/* ── Pins ─────────────────────────────────────────────────────────── */}
+        {/* Pins */}
         <div className="mp-section-header">
           <span className="mp-section-title">Pins</span>
           {state.pins.length > 0 && <span className="mp-count-badge">{state.pins.length}</span>}
@@ -97,14 +97,14 @@ export default function SavedFlyout() {
                         onChange={e => setEditingLabel(e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter') {
-                            dispatch({ type: 'UPDATE_PIN', id: pin.id, changes: { label: editingLabel } } as never)
+                            dispatch({ type: 'UPDATE_PIN', id: pin.id, changes: { label: editingLabel } })
                             setEditingPinId(null)
                           } else if (e.key === 'Escape') {
                             setEditingPinId(null)
                           }
                         }}
                         onBlur={() => {
-                          dispatch({ type: 'UPDATE_PIN', id: pin.id, changes: { label: editingLabel } } as never)
+                          dispatch({ type: 'UPDATE_PIN', id: pin.id, changes: { label: editingLabel } })
                           setEditingPinId(null)
                         }}
                         autoFocus />
@@ -121,7 +121,7 @@ export default function SavedFlyout() {
                         title={canGoTo ? 'Go to pin' : 'Pin is in another dimension'}
                         disabled={!canGoTo}>→</button>
                       <button className="btn-sm" style={{ padding: '2px 6px', color: '#c0392b', borderColor: '#c0392b' }}
-                        onClick={() => dispatch({ type: 'REMOVE_PIN', id: pin.id } as never)}
+                        onClick={() => dispatch({ type: 'REMOVE_PIN', id: pin.id })}
                         title="Remove pin">✕</button>
                     </div>
                   </div>
@@ -130,7 +130,7 @@ export default function SavedFlyout() {
                       <label className="pin-cross-toggle"
                         title="Show in both Overworld and Nether with converted coordinates">
                         <input type="checkbox" checked={pin.crossDimensional}
-                          onChange={() => dispatch({ type: 'UPDATE_PIN', id: pin.id, changes: { crossDimensional: !pin.crossDimensional } } as never)} />
+                          onChange={() => dispatch({ type: 'UPDATE_PIN', id: pin.id, changes: { crossDimensional: !pin.crossDimensional } })} />
                         <span>Cross-dim</span>
                       </label>
                     )}
@@ -158,7 +158,7 @@ export default function SavedFlyout() {
           </div>
         </>)}
 
-        {/* ── Saved Routes ─────────────────────────────────────────────────── */}
+        {/* Saved Routes */}
         <div className="mp-section-header mp-section-header--ruled">
           <span className="mp-section-title">Saved Routes</span>
           {state.savedRoutes.length > 0 && <span className="mp-count-badge">{state.savedRoutes.length}</span>}
@@ -184,14 +184,14 @@ export default function SavedFlyout() {
                         onChange={e => setEditingRouteName(e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter') {
-                            dispatch({ type: 'UPDATE_ROUTE', id: route.id, changes: { name: editingRouteName } } as never)
+                            dispatch({ type: 'UPDATE_ROUTE', id: route.id, changes: { name: editingRouteName } })
                             setEditingRouteId(null)
                           } else if (e.key === 'Escape') {
                             setEditingRouteId(null)
                           }
                         }}
                         onBlur={() => {
-                          dispatch({ type: 'UPDATE_ROUTE', id: route.id, changes: { name: editingRouteName } } as never)
+                          dispatch({ type: 'UPDATE_ROUTE', id: route.id, changes: { name: editingRouteName } })
                           setEditingRouteId(null)
                         }}
                         autoFocus />
@@ -207,7 +207,7 @@ export default function SavedFlyout() {
                         onClick={() => loadRoute(route.id, route.waypoints, route.legModes)}
                         title="Make active and view on map">→</button>
                       <button className="btn-sm" style={{ padding: '2px 6px', color: '#c0392b', borderColor: '#c0392b' }}
-                        onClick={() => dispatch({ type: 'REMOVE_ROUTE', id: route.id } as never)}
+                        onClick={() => dispatch({ type: 'REMOVE_ROUTE', id: route.id })}
                         title="Delete route">✕</button>
                     </div>
                   </div>

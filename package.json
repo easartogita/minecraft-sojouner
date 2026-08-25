@@ -1,11 +1,12 @@
 {
   "name": "sojourner",
-  "version": "26.3.0-snapshot.5",
+  "version": "26.3.0-snapshot.8",
   "description": "Interactive world-map viewer for Minecraft",
   "author": "",
   "scripts": {
     "dev:vite": "vite",
     "build:vite": "vite build",
+    "build:site": "vite build --config vite.site.config.ts",
     "dev": "tauri dev",
     "build": "tauri build",
     "postbuild": "node scripts/postbuild.mjs",

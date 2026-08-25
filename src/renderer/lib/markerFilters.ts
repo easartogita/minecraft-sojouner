@@ -1,5 +1,3 @@
-// ── BE render groups (used for display logic and labelling) ───────────────────
-
 export type BEFilterGroup =
   | 'containers'
   | 'spawners'
@@ -27,10 +25,8 @@ export const BE_GROUP_DEFS: Record<BEFilterGroup, BEGroupDef> = {
   technical:   { label: 'Technical',     color: '#64748b', description: 'Command blocks, structure blocks, jigsaw blocks' },
 }
 
-// ── BE type normalization ──────────────────────────────────────────────────────
-// Rust emits specific variant names (oak_sign, white_shulker_box, wall_banner…).
-// We collapse those families so the filter system only needs one key per concept.
-
+// Rust emits specific variant names (oak_sign, white_shulker_box, wall_banner…);
+// collapse those families to one key per concept for the filter system.
 export function normalizeBEType(type: string): string {
   if (
     type === 'sign' || type === 'wall_sign' || type === 'hanging_sign' || type === 'wall_hanging_sign' ||
@@ -43,8 +39,6 @@ export function normalizeBEType(type: string): string {
   if (type === 'player_head' || type === 'player_wall_head') return 'skull'
   return type
 }
-
-// ── BE type → render group (keyed by normalized type) ─────────────────────────
 
 export const BE_TYPE_TO_GROUP: Record<string, BEFilterGroup> = {
   chest: 'containers', trapped_chest: 'containers', barrel: 'containers',
@@ -63,8 +57,6 @@ export const BE_TYPE_TO_GROUP: Record<string, BEFilterGroup> = {
   command_block: 'technical', chain_command_block: 'technical', repeating_command_block: 'technical',
   structure_block: 'technical', jigsaw: 'technical',
 }
-
-// ── BE type definitions for the editor dialog ─────────────────────────────────
 
 export interface BETypeDef {
   type: string           // normalized key used in CustomMarkerGroup.beTypes
@@ -122,8 +114,6 @@ export const BE_TYPE_DEFS: BETypeDef[] = [
   { type: 'jigsaw',                     group: 'technical', label: 'Jigsaw Block' },
 ]
 
-// ── Entity render groups ───────────────────────────────────────────────────────
-
 export type EntityFilterGroup =
   | 'villagers'
   | 'frames'
@@ -157,8 +147,6 @@ export const ENTITY_GROUP_DEFS: Record<EntityFilterGroup, EntityGroupDef> = {
   uncategorized: { label: 'Uncategorized',     color: '#f97316', description: 'Any entity whose type is not otherwise categorized (hostiles, new/unknown mobs, sulfur cubes…), shown by its internal Minecraft name' },
 }
 
-// ── Entity type → render group ────────────────────────────────────────────────
-
 export const ENTITY_TYPE_TO_GROUP: Record<string, EntityFilterGroup> = {
   villager: 'villagers', wandering_trader: 'villagers', zombie_villager: 'villagers', zombie_villager_curing: 'villagers',
   painting: 'frames', item_frame: 'frames', glow_item_frame: 'frames',
@@ -178,11 +166,8 @@ export const ENTITY_TYPE_TO_GROUP: Record<string, EntityFilterGroup> = {
   chest_minecart: 'containers', hopper_minecart: 'containers', chest_boat: 'containers',
 }
 
-// ── Entity type definitions for the editor dialog ─────────────────────────────
-// Pseudo-types: 'named_mobs' matches any entity with a custom name; 'uncategorized'
-// matches any entity whose type is not in ENTITY_TYPE_TO_GROUP. An entity can match
-// both these and its normal type group (see buildEntityGroupLookup usage).
-
+// Pseudo-types: 'named_mobs' matches any custom-named entity; 'uncategorized' matches
+// any type not in ENTITY_TYPE_TO_GROUP. An entity can match both these and its normal group.
 export interface EntityTypeDef {
   type: string             // raw entity type OR 'named_mobs'/'uncategorized'
   group: EntityFilterGroup
@@ -260,8 +245,6 @@ export const ENTITY_TYPE_DEFS: EntityTypeDef[] = [
   { type: 'uncategorized',     group: 'uncategorized', label: 'Uncategorized (other)' },
 ]
 
-// ── Custom marker group definition ───────────────────────────────────────────
-
 export interface CustomMarkerGroup {
   id: string
   name: string
@@ -332,9 +315,7 @@ export const DEFAULT_MARKER_GROUPS: CustomMarkerGroup[] = [
   },
 ]
 
-// ── Lookup builders ───────────────────────────────────────────────────────────
 // Map normalizedType → groupId[]. A type can belong to multiple groups.
-
 export function buildBeGroupLookup(defs: CustomMarkerGroup[]): Map<string, string[]> {
   const map = new Map<string, string[]>()
   for (const def of defs) {

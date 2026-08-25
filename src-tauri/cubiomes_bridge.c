@@ -8,6 +8,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -25,8 +26,17 @@
 #include "loot/loot_functions.h"
 #include "loot/items.h"
 
-/* Generator pool — up to 4 active generators (overworld/nether/end + spare) */
-#define MAX_GENERATORS 4
+/* Generator pool — up to 4 active generators (overworld/nether/end + spare),
+ * recycled round-robin by cm_setup_generator, PLUS one reserved slot (index
+ * LIVE_GENERATOR_SLOTS, i.e. the last of MAX_GENERATORS) that the round-robin
+ * never hands out. The static-site exporter grabs that slot via
+ * cm_setup_generator_reserved and holds it exclusively for its whole (often
+ * long-running) export pass, so live map use elsewhere in the app can keep
+ * cycling the other 4 slots without ever repointing the exporter's generator
+ * out from under it mid-run. */
+#define LIVE_GENERATOR_SLOTS 4
+#define EXPORT_GENERATOR_SLOT LIVE_GENERATOR_SLOTS
+#define MAX_GENERATORS (LIVE_GENERATOR_SLOTS + 1)
 static Generator g_generators[MAX_GENERATORS];
 static int g_slot_count = 0;
 
@@ -38,10 +48,10 @@ static int g_sn_initialized[MAX_GENERATORS];
 static SurfaceNoise g_surface_noise_end[MAX_GENERATORS];
 static int g_sn_end_initialized[MAX_GENERATORS];
 
-int cm_setup_generator(int seed_low, int seed_high, int mc_version, int dimension, int flags)
+int cm_slot_matches(int slot, int seed_low, int seed_high, int dimension, int flags, int mc_version);
+
+static int setup_generator_at_slot(int slot, int seed_low, int seed_high, int mc_version, int dimension, int flags)
 {
-    int slot = g_slot_count % MAX_GENERATORS;
-    g_slot_count++;
     g_sn_initialized[slot] = 0;
     g_sn_end_initialized[slot] = 0;
 
@@ -54,20 +64,50 @@ int cm_setup_generator(int seed_low, int seed_high, int mc_version, int dimensio
     return slot;
 }
 
-/* Returns 1 if a slot's generator is currently configured for exactly this seed
- * AND dimension (DIM_OVERWORLD=0, DIM_NETHER=-1, DIM_END=1), else 0 (including an
- * invalid slot).
+int cm_setup_generator(int seed_low, int seed_high, int mc_version, int dimension, int flags)
+{
+    /* Reuse a slot already holding this exact config instead of always evicting one round-robin. */
+    for (int i = 0; i < LIVE_GENERATOR_SLOTS; i++) {
+        if (cm_slot_matches(i, seed_low, seed_high, dimension, flags, mc_version)) return i;
+    }
+    int slot = g_slot_count % LIVE_GENERATOR_SLOTS;
+    g_slot_count++;
+    return setup_generator_at_slot(slot, seed_low, seed_high, mc_version, dimension, flags);
+}
+
+/* Exporter-only counterpart to cm_setup_generator: always (re)configures the
+ * one reserved slot instead of round-robining, so a long export never loses
+ * its generator to concurrent live-map use. Not part of the round-robin pool
+ * — g_slot_count is untouched. */
+int cm_setup_generator_reserved(int seed_low, int seed_high, int mc_version, int dimension, int flags)
+{
+    return setup_generator_at_slot(EXPORT_GENERATOR_SLOT, seed_low, seed_high, mc_version, dimension, flags);
+}
+
+/* Returns 1 if a slot's generator is currently configured for exactly this seed,
+ * dimension (DIM_OVERWORLD=0, DIM_NETHER=-1, DIM_END=1), flags (LARGE_BIOMES
+ * etc.), AND mc_version, else 0 (including an invalid slot).
  *
  * Slots are recycled round-robin by cm_setup_generator and the frontend holds a
  * slot index across many async renders, so a queued render can reach a slot that
- * has since been repointed to a different world (new seed on world switch) or a
- * different dimension. Callers that cache results per (seed, dimension) use this
- * to detect the mismatch and bail before generating — and caching — wrong data. */
-int cm_slot_matches(int slot, int seed_low, int seed_high, int dimension)
+ * has since been repointed to a different world (new seed on world switch), a
+ * different dimension, or — since setupGenerator's reconfigure happens async on
+ * the frontend — the same seed/dimension but the *old* flags or MC version,
+ * mid-switch (version matters too: biomes/features get added and removed
+ * between versions — e.g. dappled_forest exists in 26.3 but not 26.2 — so a
+ * stale-version render is exactly as wrong as a stale-flags one). Callers that
+ * cache results per (seed, dimension, flags, version) use this to detect the
+ * mismatch and bail before generating — and caching — wrong data under the new
+ * key. Without this check, a request racing ahead of the slot's reconfiguration
+ * would render under the old config but get written to disk/cache under the
+ * new (requested) config's key — permanently mistagged. */
+int cm_slot_matches(int slot, int seed_low, int seed_high, int dimension, int flags, int mc_version)
 {
     if (slot < 0 || slot >= MAX_GENERATORS) return 0;
     uint64_t useed = ((uint64_t)(uint32_t)seed_high << 32) | (uint32_t)seed_low;
-    return g_generators[slot].seed == useed && g_generators[slot].dim == dimension;
+    return g_generators[slot].seed == useed && g_generators[slot].dim == dimension
+        && g_generators[slot].flags == (uint32_t)flags
+        && g_generators[slot].mc == mc_version;
 }
 
 int cm_get_biome_region(int slot, int x, int z, int width, int height, int scale, int *buffer)
@@ -220,53 +260,6 @@ int cm_get_height_region(int slot, int x, int z, int w, int h, float *out_y)
     return mapApproxHeight(out_y, NULL, g, &g_surface_noise[slot], x, z, w, h);
 }
 
-/* Per-chunk ore-vein "density" sample used by the Density overlay.
- * Returns [copper_y, copper_size, iron_y, iron_size]:
- *   size: 0=no vein, 1=small (strength>=0.4), 2=medium (>=0.5), 3=large (>=0.6).
- *   y is INT_MIN when size==0.
- * Built on cubiomes' own ore-vein field (initOreVeinNoise / getOreVeinStrengthAt)
- * so it matches the block-level generator getOreVeinBlockAt(), including the
- * vertical edge falloff the old hand-rolled veininess sampling omitted. Copper
- * occupies Y 0..50 (positive veininess), iron Y -60..-8 (negative);
- * getOreVeinStrengthAt() enforces those bands and reports which ore each column
- * position favours. */
-void cm_get_ore_veins_at2(int32_t seed_lo, int32_t seed_hi,
-                          int32_t cx, int32_t cz,
-                          int *copper_y_out, int *copper_sz_out,
-                          int *iron_y_out,   int *iron_sz_out)
-{
-    *copper_y_out = INT_MIN; *copper_sz_out = 0;
-    *iron_y_out   = INT_MIN; *iron_sz_out   = 0;
-
-    uint64_t seed = ((uint64_t)(uint32_t)seed_hi << 32) | (uint32_t)seed_lo;
-    OreVeinParameters params;
-    if (!initOreVeinNoise(&params, seed, MC_NEWEST))
-        return; /* ore veins require MC >= 1.18 */
-
-    int bx = cx * 16 + 8;
-    int bz = cz * 16 + 8;
-
-    double bestCopper = 0.0; int bestCopperY = INT_MIN;
-    double bestIron   = 0.0; int bestIronY   = INT_MIN;
-    for (int y = -60; y <= 50; y += 2) {
-        double s;
-        switch (getOreVeinStrengthAt(bx, y, bz, &params, &s)) {
-        case CopperVein: if (s > bestCopper) { bestCopper = s; bestCopperY = y; } break;
-        case IronVein:   if (s > bestIron)   { bestIron   = s; bestIronY   = y; } break;
-        default: break;
-        }
-    }
-
-    if (bestCopperY != INT_MIN) {
-        *copper_y_out  = bestCopperY;
-        *copper_sz_out = bestCopper >= 0.6 ? 3 : bestCopper >= 0.5 ? 2 : 1;
-    }
-    if (bestIronY != INT_MIN) {
-        *iron_y_out  = bestIronY;
-        *iron_sz_out = bestIron >= 0.6 ? 3 : bestIron >= 0.5 ? 2 : 1;
-    }
-}
-
 /* Generate ore-feature block positions (normal ore blobs: diamond, gold, iron,
  * redstone, etc.) for the given Ores enum types over a chunk range, using the
  * accurate configured-feature generation (distinct from the veininess overlay).
@@ -285,7 +278,9 @@ void cm_get_ore_veins_at2(int32_t seed_lo, int32_t seed_hi,
 static int nether_is_air(TerrainNoise *tn, int x, int y, int z)
 {
     if (y <= NETHER_LAVA_SEA_Y) return 0;
-    return sampleNetherFinalDensity(tn, x, y, z) <= 0.0;
+    /* sampleNetherFinalDensity now takes the BlendedNoise field directly,
+     * not the whole TerrainNoise — see bugs-resolved.md. */
+    return sampleNetherFinalDensity(&tn->base3dNoise, x, y, z) <= 0.0;
 }
 
 /* Ancient debris (discardChanceOnAirExposure = 1.0) is discarded if any of the 6
@@ -331,10 +326,12 @@ int* cm_generate_ore_features(int slot, const int *ore_types, int num_types,
         int air_filter = (oconf.dim == DIM_NETHER && oconf.discardChanceOnAirExposure >= 1.0F);
         if (air_filter && !tn_nether) {
             tn_nether = (TerrainNoise*)calloc(1, sizeof(TerrainNoise));
-            if (tn_nether && setupTerrainNoise(tn_nether, g->mc, 0)) {
+            /* setupTerrainNoise is void now, can't fail — see bugs-resolved.md. */
+            if (tn_nether) {
+                setupTerrainNoise(tn_nether, g->mc, 0);
                 initTerrainNoise(tn_nether, (uint64_t)g->seed, DIM_NETHER);
             } else {
-                free(tn_nether); tn_nether = NULL; air_filter = 0;  // <1.18: no filter
+                air_filter = 0;
             }
         }
 
@@ -486,6 +483,45 @@ int* cm_get_ore_vein_columns(int slot, int cx0, int cz0, int cx1, int cz1)
             }
         }
     }
+    return out;
+}
+
+/* Ore-vein detail for the single column under the cursor (bx,bz): the same
+ * real getOreVeinBlockAt probe as cm_get_ore_vein_columns above, but scanning
+ * one column's full Y span and keeping the Y range alongside the count so a
+ * hover readout can show *where* the vein sits, not just that one exists.
+ * Output: malloc'd int[6] = [copper_count, copper_minY, copper_maxY,
+ * iron_count, iron_minY, iron_maxY]; minY/maxY are INT_MIN when count==0.
+ * Caller frees with cm_free_results(). Overworld. */
+int* cm_get_ore_vein_column_at(int slot, int bx, int bz)
+{
+    if (slot < 0 || slot >= MAX_GENERATORS) return NULL;
+    Generator *g = &g_generators[slot];
+
+    int *out = (int*)calloc(6, sizeof(int));
+    if (!out) return NULL;
+    out[1] = out[2] = out[4] = out[5] = INT_MIN;
+
+    OreVeinParameters params;
+    if (!initOreVeinNoise(&params, (uint64_t)g->seed, g->mc))
+        return out; // pre-1.18: no ore veins, leave all-zero/INT_MIN
+
+    int copperCount = 0, copperMinY = INT_MAX, copperMaxY = INT_MIN;
+    int ironCount = 0, ironMinY = INT_MAX, ironMaxY = INT_MIN;
+    for (int y = -60; y <= 50; y++) {
+        if (getOreVeinBlockAt(bx, y, bz, &params) < 0) continue;
+        if (y >= 0) {
+            copperCount++;
+            if (y < copperMinY) copperMinY = y;
+            if (y > copperMaxY) copperMaxY = y;
+        } else {
+            ironCount++;
+            if (y < ironMinY) ironMinY = y;
+            if (y > ironMaxY) ironMaxY = y;
+        }
+    }
+    out[0] = copperCount; out[1] = copperCount ? copperMinY : INT_MIN; out[2] = copperCount ? copperMaxY : INT_MIN;
+    out[3] = ironCount;   out[4] = ironCount   ? ironMinY   : INT_MIN; out[5] = ironCount   ? ironMaxY   : INT_MIN;
     return out;
 }
 
@@ -830,11 +866,15 @@ int* cm_get_surface_heights(int slot, int x0, int z0, int w, int h, int stride)
         return out;
     }
 
+    // <1.18 unsupported — setupTerrainNoise is void now (can't report this
+    // itself), so check explicitly first. See bugs-resolved.md.
+    if (g->mc < MC_1_18) { free(out); return NULL; }
+
     // calloc: SplineStack/TerrainNoise use len counters as append indices, so the
     // struct MUST start zeroed or setupTerrainNoise writes out of bounds.
     TerrainNoise *tn = (TerrainNoise*)calloc(1, sizeof(TerrainNoise));
     if (!tn) { free(out); return NULL; }
-    if (!setupTerrainNoise(tn, g->mc, 0)) { free(tn); free(out); return NULL; }  // <1.18 unsupported
+    setupTerrainNoise(tn, g->mc, 0);
     initTerrainNoise(tn, (uint64_t)g->seed, DIM_OVERWORLD);
 
     for (int j = 0; j < h; j++)

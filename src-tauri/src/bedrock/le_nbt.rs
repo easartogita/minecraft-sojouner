@@ -1,12 +1,6 @@
-// Minimal little-endian binary NBT parser for Bedrock Edition.
-//
-// Bedrock level.dat uses the same NBT tag IDs as Java but stores all
-// multibyte values as little-endian. fastnbt only handles Java big-endian
-// NBT, so we parse the handful of tags we actually need by hand.
-//
-// Unsupported/unknown tags are skipped by consuming the correct number of
-// bytes from the reader, so the parser stays in sync even if Mojang adds
-// fields we don't care about.
+// Bedrock uses the same NBT tag IDs as Java but little-endian multibyte
+// values; fastnbt only handles Java's big-endian format, so we hand-parse
+// the handful of tags we need here.
 
 use std::collections::HashMap;
 use std::io::{self, Cursor, Read};
@@ -62,8 +56,6 @@ impl LeNbt {
     }
 }
 
-// ── Public entry points ──────────────────────────────────────────────────────
-
 /// Parse a root-level Bedrock NBT compound from `data`.
 /// Bedrock level.dat has an 8-byte header *before* the NBT payload; strip it
 /// in the caller (`bedrock/nbt_reader.rs`) before passing the slice here.
@@ -104,8 +96,6 @@ pub fn parse_compound_sequence(data: &[u8]) -> Vec<HashMap<String, LeNbt>> {
     }
     out
 }
-
-// ── Internal readers ─────────────────────────────────────────────────────────
 
 fn read_u8(r: &mut Cursor<&[u8]>) -> io::Result<u8> {
     let mut b = [0u8; 1];

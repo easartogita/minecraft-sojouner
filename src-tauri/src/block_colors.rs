@@ -4,10 +4,8 @@
 /// (pre-1.18 chunks, Bedrock) and yields the static colors unchanged.
 pub fn block_name_to_rgb_in_biome(name: &str, y: i32, biome: &str) -> [u8; 3] {
     if !biome.is_empty() {
-        // Water is biome-tinted (murky swamp, cyan warm ocean, purpler frozen
-        // ocean…). It needs `y` for depth shading, so it's handled here rather
-        // than in `biome_tinted`; the no-biome fallback below still depth-shades
-        // the default blue.
+        // Water needs `y` for depth shading, so it's handled here rather than in
+        // `biome_tinted`; the no-biome fallback below still depth-shades the default blue.
         if name == "water" {
             return water_color(biome, y);
         }
@@ -159,11 +157,9 @@ fn resolve(name: &str) -> Option<[u8; 3]> {
     lookup(name).copied().or_else(|| derived_color(name))
 }
 
-/// Shaped blocks inherit their base material's color: strip the shape suffix
-/// and re-resolve. Covers oak_stairs → oak_planks, stone_brick_stairs →
-/// stone_bricks, white_carpet/white_bed/white_stained_glass → white_wool,
-/// purpur_stairs → purpur_block, white_concrete_powder → white_concrete…
-/// Anything whose base still isn't in the table keeps the grey fallback.
+/// Shaped blocks inherit their base material's color: strip the shape suffix and
+/// re-resolve (oak_stairs → oak_planks, white_carpet → white_wool, etc). Anything
+/// whose base still isn't in the table keeps the grey fallback.
 fn derived_color(name: &str) -> Option<[u8; 3]> {
     const SHAPES: &[&str] = &[
         "_stained_glass_pane", "_stained_glass", "_concrete_powder",

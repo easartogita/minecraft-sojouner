@@ -43,12 +43,12 @@ function segmentsTime(segments: RouteSubSegment[]): number {
 }
 
 export default function RulerPanel() {
-  const { state, dispatch, generatorSlot } = useApp()
+  const { state, dispatch, generatorConfig } = useApp()
   const {
     rulerActive, rulerPlacementMode, rulerWaypoints: wps, rulerLegModes,
     rulerCurrentMode, dimension, activeRouteId, savedRoutes,
   } = state
-  const legSegments = useBiomeSplitSegments(generatorSlot, wps, rulerLegModes, state.boatMinSegmentBlocks)
+  const legSegments = useBiomeSplitSegments(generatorConfig, wps, rulerLegModes, state.boatMinSegmentBlocks)
 
   if (!rulerActive) return null
 
@@ -84,7 +84,7 @@ export default function RulerPanel() {
                     dispatch({
                       type: 'UPDATE_ROUTE', id: activeRouteId,
                       changes: { waypoints: wps, legModes: rulerLegModes },
-                    } as never)
+                    })
                   } else {
                     const first = wps[0], last = wps[wps.length - 1]
                     const name = `${Math.round(first.x)},${Math.round(first.z)} → ${Math.round(last.x)},${Math.round(last.z)}`
@@ -92,8 +92,8 @@ export default function RulerPanel() {
                     dispatch({
                       type: 'ADD_ROUTE',
                       route: { id, name, dimension, waypoints: wps, legModes: rulerLegModes, createdAt: Date.now() },
-                    } as never)
-                    dispatch({ type: 'RULER_SET_ACTIVE_ROUTE', id } as never)
+                    })
+                    dispatch({ type: 'RULER_SET_ACTIVE_ROUTE', id })
                   }
                 }}>
                 {activeRouteId ? 'Update' : 'Save'}
@@ -101,26 +101,26 @@ export default function RulerPanel() {
             )}
             {wps.length > 0 && (
               <button className="ruler-panel-btn" title="Undo last point (Escape)"
-                onClick={() => dispatch({ type: 'RULER_UNDO' } as never)}>
+                onClick={() => dispatch({ type: 'RULER_UNDO' })}>
                 ↩
               </button>
             )}
             {wps.length > 0 && (
               <button className="ruler-panel-btn" title="Clear all points"
-                onClick={() => dispatch({ type: 'RULER_CLEAR' } as never)}>
+                onClick={() => dispatch({ type: 'RULER_CLEAR' })}>
                 Clear
               </button>
             )}
           </>) : (
             wps.length > 0 && (
               <button className="ruler-panel-btn" title="Click the map to extend this route"
-                onClick={() => dispatch({ type: 'RULER_START_EDITING' } as never)}>
+                onClick={() => dispatch({ type: 'RULER_START_EDITING' })}>
                 Edit
               </button>
             )
           )}
           <button className="ruler-panel-btn ruler-panel-close" title="Close routes panel (R)"
-            onClick={() => dispatch({ type: 'RULER_TOGGLE' } as never)}>
+            onClick={() => dispatch({ type: 'RULER_TOGGLE' })}>
             ✕
           </button>
         </div>
@@ -143,7 +143,7 @@ export default function RulerPanel() {
           <span>Next leg</span>
           <ModeSelect
             value={rulerCurrentMode}
-            onChange={mode => dispatch({ type: 'RULER_SET_CURRENT_MODE', mode } as never)}
+            onChange={mode => dispatch({ type: 'RULER_SET_CURRENT_MODE', mode })}
           />
         </div>
       )}
@@ -160,7 +160,7 @@ export default function RulerPanel() {
               <ModeSelect
                 value={leg.mode}
                 disabled={!rulerPlacementMode}
-                onChange={mode => dispatch({ type: 'RULER_SET_LEG_MODE', index: i, mode } as never)}
+                onChange={mode => dispatch({ type: 'RULER_SET_LEG_MODE', index: i, mode })}
               />
               {leg.isSplit && (
                 <div className="ruler-panel-leg-split">

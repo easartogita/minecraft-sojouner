@@ -6,15 +6,15 @@ import { IconLock, IconLockOpen } from './icons'
 // updates — marker refetches, cave tile rescans — are held back.
 const RANGE_DEBOUNCE_MS = 250
 
+// A named absolute-Y band (unlike the gauge's own low/high, which are anchorY-relative),
+// shaped like CaveRangePreset without importing it, to stay decoupled from that type.
+export interface YRangeGaugePreset { id: string; label: string; low: number; high: number }
+
 interface YRangeGaugeProps {
-  /** Effective anchor (already resolved by the caller — live player Y when
-   *  locked, frozen Y when not). */
-  anchorY: number
-  /** Window offsets relative to anchorY (low ≤ 0 ≤ high in practice). */
-  low: number
+  anchorY: number      // live player Y when locked, frozen Y when not
+  low: number          // window offsets relative to anchorY (low ≤ 0 ≤ high in practice)
   high: number
-  /** Green notch; null hides it. */
-  playerY: number | null
+  playerY: number | null   // green notch; null hides it
   locked: boolean
   onRangeChange: (low: number, high: number) => void
   onLockChange: (locked: boolean, anchorY: number | null) => void
@@ -22,22 +22,18 @@ interface YRangeGaugeProps {
   yMax?: number
   snap?: number
   height?: number
-  /** Renders in the header row, left of the lock button. */
-  headerExtra?: React.ReactNode
+  headerExtra?: React.ReactNode   // renders in the header row, left of the lock button
+  // Named absolute-Y bands as same-scale swatches left of the track, for a one-click jump.
+  presets?: YRangeGaugePreset[]
+  onPresetSelect?: (preset: YRangeGaugePreset) => void
 }
 
-/**
- * Vertical Y-range gauge: a highlighted band on a Y scale with draggable
- * ceiling/floor handles (the band itself drags to shift the whole window) and
- * the player as a green notch.
- *
- * The lock toggles what the window is anchored to. Locked → live player Y
- * (the band follows them as they move). Unlocked → the anchor freezes at that
- * moment's Y, the band stays put, and the notch roams free.
- */
+// Locked: window follows live player Y. Unlocked: anchor freezes at that moment's Y,
+// band stays put, and the player notch roams free of it.
 export default function YRangeGauge({
   anchorY, low, high, playerY, locked, onRangeChange, onLockChange,
   yMin = -64, yMax = 320, snap = 10, height = 240, headerExtra,
+  presets, onPresetSelect,
 }: YRangeGaugeProps) {
   const yToPx = (y: number) => ((yMax - y) / (yMax - yMin)) * height
 
@@ -140,6 +136,18 @@ export default function YRangeGauge({
           )}
           <span className="yg-val yg-val--floor" style={{ top: yToPx(floorY) }}>{floorY}</span>
         </div>
+
+        {presets && presets.length > 0 && (
+          <div className="yg-presets">
+            {presets.map(p => (
+              <button key={p.id} className={`yg-preset${floorY === p.low && ceilingY === p.high ? ' active' : ''}`}
+                style={{ top: yToPx(p.high), height: yToPx(p.low) - yToPx(p.high) }}
+                onClick={() => onPresetSelect?.(p)} title={p.label}>
+                <span className="yg-preset-label">{p.label.replace(/\s*\(.*\)$/, '')}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </>
   )

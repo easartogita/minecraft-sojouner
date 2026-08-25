@@ -11,7 +11,7 @@ import * as api from '../lib/tauriAPI'
 const SPAWN_DIFF_TOLERANCE = 8
 
 function SpawnMarker({ map }: { map: L.Map }) {
-  const { state, generatorSlot } = useApp()
+  const { state, generatorSlot, generatorConfig } = useApp()
   const markersRef = useRef<L.Marker[]>([])
 
   const seed = state.seedData?.seed ?? null
@@ -39,13 +39,17 @@ function SpawnMarker({ map }: { map: L.Map }) {
     let cancelled = false
     const slot = generatorSlot
 
-    const place = (x: number, z: number, kind: 'actual' | 'predicted') => {
+    const place = (
+      x: number, z: number, kind: 'set' | 'predicted',
+      other?: { x: number; z: number }
+    ) => {
       if (cancelled) return
       const { x: lng, y: lat } = minecraftToLeaflet(x, z)
-      const bg    = kind === 'actual' ? '#f1c40f' : '#8b949e'
-      const cls   = kind === 'actual' ? 'spawn-marker' : 'spawn-marker spawn-marker--predicted'
-      const title = kind === 'actual' ? 'World Spawn' : 'Predicted Spawn (seed default)'
-      const opacity = kind === 'actual' ? '1' : '0.75'
+      const bg    = kind === 'set' ? '#f1c40f' : '#8b949e'
+      const cls   = kind === 'set' ? 'spawn-marker' : 'spawn-marker spawn-marker--predicted'
+      const title = kind === 'set' ? 'Set Spawn' : 'Predicted Spawn'
+      const opacity = kind === 'set' ? '1' : '0.75'
+      const btnId = `spawn-flyto-${kind}`
 
       const icon = L.divIcon({
         className: '',
@@ -58,10 +62,15 @@ function SpawnMarker({ map }: { map: L.Map }) {
         iconAnchor: [11, 11],
       })
 
-      const note = kind === 'predicted'
-        ? `<div class="popup-hint">Seed default — actual spawn set elsewhere</div>`
-        : ''
-      const m = L.marker(L.latLng(lat, lng), { icon, zIndexOffset: kind === 'actual' ? 100 : 0 })
+      let note = ''
+      if (other) {
+        const hint = kind === 'set'
+          ? `This differs from the Predicted Spawn, which is at X: ${other.x}, Z: ${other.z}.`
+          : `The Set Spawn is at X: ${other.x}, Z: ${other.z} instead.`
+        note = `<div class="popup-hint">${hint} <a href="#" id="${btnId}">Jump there</a></div>`
+      }
+
+      const m = L.marker(L.latLng(lat, lng), { icon, zIndexOffset: kind === 'set' ? 100 : 0 })
       m.bindPopup(
         `<div class="popup-content">
           <div class="popup-title">${title}</div>
@@ -69,6 +78,18 @@ function SpawnMarker({ map }: { map: L.Map }) {
           ${note}
         </div>`
       )
+      if (other) {
+        m.on('popupopen', () => {
+          const link = document.getElementById(btnId)
+          if (link) {
+            link.onclick = (e) => {
+              e.preventDefault()
+              const { x: olng, y: olat } = minecraftToLeaflet(other.x, other.z)
+              map.flyTo(L.latLng(olat, olng), Math.max(map.getZoom(), 3))
+            }
+          }
+        })
+      }
       m.addTo(map)
       markersRef.current.push(m)
     }
@@ -77,24 +98,26 @@ function SpawnMarker({ map }: { map: L.Map }) {
       // cubiomes-predicted spawn (overworld default from the seed).
       let predicted: { x: number; z: number } | null = null
       try {
-        const p = await api.getSpawn(slot)
-        predicted = { x: p.x, z: p.z }
+        const { seedBig, dimId, worldFlags, mcVersion } = generatorConfig
+        const p = await api.getSpawn(slot, seedBig, dimId, worldFlags, mcVersion)
+        if (p) predicted = { x: p.x, z: p.z }
       } catch (err) {
         console.error('Spawn marker error:', err)
       }
       if (cancelled) return
 
       if (realSpawnX != null && realSpawnZ != null) {
-        // Real world: actual spawn is primary; add the prediction only if it has
-        // been moved meaningfully far away.
-        place(realSpawnX, realSpawnZ, 'actual')
-        if (predicted &&
-            Math.hypot(predicted.x - realSpawnX, predicted.z - realSpawnZ) > SPAWN_DIFF_TOLERANCE) {
-          place(predicted.x, predicted.z, 'predicted')
+        // Real world: the set spawn is primary; add the prediction only if it
+        // differs from it by a meaningful distance.
+        const diverged = predicted &&
+          Math.hypot(predicted.x - realSpawnX, predicted.z - realSpawnZ) > SPAWN_DIFF_TOLERANCE
+        place(realSpawnX, realSpawnZ, 'set', diverged ? predicted! : undefined)
+        if (diverged) {
+          place(predicted!.x, predicted!.z, 'predicted', { x: realSpawnX, z: realSpawnZ })
         }
       } else if (predicted) {
         // Seed-only mode: the prediction is the only spawn we have.
-        place(predicted.x, predicted.z, 'actual')
+        place(predicted.x, predicted.z, 'set')
       }
     })()
 
@@ -102,7 +125,7 @@ function SpawnMarker({ map }: { map: L.Map }) {
       cancelled = true
       clear()
     }
-  }, [map, generatorSlot, seed, dimension, version, realSpawnX, realSpawnZ])
+  }, [map, generatorSlot, seed, dimension, version, realSpawnX, realSpawnZ, generatorConfig])
 
   return null
 }

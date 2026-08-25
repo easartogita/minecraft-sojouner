@@ -9,12 +9,8 @@ const DIM_MAP: Record<string, string> = {
   end:       'minecraft:the_end',
 }
 
-/**
- * Each player's bed/respawn-anchor point (Player.SpawnX/Y/Z), distinct from
- * the world spawn — absent until that player has actually slept in a bed or
- * set a respawn anchor. Only shown for players whose respawn point is in the
- * dimension currently being viewed.
- */
+// Player.SpawnX/Y/Z — distinct from world spawn, absent until that player has slept
+// in a bed or set a respawn anchor.
 function PlayerRespawnMarker({ map }: { map: L.Map }) {
   const { state } = useApp()
   const markersRef = useRef<L.Marker[]>([])

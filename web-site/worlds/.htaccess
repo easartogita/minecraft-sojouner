@@ -1,0 +1,4 @@
+# Each export is its own baked tile pyramid — panning past the edge is a
+# normal, expected 404 the app's own JS handles, not a broken link. Don't
+# let that surface the site's branded 404 page.
+ErrorDocument 404 default

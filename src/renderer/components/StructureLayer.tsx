@@ -1,20 +1,31 @@
 import { memo, useEffect, useRef } from 'react'
 import L from 'leaflet'
-import { tooltipText } from '../lib/chunkMarkerLayer'
+import { tooltipText, type LayerStats, makeLayerStats, updateLayerStats } from '../lib/chunkMarkerLayer'
 import { useApp } from '../App'
 import { STRUCTURE_CONFIG, StructureType, structureVariantKey, getVariantDef } from '../lib/structureConfig'
 import { queryStructures } from '../lib/structureQuery'
 import { setupDebouncedMapListeners } from '../lib/mapListeners'
-import { minecraftToLeaflet } from '../lib/tileCoords'
-import { BASE_BLOCKS_PER_PIXEL, MC_VERSIONS } from '../lib/constants'
+import { minecraftToLeaflet, lngToBlockX, latToBlockZ } from '../lib/tileCoords'
+import { BASE_BLOCKS_PER_PIXEL } from '../lib/constants'
 import { attachMarkerContextMenu } from '../lib/contextMenuBus'
 import { loadDismissed, saveDismissed } from '../lib/dismissedStructures'
 import * as api from '../lib/tauriAPI'
+import { TileJobQueue } from '../lib/tileJobQueue'
+import * as tileStats from '../lib/tileStats'
 
-// Structure types whose pieces/loot the backend can generate (cubiomes
-// StructureType enum ids). Markers of these types get a chest-loot list and
-// piece footprints. Must match a structure handled by getStructurePieces in
-// the cubiomes fork *and* have a loot table in cubiomes/loot/loot_tables/.
+// Single-slot "queue" purely so an in-flight scan shows up in TileLoadingHud /
+// DebugOverlay via the same registerOverlay mechanism the tile-queue layers use.
+const loadQueue = new TileJobQueue(1, () => tileStats.notify(), 'structure')
+tileStats.registerOverlay({ key: 'structure', label: 'Structures', className: 'structure', queues: [loadQueue], caches: [] })
+
+// Module-level stats, read by DebugOverlay.
+export type StructureLayerStats = LayerStats
+let _stats: LayerStats = makeLayerStats()
+export function getStructureLayerStats(): LayerStats { return { ..._stats } }
+export function resetStructureLayerStats(): void { _stats = makeLayerStats() }
+
+// Structure types with backend-generated pieces/loot (cubiomes StructureType enum ids);
+// must match getStructurePieces in the cubiomes fork and have a loot table there.
 const STRUCT_PIECE_ID: Partial<Record<StructureType, number>> = {
   desert_temple:        1,
   jungle_temple:        2,
@@ -26,19 +37,14 @@ const STRUCT_PIECE_ID: Partial<Record<StructureType, number>> = {
   buried_treasure:      14,
   fortress:             18,
   bastion:              19,
-  end_city:             20,
-  abandoned_camp:       25,
-  // 26.3 inserted Abandoned_Camp before Stronghold in the cubiomes StructureType
-  // enum, shifting Stronghold from 25 to 26 — this was 25 (wrong) until fixed.
-  stronghold:           26,
+  end_city:             21,
+  abandoned_camp:       26,
+  stronghold:           27,
 }
 
-// Marker loot badges: a fixed vertical column of slots on the marker's right
-// edge, one per possible chest kind, ordered top→bottom. A slot lights up if
-// that loot table is present in this particular instance; absent slots render
-// as invisible spacers so present ones keep their fixed position (a shipwreck
-// with only treasure+supply shows T at top and S at bottom, the map slot blank).
-// `match` is a substring of the cubiomes loot-table name for that chest kind.
+// Fixed vertical column of loot-badge slots, one per chest kind; absent slots render
+// as invisible spacers so present ones keep a stable position. `match` is a substring
+// of the cubiomes loot-table name for that chest kind.
 interface BadgeSlot { letter: string; match: string; color: string; title: string }
 
 const STRUCT_BADGES: Partial<Record<StructureType, BadgeSlot[]>> = {
@@ -52,10 +58,8 @@ const STRUCT_BADGES: Partial<Record<StructureType, BadgeSlot[]>> = {
     { letter: 'X', match: 'crossing', color: '#9ca3af', title: 'Crossing chest' },
     { letter: 'C', match: 'corridor', color: '#cd7f32', title: 'Corridor chest' },
   ],
-  // Whether a given campsite piece rolls the secret chest (vs. just a common
-  // chest) depends on which randomly-chosen piece variant filled that slot —
-  // not a fixed per-camp trait, and bigger camps have more campsite pieces so
-  // more rolls at it. This badge is the only way to tell short of visiting.
+  // Whether a campsite piece rolls the secret chest (vs. a common chest) is per-instance,
+  // not a fixed camp trait — this badge is the only way to tell without visiting.
   abandoned_camp: [
     { letter: 'H', match: 'secret', color: '#ffd700', title: 'Secret chest (diamond, potions, iron gear, copper/gold/iron ingots)' },
     { letter: 'C', match: 'common', color: '#9ca3af', title: 'Common chest (arrows, maps, bones, camp supplies)' },
@@ -63,20 +67,15 @@ const STRUCT_BADGES: Partial<Record<StructureType, BadgeSlot[]>> = {
   ],
 }
 
-// "Has notable loot" — backs the Structures panel's per-type "notable loot
-// only" filter (state.notableLootOnly). Confirmed genuinely variable
-// per-instance by direct survey — not near-guaranteed, and not an artifact of
-// cubiomes' incomplete piece simulation the way Bastion/Fortress chest tables
-// are (those were surveyed too and excluded for that reason). End City's ship
-// shares its loot table name with the tower chests, so it's keyed off the
-// isShip flag rather than a table match.
+// Backs the "notable loot only" filter. Confirmed genuinely variable per-instance by
+// survey (unlike Bastion/Fortress chest tables, excluded as cubiomes piece-sim artifacts).
+// End City's ship shares its loot table name with tower chests, so it's keyed off isShip.
 const NOTABLE_LOOT_CHECK: Partial<Record<StructureType, (chests: api.ChestSlot[]) => boolean>> = {
   shipwreck: chests => chests.some(c => c.table.includes('treasure')),
   abandoned_camp: chests => chests.some(c => c.table.includes('secret')),
   end_city: chests => chests.some(c => c.isShip),
 }
 
-// Build the badge column HTML for a structure given the loot tables present.
 function badgeColumnHTML(slots: BadgeSlot[], presentTables: string[]): string {
   const chips = slots.map(s => {
     const present = presentTables.some(t => t.includes(s.match))
@@ -87,12 +86,9 @@ function badgeColumnHTML(slots: BadgeSlot[], presentTables: string[]): string {
   return `<span class="struct-badges">${chips}</span>`
 }
 
-// Human label for a chest given its loot-table name, e.g.
-// "shipwreck_treasure" → "Treasure chest", "stronghold_library" → "Library chest",
-// "abandoned_camp_secret_chest" → "Secret chest", "abandoned_camp_barrel" → "Barrel"
-// (a trailing "_chest"/"_barrel" is a naming-convention suffix, not the kind word —
-// strip it before taking the last underscore segment, or the abandoned_camp tables
-// would read as "Chest chest").
+// e.g. "shipwreck_treasure" → "Treasure chest", "abandoned_camp_secret_chest" → "Secret
+// chest". Strip a trailing "_chest"/"_barrel" suffix before taking the last segment, or
+// names like abandoned_camp's would read as "Chest chest".
 function chestKindLabel(table: string): string {
   if (table.endsWith('_barrel')) return 'Barrel'
   const base = table.endsWith('_chest') ? table.slice(0, -'_chest'.length) : table
@@ -105,9 +101,8 @@ function titleCase(s: string): string {
   return s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
 
-// Vanilla enchantment levels are shown as roman numerals in-game (I-X covers
-// every enchantment's actual max level); fall back to the plain number for
-// anything higher rather than guess at numerals nobody uses.
+// Vanilla shows enchant levels as roman numerals (I-X covers every real max level);
+// fall back to the plain number above that rather than guess unused numerals.
 function toRoman(n: number): string {
   const table: [number, string][] =
     [[10,'X'],[9,'IX'],[8,'VIII'],[7,'VII'],[6,'VI'],[5,'V'],[4,'IV'],[3,'III'],[2,'II'],[1,'I']]
@@ -119,9 +114,8 @@ function formatEnchantment(e: api.EnchantmentInfo): string {
   return `${titleCase(e.name)} ${e.level >= 1 && e.level <= 10 ? toRoman(e.level) : e.level}`
 }
 
-// "1× Potion" -> "1× Potion of Healing"; enchanted items get a trailing
-// "(Sharpness III, Unbreaking II)" — both resolved from cubiomes' ItemStack
-// (mob effect + enchantments), not just the bare item id.
+// e.g. "1× Potion of Healing"; enchanted items get a trailing "(Sharpness III, ...)" —
+// both resolved from cubiomes' ItemStack (mob effect + enchantments), not just item id.
 function formatLootItem(it: api.LootItem): string {
   let label = it.item.replace('minecraft:', '').replace(/_/g, ' ')
   if (it.potion) label += ` of ${titleCase(it.potion.replace('minecraft:', ''))}`
@@ -147,7 +141,7 @@ function getStructureShapeHTML(type: StructureType): string {
   const D = 'fill="rgba(0,0,0,0.35)"'
 
   switch (type) {
-    // ── Settlements ────────────────────────────────────────────────────────────
+    // Settlements
     case 'village':
       return `<polygon ${W} points="10,2 18,9 2,9"/>
               <rect ${W} x="4" y="9" width="12" height="9"/>
@@ -169,7 +163,7 @@ function getStructureShapeHTML(type: StructureType): string {
               <rect ${W} x="3" y="14" width="14" height="2"/>
               <rect ${D} x="8" y="10" width="4" height="6"/>`
 
-    // ── Pyramids / Temples ─────────────────────────────────────────────────────
+    // Pyramids / Temples
     case 'desert_temple':
       return `<polygon ${W} points="10,2 18,17 2,17"/>
               <rect ${D} x="8" y="12" width="4" height="5"/>`
@@ -179,14 +173,14 @@ function getStructureShapeHTML(type: StructureType): string {
               <rect ${D} x="6" y="10" width="8" height="7"/>
               <rect ${W} x="8" y="12" width="4" height="2"/>`
 
-    // ── Towers / Outposts ──────────────────────────────────────────────────────
+    // Towers / Outposts
     case 'outpost':
       return `<rect ${W} x="7" y="6" width="6" height="12"/>
               <rect ${W} x="4" y="3" width="4" height="6"/>
               <rect ${W} x="12" y="3" width="4" height="6"/>
               <rect ${W} x="4" y="3" width="12" height="2.5"/>`
 
-    // ── Ocean structures ───────────────────────────────────────────────────────
+    // Ocean structures
     case 'ocean_monument':
       return `<polygon ${W} points="10,2 18,10 10,18 2,10"/>
               <polygon ${D} points="10,6 14,10 10,14 6,10"/>`
@@ -201,7 +195,7 @@ function getStructureShapeHTML(type: StructureType): string {
               <rect ${W} x="13" y="6" width="4" height="11"/>
               <path ${S} stroke-width="2.5" d="M3,9 Q10,4 17,9"/>`
 
-    // ── Underground ────────────────────────────────────────────────────────────
+    // Underground
     case 'stronghold':
       return `<ellipse ${W} cx="10" cy="10" rx="8" ry="5"/>
               <circle ${D} cx="10" cy="10" r="3.5"/>
@@ -228,7 +222,7 @@ function getStructureShapeHTML(type: StructureType): string {
       return `<polygon ${W} points="10,1 16,5 18,13 13,19 7,19 2,13 4,5"/>
               <polygon ${D} points="10,5 14,8 15,14 10,17 5,14 6,8"/>`
 
-    // ── Surface world ──────────────────────────────────────────────────────────
+    // Surface world
     case 'ruined_portal':
     case 'ruined_portal_nether':
       return `<path ${S} stroke-width="3" d="M5,17 L5,7 Q5,2 10,2 Q15,2 15,7 L15,17"/>
@@ -253,7 +247,7 @@ function getStructureShapeHTML(type: StructureType): string {
               <rect ${W} x="14" y="3" width="2" height="6"/>
               <rect ${W} x="4" y="3" width="12" height="2"/>`
 
-    // ── Nether ─────────────────────────────────────────────────────────────────
+    // Nether
     case 'fortress':
       return `<rect ${W} x="2" y="9" width="16" height="8"/>
               <rect ${W} x="2" y="4" width="5" height="8"/>
@@ -266,7 +260,7 @@ function getStructureShapeHTML(type: StructureType): string {
               <rect ${D} x="6" y="6" width="8" height="8"/>
               <rect ${W} x="8.5" y="8.5" width="3" height="3"/>`
 
-    // ── End ────────────────────────────────────────────────────────────────────
+    // End
     // A tall, slender, segmented spire on a wide base — distinct from Outpost's
     // stout tower-plus-pillars silhouette — capped with a small glowing tip.
     case 'end_city':
@@ -310,7 +304,7 @@ function createMarkerIcon(
   const title = tooltipText(label, summary || null)
   return L.divIcon({
     className: '',
-    html: `<div class="structure-marker" style="background:${color}" title="${title}">
+    html: `<div class="structure-marker" style="background:${color}" title="${title}" role="button" aria-label="${title}">
       <svg viewBox="0 0 20 20" width="13" height="13" style="display:block;flex-shrink:0" overflow="visible">
         ${shapeHTML}
       </svg>
@@ -334,26 +328,20 @@ function blockRadiusToLeaflet(radius: number): number {
 interface PoolEntry { marker: L.Marker; circle?: L.Circle; structType: StructureType }
 
 function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
-  const { state, dispatch } = useApp()
+  const { state, dispatch, generatorConfig } = useApp()
   const layerGroupRef = useRef<L.LayerGroup | null>(null)
-  // Pool lives as a ref so it survives re-renders — zoom changes don't blow it away.
+  // Ref so the pool survives re-renders — zoom changes don't blow it away.
   const poolRef = useRef<Map<string, PoolEntry>>(new Map())
   // Incremented on every updateStructures call; stale results are discarded on mismatch.
   const updateGenRef = useRef(0)
   const dismissedRef = useRef<Set<string>>(new Set())
-  // "Notable loot only" verdicts (from getStructureChests) aren't known until
-  // that fetch resolves, well after the structure's marker already went into
-  // `pool`/`wanted` for this scan — so a non-qualifying structure gets pulled
-  // back out asynchronously. Without remembering that, the *next* debounced
-  // pan/zoom scan finds the key missing from `pool` and treats it as new
-  // again: marker flickers back in and getStructureChests re-fires, forever,
-  // for every non-notable structure on screen. Persists per-seed (loot is
-  // deterministic for a fixed seed/position), reset only on an actual seed
-  // change — see the seed-change check below.
+  // "Notable loot only" verdicts resolve asynchronously, after the marker already went into
+  // pool/wanted for this scan — without remembering a non-qualifying key, every debounced
+  // pan/zoom re-adds it and re-fetches forever. Persists per-seed; reset only on seed change.
   const notNotableRef = useRef<Set<string>>(new Set())
-  const notNotableSeedRef = useRef<number | null>(null)
-  // Separate layer for the 20 fixed End Gateway ring→destination pairs — a
-  // fixed, cheap set independent of the viewport-bounded candidate search above.
+  const notNotableSeedRef = useRef<string | null>(null)
+  // Separate layer for the 20 fixed End Gateway ring→destination pairs, independent of
+  // the viewport-bounded candidate search below.
   const gatewayLinkGroupRef = useRef<L.LayerGroup | null>(null)
 
   const seed = state.seedData?.seed ?? null
@@ -374,6 +362,7 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
         if (entry.circle) group.removeLayer(entry.circle)
       })
       pool.clear()
+      _stats.lastCount = 0
       return
     }
 
@@ -392,22 +381,26 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
       const showRadii   = currentZoom >= 2
 
       const mapBounds = map.getBounds()
-      const factor = 16
-      const bx0 = Math.floor(mapBounds.getWest()   * factor)
-      const bx1 = Math.ceil (mapBounds.getEast()   * factor)
-      const bz0 = Math.floor(-mapBounds.getNorth() * factor)
-      const bz1 = Math.ceil (-mapBounds.getSouth() * factor)
+      const bx0 = Math.floor(lngToBlockX(mapBounds.getWest()))
+      const bx1 = Math.ceil (lngToBlockX(mapBounds.getEast()))
+      const bz0 = Math.floor(latToBlockZ(mapBounds.getNorth()))
+      const bz1 = Math.ceil (latToBlockZ(mapBounds.getSouth()))
 
       const visibleStructures = new Set(
         [...enabledStructures].filter(s => currentZoom >= STRUCTURE_CONFIG[s].minZoom)
       )
 
-      const mcVersion = MC_VERSIONS[selectedVersion]
-      const worldFlags = worldType === 'large_biomes' ? 1 : 0
+      const { seedBig, dimId, mcVersion, worldFlags } = generatorConfig
+      const t0 = performance.now()
       const results = await queryStructures(
         BigInt(seed!), mcVersion, dimension, worldFlags,
         visibleStructures, bx0, bz0, bx1, bz1,
       )
+      // Superseded scans (gen mismatch) don't reflect the current view — skip the
+      // timing/count so a stale scan can't skew stats or overwrite a newer lastCount.
+      if (gen === updateGenRef.current) {
+        updateLayerStats(_stats, Math.round(performance.now() - t0), results.length)
+      }
 
       if (gen !== updateGenRef.current) return
 
@@ -452,10 +445,8 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
                </div>`
             : ''
           const pieceId = STRUCT_PIECE_ID[structType]
-          // Every chest is listed (name + item count) up front; each one is its
-          // own <details> collapsed by default — click to see its items. Leaflet
-          // rebuilds the popup DOM from this string on every open, so they stay
-          // collapsed-by-default on every reopen too, not just the first.
+          // Each chest is its own collapsed <details>; Leaflet rebuilds the popup DOM
+          // from this string on every open, so they stay collapsed on every reopen too.
           const lootSection = pieceId != null
             ? `<div class="struct-loot" data-loot-key="${key}"><div class="struct-loot-loading">Loading loot…</div></div>`
             : ''
@@ -469,33 +460,24 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
                 <input type="checkbox" data-dismiss-key="${key}"> Mark as useless
               </label>
             </div>`,
-            // Expanding a chest's <details> after the popup opens grows it, but
-            // Leaflet only autoPans once — at open time — so an already-tall
-            // popup (many chests, several expanded) can grow past the window
-            // edge with no way back short of dragging the map. maxHeight caps
-            // the rendered popup itself (Leaflet adds its own internal scroll),
-            // so nothing is ever pushed off-screen — unlike the inner
-            // .struct-loot scroll box that was tried and reverted (see its CSS
-            // comment), this clips nothing: everything's still one scroll away.
+            // Leaflet only autoPans once, at open time, so a popup that grows after
+            // opening (a <details> expanded) can overflow past the window edge with no
+            // way back. maxHeight caps the popup itself (Leaflet adds its own scroll).
             { maxHeight: 420, autoPanPadding: [24, 24] }
           )
 
           let lootItems: api.LootItem[] | null = null
 
-          // Chest kind per position (e.g. "shipwreck_treasure"), plus whether it's
-          // an End Ship chest, for structures that get loot badges or an End City's
-          // ship badge. Drives the marker badges and the chest headings in the loot
-          // popup. Fetched eagerly (cheap — no loot roll).
+          // Chest kind per position, plus whether it's an End Ship chest — drives badges
+          // and loot-popup headings. Fetched eagerly since it's cheap (no loot roll).
           let chestKindByPos: Map<string, { table: string; isShip: boolean }> | null = null
           const badgeSlots = STRUCT_BADGES[structType]
           const tracksShip = structType === 'end_city'
           if ((badgeSlots || tracksShip || wantNotableOnly) && pieceId != null && slot != null && slot >= 0) {
-            api.getStructureChests(slot, pieceId, pos.x, pos.z).then(chests => {
-              // "Notable loot only" isn't known until this resolves — pull the
-              // marker (and its radius circle) back out if it doesn't qualify,
-              // same removal path as the "mark as useless" dismiss action. Also
-              // remember the verdict so the next scan skips this key outright
-              // instead of flickering it back in and re-fetching chests again.
+            api.getStructureChests(slot, seedBig, dimId, worldFlags, mcVersion, pieceId, pos.x, pos.z).then(chests => {
+              // Pull the marker (and its circle) back out if it doesn't qualify — same
+              // removal path as "mark as useless" — and remember the verdict so the
+              // next scan skips this key instead of re-fetching chests forever.
               if (wantNotableOnly && !notableCheck!(chests)) {
                 notNotableRef.current.add(key)
                 group.removeLayer(marker)
@@ -507,9 +489,8 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
               if (!chests.length) return
               chestKindByPos = new Map(chests.map(c => [`${c.chestX},${c.chestZ}`, { table: c.table, isShip: c.isShip }]))
               const badgesHTML = badgeSlots ? badgeColumnHTML(badgeSlots, chests.map(c => c.table)) : ''
-              // End Ship chests share the "end_city_treasure" loot table with the
-              // tower chests, so they can't be told apart by table name — only the
-              // isShip flag (from the structure piece type) distinguishes them.
+              // End Ship chests share the "end_city_treasure" loot table with tower chests —
+              // only the isShip flag (from the structure piece type) tells them apart.
               const shipHTML = chests.some(c => c.isShip)
                 ? `<span class="structure-ship-badge" title="Has an End Ship — better odds of an Elytra">S</span>`
                 : ''
@@ -517,10 +498,8 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
             }).catch(() => {})
           }
 
-          // Paint cached loot into the popup's loot div — every chest at the site
-          // listed up front (name + item count), each collapsed by default as its
-          // own <details> — click a chest to see its items. Leaflet rebuilds the
-          // popup DOM on every open, so this must run each time — not once.
+          // Paint cached loot into the popup: each chest listed up front, collapsed by
+          // default. Leaflet rebuilds the popup DOM on every open, so this runs each time.
           const renderLoot = () => {
             const div = marker.getPopup()?.getElement()
               ?.querySelector<HTMLElement>(`.struct-loot[data-loot-key="${CSS.escape(key)}"]`)
@@ -547,9 +526,7 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
           }
 
           marker.on('popupopen', () => {
-            // Leaflet rebuilds the popup DOM from the bound string on every
-            // open, wiping listeners — so re-attach the dismiss handler each
-            // time, not once.
+            // Leaflet rebuilds the popup DOM (wiping listeners) on every open — re-attach.
             const input = marker.getPopup()?.getElement()
               ?.querySelector<HTMLInputElement>(`input[data-dismiss-key="${CSS.escape(key)}"]`)
             input?.addEventListener('change', () => {
@@ -563,10 +540,9 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
                 if (e.circle) group.removeLayer(e.circle)
                 pool.delete(key)
               }
-              // Bump the shared revision counter so the Structures flyout's
-              // Dismissed list (which reads localStorage on its own schedule)
-              // picks up this addition immediately.
-              dispatch({ type: 'CLEAR_STRUCTURE_CACHE' } as never)
+              // Bump the shared revision counter so the flyout's Dismissed list
+              // (reads localStorage on its own schedule) picks this up immediately.
+              dispatch({ type: 'CLEAR_STRUCTURE_CACHE' })
             })
 
             if (pieceId == null || slot == null || slot < 0) return
@@ -575,13 +551,12 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
             if (lootItems) {
               renderLoot()
             } else {
-              api.getStructureLoot(slot, pieceId, pos.x, pos.z, mcVersion).then(items => {
+              api.getStructureLoot(slot, seedBig, dimId, worldFlags, mcVersion, pieceId, pos.x, pos.z).then(items => {
                 lootItems = items
                 renderLoot()
               }).catch(err => {
-                // A throw inside renderLoot() (bad data shape, etc.) lands here too,
-                // not just IPC failures — log it, or the popup silently freezes on
-                // "Loading loot…" with nothing else to go on.
+                // A throw inside renderLoot() lands here too, not just IPC failures —
+                // log it, or the popup silently freezes on "Loading loot…".
                 console.error('Structure loot fetch/render failed:', err)
               })
             }
@@ -636,10 +611,19 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
           pool.delete(key)
         }
       }
+
+      _stats.lastCount = wanted.size
     }
 
-    const cleanupListeners = setupDebouncedMapListeners(map, () => { void updateStructures() }, 200)
-    void updateStructures()
+    const runUpdateStructures = () => {
+      let released = false
+      const release = () => { if (!released) { released = true; loadQueue.release() } }
+      loadQueue.enqueue(0, () => {})
+      updateStructures().finally(release)
+    }
+
+    const cleanupListeners = setupDebouncedMapListeners(map, runUpdateStructures, 200)
+    runUpdateStructures()
 
     return () => {
       cleanupListeners()
@@ -653,13 +637,10 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, slot, seed, dimension, selectedVersion, worldType, enabledStructures, disabledStructureVariants, notableLootOnly, showStructures, structureRevision])
 
-  // The 20 fixed End Gateways ringing the main island, each linked to the
-  // deterministic outer landing spot the game will place a gateway at the
-  // moment a player steps through — known from the seed alone, so this is
-  // shown even for a landing spot nobody has generated yet. The candidate
-  // search above (a 1-in-700-per-chunk feature check across the whole End)
-  // can't tell these 20 realised gateways apart from every other viable site,
-  // so they're drawn as a separate, always-on-seed overlay.
+  // The 20 fixed End Gateways ringing the main island, each linked to its deterministic
+  // landing spot — known from the seed alone, so shown even before anyone generates it.
+  // The candidate feature search above can't tell these apart from other viable sites,
+  // so they're drawn as a separate, always-on overlay.
   useEffect(() => {
     if (!map) return
     if (!gatewayLinkGroupRef.current) {
@@ -673,7 +654,8 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
     if (slot == null || slot < 0) return
 
     let cancelled = false
-    api.getEndGatewayLinks(slot).then(links => {
+    const { seedBig, dimId, worldFlags, mcVersion } = generatorConfig
+    api.getEndGatewayLinks(slot, seedBig, dimId, worldFlags, mcVersion).then(links => {
       if (cancelled) return
       links.forEach((link, i) => {
         const srcLL = blockCoordsToLatLng(link.srcX, link.srcZ)
@@ -708,7 +690,7 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
     }).catch(() => {})
 
     return () => { cancelled = true }
-  }, [map, slot, seed, dimension, enabledStructures, showStructures])
+  }, [map, slot, seed, dimension, enabledStructures, showStructures, generatorConfig])
 
   return null
 }

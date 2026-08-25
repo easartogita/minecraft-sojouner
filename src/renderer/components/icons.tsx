@@ -1,13 +1,7 @@
 import React from 'react'
 
-/**
- * Pixel-grid icon set — the app's signature (see docs/design-language.md).
- *
- * Every glyph is drawn on a strict 16×16 grid from integer-coordinate rects,
- * matching the game's own 16×16 texture discipline. Single color via
- * currentColor; depth/shading only through opacity steps. Render at 16px
- * multiples so crispEdges stays pixel-perfect.
- */
+// Every glyph is drawn on a strict 16×16 grid from integer-coordinate rects, matching
+// the game's own texture discipline. Single color via currentColor; shading via opacity.
 
 export interface IconProps {
   size?: number
@@ -199,6 +193,24 @@ export function IconDice({ size, className }: IconProps) {
       <rect x={7} y={7} width={2} height={2} />
       <rect x={4} y={10} width={2} height={2} />
       <rect x={10} y={10} width={2} height={2} />
+    </Px>
+  )
+}
+
+/** Two overlapping block outlines — duplicate/stamp motif for structure copy/paste. */
+export function IconStructureCopy({ size, className }: IconProps) {
+  return (
+    <Px size={size} className={className}>
+      <g opacity={0.45}>
+        <rect x={1} y={1} width={9} height={1} />
+        <rect x={1} y={1} width={1} height={9} />
+        <rect x={9} y={1} width={1} height={9} />
+        <rect x={1} y={9} width={9} height={1} />
+      </g>
+      <rect x={6} y={6} width={9} height={1} />
+      <rect x={6} y={6} width={1} height={9} />
+      <rect x={14} y={6} width={1} height={9} />
+      <rect x={6} y={14} width={9} height={1} />
     </Px>
   )
 }

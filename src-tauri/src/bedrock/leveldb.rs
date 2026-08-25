@@ -9,8 +9,6 @@ use std::marker::PhantomData;
 #[cfg(bedrock_ldb)]
 use super::leveldb_ffi as ffi;
 
-// ── Database handle ──────────────────────────────────────────────────────────
-
 pub struct LdbDatabase {
     #[cfg(bedrock_ldb)]
     ptr: *mut ffi::LdbHandleOpaque,
@@ -83,8 +81,6 @@ impl Drop for LdbDatabase {
         unsafe { ffi::ldb_close(self.ptr) }
     }
 }
-
-// ── Prefix iterator ──────────────────────────────────────────────────────────
 
 pub struct LdbPrefixIter<'a> {
     #[cfg(bedrock_ldb)]

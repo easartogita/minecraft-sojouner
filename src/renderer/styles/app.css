@@ -5,6 +5,28 @@
   overflow: visible;
 }
 
+.app-version-tag {
+  position: fixed;
+  left: 6px;
+  bottom: 4px;
+  z-index: 2100;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Deliberately NOT using the parent's opacity trick (removed above) — a
+   child's opacity:1 can't cancel out a parent's reduced opacity, since
+   opacity establishes a stacking context that dims the whole subtree
+   regardless. Muting comes from `color` alone now so this can pop at full
+   strength. */
+.app-version-tag-dev {
+  color: #ff4500;
+  font-weight: 700;
+}
+
 .map-area {
   flex: 1;
   position: relative;
@@ -613,6 +635,18 @@
   opacity: 1;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
+/* Not included in the current static export (or, live, no player position
+   for Cave Mode) — greyed out with a title tooltip instead of hidden, so the
+   option's existence stays visible even when this build can't serve it. */
+.overlay-toggle:has(input:disabled),
+.biome-mode-option:has(input:disabled) {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.overlay-toggle:has(input:disabled):hover {
+  opacity: 0.35;
+  background: rgba(255,255,255,0.03);
+}
 
 .overlay-toggle input[type="checkbox"] {
   display: none;
@@ -991,6 +1025,10 @@
   color: var(--text-muted);
 }
 
+.popup-hint a {
+  color: var(--accent, #58a6ff);
+}
+
 /* Per-structure chest loot list in the structure popup. Every chest at the site
    is always listed (name + item count); each is its own <details>, collapsed by
    default — click a chest to see its items. No max-height/scroll clipping — the
@@ -1105,6 +1143,14 @@
   background: var(--accent);
   color: #101114;
   font-weight: 600;
+}
+/* A persisted mode selection can be "checked" (active) in a static export
+   that didn't bake it — override .active's background so disabled still
+   reads as disabled instead of full-accent. */
+.biome-mode-option.active:has(input:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 .popup-dismiss {
@@ -1430,49 +1476,6 @@
   margin-top: 2px;
 }
 
-/* Go to Coordinates */
-.goto-row {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.goto-input {
-  flex: 1;
-  background: var(--bg-dark);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 4px 6px;
-  font-size: 11px;
-  min-width: 0;
-}
-.goto-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-/* Hide number input spinners */
-.goto-input::-webkit-outer-spin-button,
-.goto-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.goto-input[type=number] { -moz-appearance: textfield; }
-
-/* Cross-dimension equivalent readout */
-.goto-equiv {
-  margin-top: 5px;
-  padding: 4px 8px;
-  background: var(--bg-dark);
-  border: 1px solid rgba(155,89,182,0.3);
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: #c39bd3;
-  cursor: pointer;
-}
-.goto-equiv:hover {
-  border-color: #9b59b6;
-  color: #d7bde2;
-}
-
 /* Recent worlds */
 .recent-worlds {
   margin-top: 8px;
@@ -1513,6 +1516,25 @@
 }
 .recent-worlds-more:hover {
   color: var(--accent-hover);
+}
+
+.game-rules-toggle {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  margin-bottom: 8px;
+  transition: background 0.12s, border-color 0.12s;
+}
+.game-rules-toggle:hover {
+  background: var(--bg-hover);
+  border-color: rgba(255,255,255,0.3);
 }
 
 /* Manual seed input */
@@ -2172,7 +2194,11 @@
 /* ── Ruler panel ──────────────────────────────────────────────────────────── */
 .ruler-panel {
   position: absolute;
-  bottom: 40px;
+  /* Cursor info bar shares this right edge and can stack up to 7 lines
+     (XYZ + biome/block/slime/difficulty/copper/iron) — ~148px tall off its
+     own bottom:12px anchor. Cleared with margin so a maxed-out info bar
+     never runs into this panel. */
+  bottom: 172px;
   right: 12px;
   z-index: 1000;
   background: rgba(10, 10, 10, 0.92);
@@ -2406,13 +2432,12 @@
 }
 
 /* ── Cave map controls ────────────────────────────────────────────────────── */
-/* ── Cave depth gauge (floating, left edge) ─────────────────────────────── */
+/* ── Cave depth gauge (floating, top-left) ────────────────────────────────── */
 
 .cave-map-controls {
   position: absolute;
-  left: 10px;
-  top: 50%;
-  transform: translateY(-50%);
+  left: 12px;
+  top: 12px;
   z-index: 1000;
   background: rgba(23, 25, 29, 0.92);
   border: 1px solid var(--border);
@@ -2460,6 +2485,26 @@
   text-align: center;
 }
 
+/* Named Y-band quick-picks (see PresetRow in CaveMapControls.tsx). Static-site
+ * cave mode uses this in place of the live app's free-drag YRangeGauge (no
+ * player Y to anchor a gauge to); live cave mode shows it as a footer below
+ * the gauge, for a one-click jump to a fixed band. */
+.cmc-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px;
+  min-width: 180px;
+}
+.cmc-preset-list .biome-mode-option {
+  justify-content: flex-start;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
 .yg-lock {
   display: flex;
   align-items: center;
@@ -2481,7 +2526,7 @@
   background: rgba(63, 185, 80, 0.1);
 }
 
-/* Gauge: [scale numbers] [track with band + player notch] [value labels] */
+/* Gauge: [scale numbers] [track with band + player notch] [value labels] [preset swatches] */
 .yg-gauge {
   display: flex;
   gap: 4px;
@@ -2560,6 +2605,46 @@
 .yg-val--ceiling { color: #a78bfa; }
 .yg-val--floor   { color: #a78bfa; }
 .yg-val--player  { color: var(--green); }
+
+/* Named absolute-Y bands, sized/positioned by the same yToPx the track uses —
+ * each swatch's height is literally that preset's share of the scale. */
+.yg-presets {
+  position: relative;
+  width: 56px;
+}
+.yg-preset {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 4px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.yg-preset:hover {
+  background: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.28);
+}
+.yg-preset.active {
+  background: rgba(167, 139, 250, 0.28);
+  border-color: #a78bfa;
+}
+.yg-preset-label {
+  font-size: 8px;
+  line-height: 1;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.yg-preset.active .yg-preset-label {
+  color: #a78bfa;
+  font-weight: 600;
+}
 
 /* Map legend */
 .map-legend {
@@ -2725,6 +2810,20 @@
   font-size: 11px;
   color: rgba(255,255,255,0.7);
   pointer-events: none;
+  transition: padding 0.15s, font-size 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.f3-hud--slow {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(0, 0, 0, 0.85);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.15);
+}
+
+.f3-hud-slow-label {
+  color: #f59e0b;
+  font-weight: 600;
 }
 
 .f3-hud-dot {
@@ -2742,6 +2841,10 @@
 .f3-hud-dot--terrain    { background: #94a3b8; }
 .f3-hud-dot--caveentrance    { background: #22d3ee; }
 .f3-hud-dot--localdifficulty { background: #f87171; }
+.f3-hud-dot--entity      { background: #34d399; }
+.f3-hud-dot--blockentity { background: #a78bfa; }
+.f3-hud-dot--poi         { background: #f472b6; }
+.f3-hud-dot--structure   { background: #fbbf24; }
 
 .f3-hud-label {
   color: rgba(255,255,255,0.6);
@@ -3152,6 +3255,11 @@
 }
 
 /* Structure type grid */
+.mp-struct-section--disabled {
+  opacity: 0.4;
+  filter: grayscale(0.6);
+}
+
 .mp-struct-header {
   display: flex;
   align-items: center;
@@ -3337,14 +3445,41 @@
 .mp-zoom-hint {
   margin-left: auto;
   font-size: 10px;
-  color: var(--text-muted);
-  background: var(--bg-dark);
-  border: 1px solid var(--border);
   border-radius: 3px;
   padding: 1px 5px;
   white-space: nowrap;
   flex-shrink: 0;
+  border: 1px solid transparent;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
 }
+.mp-zoom-hint--off {
+  color: var(--text-muted);
+  background: var(--bg-dark);
+  border-color: var(--border);
+  opacity: 0.7;
+}
+.mp-zoom-hint--visible {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.12);
+  border-color: rgba(74, 222, 128, 0.35);
+}
+.mp-zoom-hint--blocked {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.45);
+  font-weight: 600;
+}
+.mp-zoom-hint--dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  padding: 0;
+  border-radius: 50%;
+  margin-left: 4px;
+}
+.mp-zoom-hint--dot.mp-zoom-hint--off     { background: var(--text-muted); opacity: 0.4; border: none; }
+.mp-zoom-hint--dot.mp-zoom-hint--visible { background: #4ade80; border: none; }
+.mp-zoom-hint--dot.mp-zoom-hint--blocked { background: #f59e0b; border: none; animation: f3-pulse 1.4s ease-in-out infinite; }
 
 /* Y-range filter */
 .mp-y-section {
@@ -3393,6 +3528,11 @@
 /* Group sections (BE / Entities) */
 .mp-group-section {
   margin-top: 7px;
+}
+
+.mp-group-section--disabled {
+  opacity: 0.4;
+  filter: grayscale(0.6);
 }
 
 .mp-group-header {
@@ -3554,11 +3694,58 @@
   color: var(--accent);
   font-weight: 600;
 }
+/* Not included in the current static export */
+.toolbar-toggle:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.toolbar-toggle:disabled:hover {
+  color: var(--text-muted);
+  background: none;
+}
 /* Active-mode suffix appended to a toggle's label (e.g. "Ore Veins · Density") */
 .toolbar-toggle-mode {
   font-weight: 400;
   opacity: 0.6;
 }
+
+/* Toggle + caret pair that opens a small mode-switch popover (Biomes, Chunk Data) */
+.toolbar-toggle-group {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+.toolbar-toggle-caret {
+  background: none;
+  color: var(--text-muted);
+  border: none;
+  border-radius: 3px;
+  min-width: 22px;
+  padding: 3px 6px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.toolbar-toggle-caret:hover,
+.toolbar-toggle-caret.active {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.toolbar-toggle-flyout {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.4);
+  padding: 6px;
+  min-width: 160px;
+}
+.toolbar-toggle-flyout .biome-mode-radio { margin: 0; }
+.toolbar-toggle-flyout .chunk-mode-option { white-space: nowrap; }
 
 .map-toolbar-daynight {
   width: 140px;
@@ -3867,6 +4054,7 @@
 .debug-sb-title--terrain    { color: #94a3b8; }
 .debug-sb-title--caveentrance    { color: #22d3ee; }
 .debug-sb-title--localdifficulty { color: #f87171; }
+.debug-sb-title--structure       { color: #fbbf24; }
 
 .debug-sb-row {
   display: flex;
@@ -3901,61 +4089,7 @@
 }
 
 
-/* ── Export Map Dialog ───────────────────────────────────────────────────── */
-
-.export-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 2000;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.export-dialog {
-  background: var(--sidebar-bg, #1a1a2e);
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-  display: flex;
-  flex-direction: column;
-  width: 340px;
-  max-width: 90vw;
-}
-
-.export-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px 10px;
-  border-bottom: 1px solid var(--border);
-}
-
-.export-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.export-close-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 14px;
-  cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 3px;
-  line-height: 1;
-}
-.export-close-btn:hover { color: var(--text-primary); }
-
-.export-body {
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
+/* ── Export Map (inlined into the World rail panel) ─────────────────────── */
 
 .export-field {
   display: flex;
@@ -3978,6 +4112,8 @@
 .export-value {
   font-size: 12px;
   color: var(--text-primary);
+  overflow-wrap: break-word;
+  word-break: break-all;
 }
 
 .export-radio-group {
@@ -4053,6 +4189,58 @@
   color: var(--text-muted);
 }
 
+.site-export-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.55);
+}
+
+.site-export-modal {
+  width: min(420px, 90vw);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.site-export-modal h3 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.site-export-modal-summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+  overflow-wrap: break-word;
+  word-break: break-all;
+}
+
+.site-export-modal .ws-btn-row {
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.share-link-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
 .export-footer {
   display: flex;
   justify-content: flex-end;
@@ -4091,6 +4279,11 @@
   display: flex;
   flex-direction: row;
   flex-shrink: 0;
+  /* Same automatic-minimum-size trap as .flyout-body, one level up: without
+   * this, .rail stretches to fit its tallest child's content instead of
+   * .app-layout's actual height, which defeats every overflow:hidden/auto
+   * below it in the chain — they never see anything to clip against. */
+  min-height: 0;
   z-index: 1002;
 }
 
@@ -4112,8 +4305,8 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 48px;
+  width: 48px;
+  height: 58px;
   border: 1px solid transparent;
   border-radius: 7px;
   background: none;
@@ -4170,8 +4363,17 @@
   font-size: 8px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  line-height: 1;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+  width: 100%;
+  text-align: center;
+  white-space: normal;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Rail Side Panel (in-flow, pushes map canvas) ───────────────────────── */
@@ -4179,6 +4381,10 @@
 .rail-panel {
   overflow: hidden;
   flex-shrink: 0;
+  /* Same automatic-minimum-size trap as .rail/.flyout-body — overflow:hidden
+   * alone doesn't stop this box from growing to fit tall content; it just
+   * stops that overflow from being *visible* once it's already too tall. */
+  min-height: 0;
   background: var(--bg-panel);
   /* border-right omitted — colour contrast vs map (#161b22 vs #111) is the separator */
   /* width is set inline; transition handles open/close */
@@ -4214,6 +4420,21 @@
 
 .rail-panel--resizing .rail-resize-handle {
   background: rgba(180, 140, 224, 0.32);
+}
+
+/* ── Right rail — mirror of the above, panel-then-icon-col instead of
+   icon-col-then-panel, so it opens toward the map from the screen's right
+   edge (RightRail.tsx). Reuses .rail/.rail-icon-col/.rail-panel/etc.; only
+   the border side and resize-handle edge need flipping. ── */
+
+.rail-icon-col-right {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+.rail-resize-handle-left {
+  right: auto;
+  left: 0;
 }
 
 .flyout-panel {
@@ -4317,12 +4538,29 @@
 
 .flyout-body {
   flex: 1;
+  /* Flex items default to min-height: auto, which stops them shrinking below
+   * their content size no matter what overflow says — without this, a panel
+   * whose content outgrows the window (e.g. World's static-export checklist)
+   * just grows past the window edge instead of scrolling internally. */
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 10px 14px;
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+
+/* Flex items also default to flex-shrink: 1 — without this, once
+ * .flyout-body is correctly bounded (min-height: 0 above), its children
+ * compete for the fixed space by *compressing* instead of the container
+ * overflowing and scrolling. Visually: sections squeeze shorter as a sibling
+ * grows, and anything with its own overflow:hidden (several ws-section
+ * wrappers) silently clips instead of scrolling into view. Pinning children
+ * to their natural height is what makes the container's own overflow (and
+ * thus its scrollbar) the thing that actually engages. */
+.flyout-body > * {
+  flex-shrink: 0;
 }
 
 .flyout-section {
@@ -4374,6 +4612,15 @@
   margin-bottom: 6px;
 }
 
+/* Separates merged sub-sections within one flyout (e.g. seed identity vs.
+   structure controls in Seed) — without it, a control like a toggle pill
+   sitting right under a dense block of selects just reads as more text. */
+.flyout-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0 12px;
+}
+
 /* ── Toolbar: zoom widget ────────────────────────────────────────────────── */
 
 .toolbar-zoom {
@@ -4382,6 +4629,68 @@
   gap: 6px;
   flex-shrink: 0;
   margin-right: 6px;
+}
+
+/* ── Toolbar: navigate to coordinates ────────────────────────────────────── */
+.toolbar-navigate {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.toolbar-navigate-input {
+  width: 56px;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+  height: 24px;
+}
+.toolbar-navigate-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.toolbar-navigate-input::-webkit-outer-spin-button,
+.toolbar-navigate-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.toolbar-navigate-input[type=number] { -moz-appearance: textfield; }
+
+.toolbar-navigate-go {
+  background: var(--bg-dark);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 8px;
+  height: 24px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.toolbar-navigate-go:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.toolbar-navigate-go:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.toolbar-navigate-equiv {
+  background: none;
+  border: 1px solid rgba(155,89,182,0.3);
+  border-radius: 4px;
+  padding: 0 7px;
+  height: 24px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #c39bd3;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toolbar-navigate-equiv:hover {
+  border-color: #9b59b6;
+  color: #d7bde2;
 }
 
 /* Ruler tick-strip — each tick is a zoom stop, zone-colored (biome/chunk/cave) */
@@ -4493,57 +4802,7 @@
   background: rgba(63, 185, 80, 0.12);
 }
 
-/* ── World Settings Panel ─────────────────────────────────────────────────── */
-
-.ws-backdrop {
-  position: absolute;
-  inset: 0;
-  z-index: 1500;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.ws-dialog {
-  background: var(--sidebar-bg, #1a1a2e);
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-  display: flex;
-  flex-direction: column;
-  width: 360px;
-  max-width: 90vw;
-  max-height: 85vh;
-  overflow-y: auto;
-}
-
-.ws-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px 10px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.ws-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.ws-close {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 14px;
-  cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 3px;
-  line-height: 1;
-}
-.ws-close:hover { color: var(--text-primary); }
+/* ── World Settings (unlimited cache / pre-generate, inlined into World) ──── */
 
 .ws-section {
   padding: 12px 14px;
@@ -4564,16 +4823,22 @@
   margin-bottom: 2px;
 }
 
-.ws-world-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
+.ws-section-title--clickable {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 0;
 }
+.ws-section-title--clickable:hover { color: var(--text-secondary); }
 
-.ws-world-path {
-  font-size: 11px;
-  color: var(--text-muted);
-  word-break: break-all;
+.ws-section-title-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--accent);
+  opacity: 0.8;
 }
 
 .ws-toggle-row {

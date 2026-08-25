@@ -1,9 +1,16 @@
 node_modules/
 out/
 dist/
+dist-site/
 src-tauri/target/
 *.tsbuildinfo
 .claude/
 src-tauri/*.tiff
 release/
 logs/
+web-site/downloads/
+web-site/26.3/
+# World exports (each one is a full static-export bundle — tile PNGs, region
+# data — easily hundreds of MB to GBs). The worlds/ page itself (.htaccess,
+# header/footer/css) stays tracked; only the exported world subfolders don't.
+web-site/worlds/*/

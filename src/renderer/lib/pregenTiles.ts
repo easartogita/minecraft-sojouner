@@ -1,12 +1,13 @@
 // Pre-generation: enumerate and render all tiles for a world region, populating
 // the Rust disk PNG cache so subsequent viewport loads are near-instant.
 
-import { BIOME_TILE_SIZE, CHUNK_TILE_SIZE, BASE_BLOCKS_PER_PIXEL } from './constants'
+import { BIOME_TILE_SIZE, CHUNK_TILE_SIZE } from './constants'
 import { Dimension } from './constants'
+import { blocksPerTile } from './tileCoords'
 import * as api from './tauriAPI'
 
-const BIOME_ZOOMS  = [0, 1, 2]   // biome tiles only render at these native zooms
-const CHUNK_ZOOMS  = [3, 4]   // chunk tiles: zoom 4 is native; zoom 3 is also a native request
+const BIOME_ZOOMS  = [0, 1, 2] // biome tiles only render at these native zooms
+const CHUNK_ZOOMS  = [3, 4]    // chunk tiles: zoom 4 is native; zoom 3 is also a native request
 const PREGEN_CONCURRENCY = 4  // matches the Tauri semaphore permit count
 
 export interface PregenOptions {
@@ -14,6 +15,7 @@ export interface PregenOptions {
   edition:         string
   seed:            bigint
   mcVersion:       number
+  worldFlags:      number
   generatorSlot:   number
   dimension:       Dimension
   includeChunks:   boolean
@@ -30,16 +32,13 @@ export interface PregenProgress {
   phase: 'biomes' | 'chunks' | 'done' | 'cancelled'
 }
 
-// ── Tile coordinate math ──────────────────────────────────────────────────────
-// tile_coord = floor(blockCoord / blocksPerTile)
-// blocksPerTile = tileSize * BASE_BLOCKS_PER_PIXEL / 2^zoom
-
+// tile_coord = floor(blockCoord / blocksPerTile); blocksPerTile = tileSize * BASE_BLOCKS_PER_PIXEL / 2^zoom
 function biomeBlocksPerTile(zoom: number) {
-  return BIOME_TILE_SIZE * BASE_BLOCKS_PER_PIXEL / Math.pow(2, zoom)
+  return blocksPerTile(BIOME_TILE_SIZE, zoom)
 }
 
 function chunkBlocksPerTile(zoom: number) {
-  return CHUNK_TILE_SIZE * BASE_BLOCKS_PER_PIXEL / Math.pow(2, zoom)
+  return blocksPerTile(CHUNK_TILE_SIZE, zoom)
 }
 
 function tileRange(blockMin: number, blockMax: number, blocksPerTile: number): [number, number] {
@@ -56,8 +55,6 @@ function chunkTilesForRegion(rx: number, rz: number, zoom: number): [number, num
     Math.floor(bz0 / bpt),       Math.floor((bz0 + 511) / bpt),
   ]
 }
-
-// ── Concurrent runner ─────────────────────────────────────────────────────────
 
 async function runPool(
   jobs: Array<() => Promise<void>>,
@@ -89,19 +86,15 @@ async function runPool(
   })
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
 export async function pregenTiles(
   options:    PregenOptions,
   onProgress: (p: PregenProgress) => void,
   signal:     AbortSignal,
 ): Promise<void> {
   const {
-    worldDir, edition, seed, mcVersion, generatorSlot, dimension,
+    worldDir, edition, seed, mcVersion, worldFlags, generatorSlot, dimension,
     includeChunks, includeBiomes, radiusBlocks, spawnX, spawnZ, hideWater,
   } = options
-
-  // ── Collect biome jobs ────────────────────────────────────────────────────
 
   const biomeJobs: Array<() => Promise<void>> = []
 
@@ -114,15 +107,13 @@ export async function pregenTiles(
         for (let ty = ty0; ty <= ty1; ty++) {
           const x = tx, y = ty, z = zoom
           biomeJobs.push(() =>
-            api.renderBiomeTile(generatorSlot, seed, mcVersion, dimension, x, y, z)
+            api.renderBiomeTile(generatorSlot, seed, mcVersion, worldFlags, dimension, x, y, z)
               .then(() => {})
           )
         }
       }
     }
   }
-
-  // ── Collect chunk jobs ────────────────────────────────────────────────────
 
   const chunkJobs: Array<() => Promise<void>> = []
 

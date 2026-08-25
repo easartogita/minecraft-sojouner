@@ -42,7 +42,7 @@ function SavedRoutesLayer({ map }: { map: L.Map }) {
         dispatch({
           type: 'RULER_LOAD_ROUTE', id: route.id,
           waypoints: route.waypoints, legModes: route.legModes,
-        } as never)
+        })
       })
       group.addLayer(line)
     }

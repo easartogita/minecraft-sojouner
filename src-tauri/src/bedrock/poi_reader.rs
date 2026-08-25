@@ -1,9 +1,6 @@
-// Bedrock POI reader.
-//
-// Bedrock doesn't have a dedicated POI file format. POI-equivalent data
-// is embedded as block entities (beds, bells, lecterns, etc.).
-// We scan block entity key (0x31) for the given chunk range and return
-// POI-relevant entries as PoiRecord, matching the Java interface.
+// Bedrock has no dedicated POI file format — POI-equivalent data lives in
+// block entities (beds, bells, lecterns, etc.), so we scan the block entity
+// key (0x31) and map the relevant kinds to PoiRecord.
 
 use super::chunk_reader::{chunk_key_prefix, dim_str_to_bedrock};
 use super::le_nbt::parse_compound_sequence;

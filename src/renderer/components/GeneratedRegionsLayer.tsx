@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import { useApp } from '../App'
-import { TILE_SIZE, MIN_ZOOM } from '../lib/constants'
+import { TILE_SIZE, MIN_ZOOM, MAX_ZOOM } from '../lib/constants'
 import { tileToMinecraftRect } from '../lib/tileCoords'
 import * as api from '../lib/tauriAPI'
 
@@ -59,8 +59,6 @@ function GeneratedRegionsLayer({ map }: { map: L.Map }) {
   const regionsRef = useRef(regionSet)
   const layerRef = useRef<L.GridLayer | null>(null)
 
-  // ── Fetch the region list; only commit a new Set when it actually differs, so
-  //    an unchanged directory listing doesn't churn the layer at all. ──
   useEffect(() => {
     if (!state.worldDir) { setRegionSet(prev => (prev.size ? new Set() : prev)); return }
     const edition = state.seedData?.edition ?? 'java'
@@ -70,16 +68,18 @@ function GeneratedRegionsLayer({ map }: { map: L.Map }) {
         setRegionSet(prev => (setsEqual(prev, next) ? prev : next))
       })
       .catch(() => setRegionSet(prev => (prev.size ? new Set() : prev)))
-    // `changedRegions` re-lists the directory when a region is written on disk —
-    // otherwise a newly-explored/created region never gets its low-zoom square
-    // until the next full world reload.
+    // `changedRegions` re-lists the directory on disk writes, so a newly-explored
+    // region gets its low-zoom square without a full world reload.
   }, [state.worldDir, state.dimension, state.worldLoadCount, state.changedRegions])
 
-  // ── Build the Leaflet layer once (per map + zoom threshold). createTile reads
-  //    the region set from the ref, so this never re-runs on a region change. ──
+  // Layer is built once per map + zoom threshold; createTile reads the region set
+  // from the ref, so this never re-runs on a region change.
   useEffect(() => {
     if (!map) return
-    const maxZoom = state.chunkDataMinZoom - 1
+    // While the Structures panel is open in region mode, force this low-zoom outline
+    // across the whole zoom range instead of ChunkOverlayLayer's per-block detail.
+    const forceRegionOutline = state.structureCopyPanelOpen && state.structureCopyMode === 'region'
+    const maxZoom = forceRegionOutline ? MAX_ZOOM : state.chunkDataMinZoom - 1
 
     const GridLayerClass = L.GridLayer.extend({
       createTile(coords: L.Coords) {
@@ -98,10 +98,10 @@ function GeneratedRegionsLayer({ map }: { map: L.Map }) {
     return () => {
       if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null }
     }
-  }, [map, state.chunkDataMinZoom])
+  }, [map, state.chunkDataMinZoom, state.structureCopyPanelOpen, state.structureCopyMode])
 
-  // ── Region set changed: repaint already-loaded tile canvases in place. No
-  //    layer teardown, no fade-in — so the overlay updates without blinking. ──
+  // Repaint already-loaded tile canvases in place on region-set change: no layer
+  // teardown or fade-in, so the overlay updates without blinking.
   useEffect(() => {
     regionsRef.current = regionSet
     const layer = layerRef.current as (L.GridLayer & { _tiles?: Record<string, { el: HTMLCanvasElement; coords: L.Coords }> }) | null

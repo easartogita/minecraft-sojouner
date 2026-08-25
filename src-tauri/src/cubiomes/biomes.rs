@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use super::{
-    lock_cubiomes,
-    cm_setup_generator, cm_slot_matches, cm_get_biome_region, cm_get_biome_region_at,
+    lock_cubiomes, slot_matches_locked, GeneratorKey,
+    cm_setup_generator, cm_setup_generator_reserved, cm_get_biome_region, cm_get_biome_region_at,
     cm_get_height_region, cm_get_spawn,
+    cm_get_surface_heights, cm_free_results,
     seed_from_parts,
 };
 
@@ -13,17 +14,31 @@ pub fn setup_generator(seed: i64, mc_version: i32, dimension: i32, flags: i32) -
     unsafe { cm_setup_generator(lo, hi, mc_version, dimension, flags) }
 }
 
-/// True if `slot`'s generator is currently configured for exactly this seed and
-/// dimension. Slots are recycled round-robin, so a queued render can reach a slot
-/// that has been repointed to another world (world switch) or dimension; callers
-/// verify this before generating/caching per-(seed, dimension) data.
-pub fn slot_matches(slot: i32, seed_low: i32, seed_high: i32, dimension: i32) -> bool {
+/// Exporter-only counterpart to `setup_generator`: always (re)configures the
+/// one reserved generator slot rather than round-robining, so a long-running
+/// static-site export never loses its generator to concurrent live-map use.
+/// See `cm_setup_generator_reserved` in cubiomes_bridge.c.
+pub fn setup_generator_reserved(seed: i64, mc_version: i32, dimension: i32, flags: i32) -> i32 {
+    let u = seed as u64;
+    let (lo, hi) = (u as i32, (u >> 32) as i32);
     let _guard = lock_cubiomes();
-    unsafe { cm_slot_matches(slot, seed_low, seed_high, dimension) != 0 }
+    unsafe { cm_setup_generator_reserved(lo, hi, mc_version, dimension, flags) }
 }
 
+/// Self-locking counterpart to `slot_matches_locked`, for one-off callers that
+/// don't already hold `CUBIOMES_LOCK` (e.g. `render_biome_tile`, which checks
+/// once and doesn't hold the guard across its whole call).
+pub fn slot_matches(slot: i32, key: GeneratorKey) -> bool {
+    let _guard = lock_cubiomes();
+    slot_matches_locked(slot, key)
+}
+
+/// `key` is the caller's expected config for `slot` — checked under the same
+/// lock acquisition as the query itself, so a slot repointed by a concurrent
+/// `setupGenerator` (async on the frontend) between request and execution
+/// can't silently return biome data for the wrong world.
 pub fn get_biome_region(
-    slot: i32,
+    slot: i32, key: GeneratorKey,
     x: i32, z: i32,
     width: i32, height: i32,
     scale: i32,
@@ -31,6 +46,7 @@ pub fn get_biome_region(
     let n = (width * height) as usize;
     let mut buf = vec![0i32; n];
     let _guard = lock_cubiomes();
+    if !slot_matches_locked(slot, key) { return None; }
     let rc = unsafe { cm_get_biome_region(slot, x, z, width, height, scale, buf.as_mut_ptr()) };
     if rc == 0 { Some(buf) } else { None }
 }
@@ -54,7 +70,7 @@ pub fn get_biome_region_for_seed(
 }
 
 pub fn get_biome_region_at(
-    slot: i32,
+    slot: i32, key: GeneratorKey,
     x: i32, z: i32,
     width: i32, height: i32,
     scale: i32, y: i32,
@@ -62,40 +78,71 @@ pub fn get_biome_region_at(
     let n = (width * height) as usize;
     let mut buf = vec![0i32; n];
     let _guard = lock_cubiomes();
+    if !slot_matches_locked(slot, key) { return None; }
     let rc = unsafe { cm_get_biome_region_at(slot, x, z, width, height, scale, y, buf.as_mut_ptr()) };
     if rc == 0 { Some(buf) } else { None }
 }
 
-pub fn get_height_region(slot: i32, x: i32, z: i32, w: i32, h: i32) -> Option<Vec<f32>> {
+pub fn get_height_region(
+    slot: i32, key: GeneratorKey,
+    x: i32, z: i32, w: i32, h: i32,
+) -> Option<Vec<f32>> {
     let n = (w * h) as usize;
     let mut buf = vec![0f32; n];
     let _guard = lock_cubiomes();
+    if !slot_matches_locked(slot, key) { return None; }
     let rc = unsafe { cm_get_height_region(slot, x, z, w, h, buf.as_mut_ptr()) };
     if rc == 0 { Some(buf) } else { None }
 }
 
-pub fn get_spawn(slot: i32) -> (i32, i32) {
+/// Real terrain-noise surface height, more accurate than `get_height_region`'s
+/// `mapApproxHeight` but only works for Overworld 1.18+ or the End (see
+/// cm_get_surface_heights in cubiomes_bridge.c). `None` covers both a slot
+/// mismatch and unsupported cases — callers treat both as "skip shading".
+pub fn get_surface_height_region(
+    slot: i32, key: GeneratorKey, x: i32, z: i32, w: i32, h: i32, stride: i32,
+) -> Option<Vec<i32>> {
+    let _guard = lock_cubiomes();
+    if !slot_matches_locked(slot, key) { return None; }
+    let ptr = unsafe { cm_get_surface_heights(slot, x, z, w, h, stride) };
+    if ptr.is_null() { return None; }
+    unsafe {
+        let n = (w.max(0) as usize) * (h.max(0) as usize);
+        let v = std::slice::from_raw_parts(ptr, n).to_vec();
+        cm_free_results(ptr);
+        Some(v)
+    }
+}
+
+/// Returns `None` when `slot` doesn't currently match the caller's expected
+/// config (see `get_biome_region`'s doc) — callers should treat that as "no
+/// spawn known yet" rather than drawing a marker at a stale/wrong (0, 0).
+pub fn get_spawn(slot: i32, key: GeneratorKey) -> Option<(i32, i32)> {
     let mut x = 0i32;
     let mut z = 0i32;
     let _guard = lock_cubiomes();
+    if !slot_matches_locked(slot, key) { return None; }
     unsafe { cm_get_spawn(slot, &mut x, &mut z) };
-    (x, z)
+    Some((x, z))
 }
 
 #[derive(Deserialize)]
 pub struct BiomeSamplePoint { pub x: i32, pub z: i32 }
 
-/// Batched surface-biome sampling along an arbitrary set of points — one
-/// CUBIOMES_LOCK acquisition for the whole batch, instead of one per point.
-/// Used to classify long map-drawn lines (Route Planner boat legs) without
-/// paying per-point IPC + mutex overhead for each sample. Samples at the
-/// approximate surface height (same as the hover HUD) — a fixed-Y sample sits
-/// inside the terrain under tall peaks and misreads as cave biomes, blanking
-/// the classification. Uses the raw FFI calls, not the safe wrappers: the lock
-/// is held once for the whole batch and the wrappers would deadlock re-taking it.
-pub fn get_surface_biomes_at_points(slot: i32, points: &[BiomeSamplePoint]) -> Vec<i32> {
+/// Batched surface-biome sampling (one CUBIOMES_LOCK acquisition for the whole
+/// batch) used to classify map-drawn lines like Route Planner boat legs. Samples
+/// at the approximate surface height — a fixed Y sits inside terrain under tall
+/// peaks and misreads as cave biomes. Uses raw FFI calls directly since the safe
+/// wrappers would deadlock re-taking the already-held lock.
+pub fn get_surface_biomes_at_points(
+    slot: i32, key: GeneratorKey,
+    points: &[BiomeSamplePoint],
+) -> Vec<i32> {
     const CAVE_BIOMES: &[i32] = &[174, 175, 183, 187]; // dripstone_caves, lush_caves, deep_dark, sulfur_caves
     let _guard = lock_cubiomes();
+    if !slot_matches_locked(slot, key) {
+        return vec![-1; points.len()];
+    }
     points.iter().map(|p| {
         let mut buf = [0i32; 1];
         let mut h = f32::NAN;
@@ -139,10 +186,12 @@ pub struct BiomeRegionResult {
 
 #[tauri::command]
 pub async fn cubiomes_get_biomes(
-    slot: i32, x: i32, z: i32, width: i32, height: i32, scale: i32,
+    slot: i32, seed_low: i32, seed_high: i32, dimension: i32, world_flags: i32, mc_version: i32,
+    x: i32, z: i32, width: i32, height: i32, scale: i32,
 ) -> Option<BiomeRegionResult> {
+    let key = GeneratorKey { seed_low, seed_high, dimension, world_flags, mc_version };
     tauri::async_runtime::spawn_blocking(move || {
-        get_biome_region(slot, x, z, width, height, scale)
+        get_biome_region(slot, key, x, z, width, height, scale)
             .map(|biomes| BiomeRegionResult { biomes, width, height })
     }).await.ok().flatten()
 }
@@ -151,44 +200,57 @@ pub async fn cubiomes_get_biomes(
 /// y is in cubiomes biome space: Minecraft block Y divided by 4 (for scale > 1).
 #[tauri::command]
 pub async fn cubiomes_get_biomes_at(
-    slot: i32, x: i32, z: i32, width: i32, height: i32, scale: i32, y: i32,
+    slot: i32, seed_low: i32, seed_high: i32, dimension: i32, world_flags: i32, mc_version: i32,
+    x: i32, z: i32, width: i32, height: i32, scale: i32, y: i32,
 ) -> Option<BiomeRegionResult> {
+    let key = GeneratorKey { seed_low, seed_high, dimension, world_flags, mc_version };
     tauri::async_runtime::spawn_blocking(move || {
-        get_biome_region_at(slot, x, z, width, height, scale, y)
+        get_biome_region_at(slot, key, x, z, width, height, scale, y)
             .map(|biomes| BiomeRegionResult { biomes, width, height })
     }).await.ok().flatten()
 }
 
-/// Return the biome ID at (x, z) appropriate for the given display mode.
-/// "surface"     → 3D query at the approximate surface height. A fixed-Y query
-///                 (the old y=64 default) lands *inside* the terrain under tall
-///                 peaks (surface Y > ~150) and resolves to cave biomes, which
-///                 the surface filter then blanks out.
-/// "underground" → 3D query at Y -8 (block Y -32); returns -1 if not a cave biome.
-/// "deep"        → 3D query at Y -13 (block Y -52); returns -1 if not a cave biome.
-/// Any other mode (nether, end, etc.) → query at the generator default (Y 64).
+/// Cave-biome IDs recognized by the underground scan (tile render + hover
+/// query) — kept in one place since both need to agree on what counts.
+pub const CAVE_BIOME_IDS: &[i32] = &[174, 175, 183, 187]; // dripstone_caves, lush_caves, deep_dark, sulfur_caves
+
+/// Biome-space Y levels (block_y / 4) sampled for the "underground" view,
+/// shallowest first. Cave biomes aren't confined to one Y (dripstone/lush skew
+/// shallow, deep dark skews deep), so a single fixed sample used to miss
+/// whichever range it wasn't pointed at.
+pub const UNDERGROUND_Y_LEVELS: &[i32] = &[5, 1, -3, -7, -11, -15]; // block Y 20, 4, -12, -28, -44, -60
+
+/// Biome ID at (x, z) for the given display mode. "surface" queries at the
+/// approximate surface height (a fixed Y=64 lands inside terrain under tall
+/// peaks and misreads as cave biomes). "underground" walks UNDERGROUND_Y_LEVELS
+/// shallowest-first for the first cave-biome hit below the surface. Other modes
+/// query at the generator default (Y 64).
 #[tauri::command]
-pub async fn cubiomes_get_hover_biome(slot: i32, x: i32, z: i32, mode: String) -> i32 {
-    const CAVE_BIOMES: &[i32] = &[174, 175, 183, 187]; // dripstone_caves, lush_caves, deep_dark, sulfur_caves
+pub async fn cubiomes_get_hover_biome(
+    slot: i32, seed_low: i32, seed_high: i32, dimension: i32, world_flags: i32, mc_version: i32,
+    x: i32, z: i32, mode: String,
+) -> i32 {
+    let key = GeneratorKey { seed_low, seed_high, dimension, world_flags, mc_version };
     tauri::async_runtime::spawn_blocking(move || {
+        let hr = |x: i32, z: i32, w: i32, h: i32| get_height_region(slot, key, x, z, w, h);
+        let br = |x: i32, z: i32| get_biome_region(slot, key, x, z, 1, 1, 1);
+        let bra = |x: i32, z: i32, y: i32| get_biome_region_at(slot, key, x, z, 1, 1, 1, y);
         match mode.as_str() {
             "surface" => {
-                let surface_y = get_height_region(slot, x >> 2, z >> 2, 1, 1)
+                let surface_y = hr(x >> 2, z >> 2, 1, 1)
                     .and_then(|v| v.into_iter().next())
                     .filter(|h| h.is_finite())
                     .map(|h| h.round() as i32 + 1);
                 let id = match surface_y {
-                    Some(y) => get_biome_region_at(slot, x, z, 1, 1, 1, y),
-                    None    => get_biome_region(slot, x, z, 1, 1, 1),
+                    Some(y) => bra(x, z, y),
+                    None    => br(x, z),
                 }
                 .and_then(|v| v.into_iter().next())
                 .unwrap_or(-1);
-                // Height is an estimate; a cave pocket at the sampled Y is
-                // possible near entrances. One retry above, then report
-                // whatever is there rather than blanking the HUD.
-                if CAVE_BIOMES.contains(&id) {
+                // Estimated height can land in a cave pocket near entrances; retry once above.
+                if CAVE_BIOME_IDS.contains(&id) {
                     if let Some(y) = surface_y {
-                        return get_biome_region_at(slot, x, z, 1, 1, 1, y + 8)
+                        return bra(x, z, y + 8)
                             .and_then(|v| v.into_iter().next())
                             .unwrap_or(id);
                     }
@@ -196,45 +258,56 @@ pub async fn cubiomes_get_hover_biome(slot: i32, x: i32, z: i32, mode: String) -
                 id
             }
             "underground" => {
-                let id = get_biome_region_at(slot, x, z, 1, 1, 1, -8)
+                let surface_y = hr(x >> 2, z >> 2, 1, 1)
                     .and_then(|v| v.into_iter().next())
-                    .unwrap_or(-1);
-                if CAVE_BIOMES.contains(&id) { id } else { -1 }
-            }
-            "deep" => {
-                let id = get_biome_region_at(slot, x, z, 1, 1, 1, -13)
-                    .and_then(|v| v.into_iter().next())
-                    .unwrap_or(-1);
-                if CAVE_BIOMES.contains(&id) { id } else { -1 }
+                    .filter(|h| h.is_finite())
+                    .map(|h| h.round() as i32);
+                UNDERGROUND_Y_LEVELS.iter()
+                    .filter(|&&y_biome| surface_y.is_none_or(|sy| y_biome * 4 < sy))
+                    .find_map(|&y_biome| {
+                        let id = bra(x, z, y_biome).and_then(|v| v.into_iter().next())?;
+                        CAVE_BIOME_IDS.contains(&id).then_some(id)
+                    })
+                    .unwrap_or(-1)
             }
             _ => {
-                let id = get_biome_region(slot, x, z, 1, 1, 1)
-                    .and_then(|v| v.into_iter().next())
-                    .unwrap_or(-1);
-                if CAVE_BIOMES.contains(&id) { -1 } else { id }
+                let id = br(x, z).and_then(|v| v.into_iter().next()).unwrap_or(-1);
+                if CAVE_BIOME_IDS.contains(&id) { -1 } else { id }
             }
         }
     }).await.unwrap_or(-1)
 }
 
 #[tauri::command]
-pub async fn cubiomes_get_biomes_along_line(slot: i32, points: Vec<BiomeSamplePoint>) -> Vec<i32> {
+pub async fn cubiomes_get_biomes_along_line(
+    slot: i32, seed_low: i32, seed_high: i32, dimension: i32, world_flags: i32, mc_version: i32,
+    points: Vec<BiomeSamplePoint>,
+) -> Vec<i32> {
+    let key = GeneratorKey { seed_low, seed_high, dimension, world_flags, mc_version };
     tauri::async_runtime::spawn_blocking(move || {
-        get_surface_biomes_at_points(slot, &points)
+        get_surface_biomes_at_points(slot, key, &points)
     }).await.unwrap_or_default()
 }
 
+/// `None` when `slot`'s config doesn't match — the frontend treats that as
+/// "no spawn known yet" rather than drawing a marker at (0, 0).
 #[tauri::command]
-pub async fn cubiomes_get_spawn(slot: i32) -> [i32; 2] {
+pub async fn cubiomes_get_spawn(
+    slot: i32, seed_low: i32, seed_high: i32, dimension: i32, world_flags: i32, mc_version: i32,
+) -> Option<[i32; 2]> {
+    let key = GeneratorKey { seed_low, seed_high, dimension, world_flags, mc_version };
     tauri::async_runtime::spawn_blocking(move || {
-        let (x, z) = get_spawn(slot);
-        [x, z]
-    }).await.unwrap_or([0, 0])
+        get_spawn(slot, key).map(|(x, z)| [x, z])
+    }).await.ok().flatten()
 }
 
 #[tauri::command]
-pub async fn cubiomes_get_height_region(slot: i32, x: i32, z: i32, w: i32, h: i32) -> Option<Vec<f32>> {
+pub async fn cubiomes_get_height_region(
+    slot: i32, seed_low: i32, seed_high: i32, dimension: i32, world_flags: i32, mc_version: i32,
+    x: i32, z: i32, w: i32, h: i32,
+) -> Option<Vec<f32>> {
+    let key = GeneratorKey { seed_low, seed_high, dimension, world_flags, mc_version };
     tauri::async_runtime::spawn_blocking(move || {
-        get_height_region(slot, x, z, w, h)
+        get_height_region(slot, key, x, z, w, h)
     }).await.ok().flatten()
 }

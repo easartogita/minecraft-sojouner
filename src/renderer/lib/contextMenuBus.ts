@@ -1,16 +1,9 @@
 import L from 'leaflet'
 
 /**
- * Module-level bus for marker right-clicks.
- *
- * Leaflet markers are created imperatively inside hook callbacks — they can't
- * easily accept a React prop for "open context menu".  Instead the marker's
- * contextmenu handler calls `emitMarkerMenu`, and MapView (which owns the
- * context-menu state) has registered a handler via `setMarkerMenuHandler`.
- *
- * Use `attachMarkerContextMenu` to bind the handler to a marker — it handles
- * preventDefault + stopPropagation automatically so callers only supply the
- * emit payload.
+ * Module-level bus for marker right-clicks. Leaflet markers are created imperatively
+ * inside hook callbacks and can't accept a React prop, so the marker's contextmenu
+ * handler calls `emitMarkerMenu` and MapView registers a handler via `setMarkerMenuHandler`.
  */
 
 export interface MarkerMenuEmit {
@@ -30,11 +23,8 @@ let _handler: Handler | null = null
 export function setMarkerMenuHandler(fn: Handler | null): void { _handler = fn }
 export function emitMarkerMenu(opts: MarkerMenuEmit): void      { _handler?.(opts) }
 
-/**
- * Attach a contextmenu listener to a Leaflet marker.
- * Handles preventDefault + stopPropagation; callers provide only the
- * emit payload (everything except screenX/screenY which are taken from the event).
- */
+/** Attach a contextmenu listener to a Leaflet marker; handles preventDefault +
+ *  stopPropagation, callers supply only the payload minus screenX/screenY. */
 export function attachMarkerContextMenu(
   marker: L.Marker,
   getPayload: () => Omit<MarkerMenuEmit, 'screenX' | 'screenY'>,

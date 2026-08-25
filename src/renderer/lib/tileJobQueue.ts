@@ -1,3 +1,5 @@
+import * as tileStats from './tileStats'
+
 /**
  * Evict the oldest `evictCount` entries from a Map when it exceeds `maxSize`.
  * Maps preserve insertion order, so the first entries are the oldest.
@@ -12,30 +14,21 @@ export function evictCache<K, V>(map: Map<K, V>, maxSize: number, evictCount = 4
   }
 }
 
-// Priority queue for tile render jobs.
-// Without throttling, all ~30 visible tiles start simultaneously when the map
-// settles: they burst WASM/IPC calls then flood the worker queue. A priority
-// queue fixes both problems:
-//   • Only maxActive tiles run concurrently — main thread stays responsive.
-//   • Tiles closest to the viewport centre render first — map fills in naturally.
-//   • Pending items can be cancelled before they ever touch WASM/IPC
-//     (e.g. when tileunload fires because a tile scrolled out of view).
+// Priority queue for tile render jobs: without it, all visible tiles would burst
+// IPC calls simultaneously when the map settles. Caps concurrency, renders tiles
+// closest to viewport centre first, and lets pending jobs cancel before they touch IPC.
 
 export interface TileJob {
   id:       number
   priority: number   // squared tile-distance from map centre; lower = sooner
   status:   'pending' | 'active' | 'cancelled'
   run:      () => void
-  // Abort an already-running fetch (e.g. signal the Rust side to bail). Set by
-  // the consumer after enqueue. The job still calls release() when it settles.
+  // Signals the Rust side to bail on an in-flight fetch; job still calls release() when it settles.
   abort?:   () => void
 }
 
-// A point-in-time view of one queue, for the debug panel / HUD. `active` +
-// `pending` = `size`. The cumulative counters (`started`/`completed`/`cancelled`)
-// persist across drains so a leak — e.g. a torn-down layer whose backlog never
-// stopped feeding the backend — is visible as `started` climbing while nothing
-// is on screen.
+// Point-in-time queue view for the debug panel. Cumulative counters persist across
+// drains so a leak (a torn-down layer still feeding the backend) shows as `started` climbing.
 export interface QueueSnapshot {
   name:      string
   active:    number
@@ -47,9 +40,8 @@ export interface QueueSnapshot {
   cancelled: number
 }
 
-// Every queue self-registers here on construction so the debug panel and the
-// visibility-pause handler can enumerate them without each call site wiring one
-// up by hand (which is how the two orphan queues went invisible before).
+// Every queue self-registers here so the debug panel / visibility-pause handler
+// can enumerate them without each call site wiring one up by hand.
 const registry: TileJobQueue[] = []
 export function getAllQueues(): readonly TileJobQueue[] { return registry }
 
@@ -103,8 +95,7 @@ export class TileJobQueue {
   cancel(job: TileJob) {
     if (job.status === 'cancelled') return
     if (job.status === 'active') {
-      // Already running: ask it to bail. It still calls release() when it settles,
-      // so activeJobs accounting stays correct — just mark it so we don't re-run.
+      // Already running: mark cancelled so it isn't re-run; it still calls release() on settle.
       job.status = 'cancelled'
       this.cancelledTotal++
       job.abort?.()
@@ -117,19 +108,15 @@ export class TileJobQueue {
     this.onChange?.()
   }
 
-  // Drop the entire backlog and abort everything in flight. Called when a layer
-  // is torn down (toggled off / world switched) so its queued jobs stop feeding
-  // the backend instead of draining one-by-one through cubiomes long after the
-  // layer is gone — the cause of CPU staying pegged "while doing nothing".
-  // Active jobs still call release() when their (now-aborted) fetch settles, so
-  // the count converges to zero on its own.
+  // Drop the backlog and abort in-flight jobs. Called on layer teardown so queued jobs
+  // stop feeding the backend instead of draining through cubiomes after the layer is gone.
   cancelAll() {
     for (const job of this.queue) {
       if (job.status !== 'cancelled') { job.status = 'cancelled'; this.cancelledTotal++ }
     }
     this.queue = []
-    // Snapshot before aborting: an abort could settle a fetch that calls
-    // release() synchronously, which mutates activeJobs mid-iteration.
+    // Snapshot before aborting: an abort can settle a fetch that calls release()
+    // synchronously, mutating activeJobs mid-iteration.
     for (const job of [...this.activeJobs]) {
       if (job.status !== 'cancelled') { job.status = 'cancelled'; this.cancelledTotal++ }
       job.abort?.()
@@ -138,10 +125,8 @@ export class TileJobQueue {
   }
 
   release() {
-    // We don't get the job identity here (consumers call queue.release() from
-    // their settle callbacks), so drop the oldest still-active entry. Order
-    // doesn't matter for the count or the abort set — every active job releases
-    // exactly once. Any it leaves behind are pruned by the size check.
+    // No job identity available here (called from settle callbacks), so drop the
+    // oldest active entry — order doesn't matter since every active job releases exactly once.
     const first = this.activeJobs.values().next()
     if (!first.done) this.activeJobs.delete(first.value)
     this.completed++
@@ -166,4 +151,28 @@ export class TileJobQueue {
       job.run()
     }
   }
+}
+
+// Live+static queue/cache pair shared by the overlay layers.
+export interface OverlayQueuePair {
+  liveQueue: TileJobQueue
+  liveCache?: Map<string, ImageData | string>
+  staticQueue: TileJobQueue
+  staticCache: Map<string, ImageData | string>
+}
+
+export function createOverlayQueuePair(
+  key: string, label: string, className: string,
+  opts: { liveCache?: boolean } = {},
+): OverlayQueuePair {
+  const liveQueue = new TileJobQueue(4, () => tileStats.notify(), key)
+  const liveCache = opts.liveCache === false ? undefined : new Map<string, ImageData | string>()
+  const staticQueue = new TileJobQueue(4, () => tileStats.notify(), `${key}/static`)
+  const staticCache = new Map<string, ImageData | string>()
+  tileStats.registerOverlay({
+    key, label, className,
+    queues: [liveQueue, staticQueue],
+    caches: liveCache ? [liveCache, staticCache] : [staticCache],
+  })
+  return { liveQueue, liveCache, staticQueue, staticCache }
 }

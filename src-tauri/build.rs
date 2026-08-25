@@ -17,6 +17,24 @@ fn collect_c_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 fn main() {
     tauri_build::build();
 
+    // ── static-site bundle ───────────────────────────────────────────────────
+    // static_site_assets.rs embeds ../dist-site/ (the `vite build --config
+    // vite.site.config.ts` output) into the binary via RustEmbed, so a static
+    // export never depends on that directory existing next to the packaged
+    // app. The real pipeline (`npm run build`, via tauri.conf.json's
+    // beforeBuildCommand) always runs `npm run build:site` before `cargo
+    // build` gets here — but a bare `cargo build`/`cargo check`/rust-analyzer
+    // run skips that, and RustEmbed's `#[folder = ...]` hard-fails to compile
+    // if the folder is missing. Seed a placeholder so those keep working.
+    let dist_site = std::path::Path::new("../dist-site");
+    if !dist_site.join("index.html").exists() {
+        std::fs::create_dir_all(dist_site).expect("failed to create ../dist-site placeholder");
+        std::fs::write(
+            dist_site.join("index.html"),
+            "<!doctype html><title>Sojourner</title><body>Static site bundle not built — run `npm run build:site`.</body>",
+        ).expect("failed to write ../dist-site/index.html placeholder");
+    }
+
     // ── cubiomes ──────────────────────────────────────────────────────────────
     println!("cargo:rerun-if-changed=cubiomes_bridge.c");
 
@@ -51,10 +69,27 @@ fn main() {
     println!("cargo:rerun-if-changed={cubiomes}/loot");
     println!("cargo:rerun-if-changed={cubiomes}/features");
 
-    let mut build = cc::Build::new();
-    build.include(cubiomes).file("cubiomes_bridge.c");
+    // Split in two: our own cubiomes_bridge.c keeps full warnings (it's ours
+    // to fix — e.g. the missing-stdio.h bug this caught before), the vendored
+    // cubiomes/loot sources have theirs fully suppressed — a fork upstream
+    // (xpple) is already working through those, not ours to chase in the
+    // meantime. bridge.c still #includes vendored headers directly though
+    // (loot_functions.h, features/ore.h, ...), and their static-inline
+    // functions compile as part of whichever translation unit includes them
+    // — so bridge.c needs the same two specific warning classes suppressed
+    // too, just narrowly (not a blanket .warnings(false)) so anything else
+    // still surfaces there. Same compile settings otherwise; two cc::Build
+    // instances just means two archives for Cargo to link, same as
+    // leveldb_bridge vs the leveldb C++ sources below.
+    let mut bridge = cc::Build::new();
+    bridge.include(cubiomes).file("cubiomes_bridge.c")
+        .flag_if_supported("-Wno-unused-parameter")
+        .flag_if_supported("-Wno-unused-variable");
+
+    let mut vendor = cc::Build::new();
+    vendor.include(cubiomes).warnings(false);
     for src in cubiomes_sources {
-        build.file(format!("{cubiomes}/{src}"));
+        vendor.file(format!("{cubiomes}/{src}"));
     }
 
     // Loot library (cJSON + per-structure loot tables) — required by
@@ -63,31 +98,34 @@ fn main() {
     let mut loot_sources = Vec::new();
     collect_c_files(std::path::Path::new(&format!("{cubiomes}/loot")), &mut loot_sources);
     for f in &loot_sources {
-        build.file(f);
+        vendor.file(f);
     }
 
-    if asan {
-        // -fsanitize=address and friends are GCC/Clang flags; MSVC's ASan uses
-        // a different flag (/fsanitize=address) and doesn't support the other
-        // two at all. Fail loudly here instead of either a cryptic "unrecognized
-        // command-line option" from the compiler or silently building without
-        // instrumentation (flag_if_supported would just drop them unnoticed,
-        // which is worse than not building at all for a debugging build).
-        if target_os == "windows" {
-            panic!("CUBIOMES_ASAN is not supported when building for Windows/MSVC — \
-                    -fsanitize=address (GCC/Clang) has no equivalent here. Unset \
-                    CUBIOMES_ASAN, or build under WSL/MSYS2 with a GCC/Clang toolchain instead.");
+    for build in [&mut bridge, &mut vendor] {
+        if asan {
+            // -fsanitize=address and friends are GCC/Clang flags; MSVC's ASan uses
+            // a different flag (/fsanitize=address) and doesn't support the other
+            // two at all. Fail loudly here instead of either a cryptic "unrecognized
+            // command-line option" from the compiler or silently building without
+            // instrumentation (flag_if_supported would just drop them unnoticed,
+            // which is worse than not building at all for a debugging build).
+            if target_os == "windows" {
+                panic!("CUBIOMES_ASAN is not supported when building for Windows/MSVC — \
+                        -fsanitize=address (GCC/Clang) has no equivalent here. Unset \
+                        CUBIOMES_ASAN, or build under WSL/MSYS2 with a GCC/Clang toolchain instead.");
+            }
+            build.opt_level(1)
+                .flag("-fsanitize=address")
+                .flag("-fno-omit-frame-pointer")
+                .flag("-fno-optimize-sibling-calls");
+        } else {
+            build.opt_level(3)
+                .flag_if_supported("-ffast-math");
         }
-        build.opt_level(1)
-            .flag("-fsanitize=address")
-            .flag("-fno-omit-frame-pointer")
-            .flag("-fno-optimize-sibling-calls");
-    } else {
-        build.opt_level(3)
-            .flag_if_supported("-ffast-math");
     }
 
-    build.compile("cubiomes");
+    bridge.compile("cubiomes_bridge");
+    vendor.compile("cubiomes");
 
     // ── leveldb + snappy ──────────────────────────────────────────────────────
     // Bedrock Edition uses a Mojang-modified LevelDB with Snappy compression.

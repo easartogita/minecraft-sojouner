@@ -1,19 +1,15 @@
 import { getBiomesAlongLine } from './tauriAPI'
 import { TravelMode } from './travelModes'
+import { GeneratorHandle } from '../hooks/useGenerator'
 
-// Open-ocean biome IDs (cubiomes biomes.h enum) — matches biomeColors.ts's
-// BIOME_COLORS keys for oceans, minus the frozen ones (classified separately
-// below: icebergs make frozen ocean bad for both boating and walking, not
-// interchangeable with open water). Rivers (7, 11) are intentionally excluded:
-// boating/swimming a narrow, current-bearing river is a different reliability
-// case than open ocean.
+// Open-ocean biome IDs (cubiomes biomes.h). Frozen oceans are classified separately
+// (icebergs are bad for both boating and walking). Rivers are excluded — narrow,
+// current-bearing water is a different reliability case than open ocean.
 const OPEN_OCEAN_BIOME_IDS = new Set([0, 24, 44, 45, 46, 47, 48, 49])
 const FROZEN_OCEAN_BIOME_IDS = new Set([10, 50]) // frozen_ocean, deep_frozen_ocean
 
-// Snowy land biomes — deep/powder snow slows walking, same "looks like normal
-// land, isn't actually normal-speed" problem as frozen ocean, just dry instead
-// of wet. `stony_peaks` (182) is deliberately excluded — it's the vanilla-bare,
-// non-snowy peak variant, not snow-covered like its jagged/frozen neighbors.
+// Snowy land biomes slow walking, same problem as frozen ocean but dry instead of wet.
+// `stony_peaks` (182) is excluded — it's the bare, non-snowy peak variant.
 const SNOWY_LAND_BIOME_IDS = new Set([
   12, 13, 26,        // snowy_plains, snowy_mountains, snowy_beach
   30, 31, 158,        // snowy_taiga, snowy_taiga_hills, snowy_taiga_mountains
@@ -51,26 +47,20 @@ function classify(id: number): Classification {
 }
 
 /**
- * Split a leg into contiguous ocean/frozen-ocean/snowy-land/land sub-segments
- * by sampling biome along the line, and map each to the caller's chosen mode
- * for that classification. Ocean/frozen/snow runs shorter than
- * `minSpecialBlocks` fold into `modes.land` — not worth switching mode (or
- * flagging the alert) for a short crossing.
- *
- * Used both ways: a `boat` leg splits into boat/ice/walk/walk (no boat on dry
- * land — snowy or not — and ice blocks a boat same as land does), and a `walk`
- * leg splits into walk/ice/snow/swim (crossing open water on foot without a
- * boat is swim-speed, not walk-speed; frozen ocean and snowy land are both
- * walked *on*, not swum through, but treacherous underfoot either way — see
- * TODO_WAYPOINTS.md).
+ * Split a leg into contiguous ocean/frozen-ocean/snowy-land/land sub-segments by
+ * sampling biome along the line, mapping each to the caller's mode for that class.
+ * Runs shorter than `minSpecialBlocks` fold into `modes.land` — not worth switching
+ * mode for a short crossing. Used for both `boat` legs (splits into boat/ice/walk/walk)
+ * and `walk` legs (splits into walk/ice/snow/swim).
  */
 export async function splitLegByBiome(
-  slot: number,
+  generatorConfig: GeneratorHandle,
   a: { x: number; z: number },
   b: { x: number; z: number },
   modes: BiomeSplitModes,
   minSpecialBlocks: number,
 ): Promise<RouteSubSegment[]> {
+  const { slot, seedBig, dimId, worldFlags, mcVersion } = generatorConfig
   const legDist = dist(a, b)
   const wholeLeg: RouteSubSegment[] = [{ from: a, to: b, mode: modes.ocean, distance: legDist }]
   if (legDist === 0) return wholeLeg
@@ -84,7 +74,7 @@ export async function splitLegByBiome(
 
   let ids: Int32Array
   try {
-    ids = await getBiomesAlongLine(slot, points)
+    ids = await getBiomesAlongLine(slot!, seedBig, dimId, worldFlags, mcVersion, points)
   } catch {
     return wholeLeg // sampling failed — fall back to treating the whole leg as the ocean mode
   }

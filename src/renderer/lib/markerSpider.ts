@@ -1,11 +1,8 @@
 import L from 'leaflet'
 
-// Coincident markers (same X/Z, different Y — e.g. the two stacked chests in an
-// Abandoned Camp) all land on the identical map point, so the lower ones are
-// buried. A MarkerSpider shows a single badge "anchor" at that point; clicking it
-// fans the real markers out (each keeps its own icon/popup/context menu). While
-// fanned, the rest of the map is dimmed and the fan renders in a pane above every
-// other marker, so it reads as one focused group instead of colliding with them.
+// Coincident markers (same X/Z, different Y) land on the identical map point and bury
+// each other. MarkerSpider shows a single badge "anchor" there; clicking it fans the
+// real markers out above a dimmed backdrop so they read as one focused group.
 
 let openSpider: MarkerSpider | null = null
 

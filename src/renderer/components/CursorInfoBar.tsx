@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import type { OreVeinColumn } from '../lib/tauriAPI.types'
 
 interface Props {
   coords: { x: number; z: number } | null
@@ -10,13 +11,13 @@ interface Props {
   caveY?: number | null
   /** true = slime chunk; null = layer is off */
   slimeChunk?: boolean | null
-  /** null = layer is off */
-  oreVeins?: { copperY: number | null; copperSize: number; ironY: number | null; ironSize: number } | null
   localDifficulty?: { specialMultiplier: number; regionalDifficulty: number } | null
+  /** null = layer off, pre-1.18 world, or no vein data for this column */
+  oreVein?: OreVeinColumn | null
 }
 
 export default function CursorInfoBar({
-  coords, biomeName, blockName, terrainY, caveY, slimeChunk, oreVeins, localDifficulty,
+  coords, biomeName, blockName, terrainY, caveY, slimeChunk, localDifficulty, oreVein,
 }: Props) {
   const [copied, setCopied] = useState(false)
 
@@ -37,17 +38,22 @@ export default function CursorInfoBar({
     } catch { /* ignore */ }
   }
 
-  const desc = blockName ?? biomeName
-
-  const chunkDetails: string[] = []
-  if (slimeChunk === true) chunkDetails.push('Slime chunk · Y 0–39')
-  const ORE_SIZE = ['', 'Small', 'Medium', 'Large']
-  if (oreVeins?.copperY != null) chunkDetails.push(`Copper vein · Y ${oreVeins.copperY} · ${ORE_SIZE[oreVeins.copperSize] ?? ''}`)
-  if (oreVeins?.ironY   != null) chunkDetails.push(`Iron vein · Y ${oreVeins.ironY} · ${ORE_SIZE[oreVeins.ironSize] ?? ''}`)
+  // Each row appears only once its layer has data for this position — block/ore-vein
+  // detail only resolves once zoomed in far enough to see individual blocks.
+  const rows: string[] = []
+  if (biomeName) rows.push(biomeName)
+  if (blockName) rows.push(blockName)
+  if (slimeChunk === true) rows.push('Slime chunk · Y 0–39')
   if (localDifficulty != null) {
     const r = localDifficulty.regionalDifficulty.toFixed(2)
     const s = localDifficulty.specialMultiplier.toFixed(2)
-    chunkDetails.push(`Difficulty: ${r} / ${s}`)
+    rows.push(`Difficulty: ${r} / ${s}`)
+  }
+  if (oreVein?.copperCount) {
+    rows.push(`Copper vein · Y ${oreVein.copperMinY}–${oreVein.copperMaxY} · ${oreVein.copperCount} blocks`)
+  }
+  if (oreVein?.ironCount) {
+    rows.push(`Iron vein · Y ${oreVein.ironMinY}–${oreVein.ironMaxY} · ${oreVein.ironCount} blocks`)
   }
 
   return (
@@ -66,11 +72,8 @@ export default function CursorInfoBar({
           {'  '}Z: {coords.z}
         </span>
       )}
-      {!copied && desc && (
-        <span className="cursor-info-desc">{desc}</span>
-      )}
-      {!copied && chunkDetails.map((d, i) => (
-        <span key={i} className="cursor-info-desc">{d}</span>
+      {!copied && rows.map((r, i) => (
+        <span key={i} className="cursor-info-desc">{r}</span>
       ))}
     </div>
   )

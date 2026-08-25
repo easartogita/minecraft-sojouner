@@ -1,6 +1,6 @@
 # Sojourner
 
-A desktop map viewer for Minecraft. Sojourner renders a live, interactive map of your world — biomes, structures, real block colors, cave mode, ore veins, block entities, entities, route planning, and more — read directly from your world files. Supports both **Java** and **Bedrock** editions. The map refreshes automatically whenever the world saves.
+A desktop map viewer for Minecraft. Sojourner renders a live, interactive map of your world — biomes, structures, real block colors, cave mode, ore veins, block entities, entities, route planning, and more — read directly from your world files. Supports both **Java** and **Bedrock** editions. The map refreshes automatically whenever the world saves. Worlds can also be baked to a self-contained static website for sharing.
 
 Built with Tauri 2 + Rust + React + Leaflet. cubiomes is compiled as a native static library and called via Rust FFI. Bedrock worlds are read via LevelDB (Mojang fork) with Snappy decompression.
 
@@ -15,7 +15,7 @@ Bedrock support is functional for block rendering and markers, but two major fea
 - **Biome map** — at low zoom, biome tiles are generated using Java Edition's world generation. For Bedrock worlds the colors will not match the actual world; treat them as approximate terrain guidance only.
 - **Structures** — structure positions are predicted using Java Edition's placement logic. Bedrock uses different seeds and placement rules; most positions will be wrong.
 
-Everything else — block color tiles, cave mode, block entities, entities, POI, ore veins, slime chunks, TIFF export — works correctly for Bedrock.
+Everything else — block color tiles, cave mode, block entities, entities, POI, ore veins, slime chunks, TIFF export, static site export — works correctly for Bedrock. (Local difficulty and the headless `export_cli` are Java-only; the GUI's static site export otherwise supports Bedrock.)
 
 ---
 
@@ -23,14 +23,16 @@ Everything else — block color tiles, cave mode, block entities, entities, POI,
 
 The left edge is an icon **rail** with six collapsible panels:
 
-- **World** — open/recent worlds, seed, dimension, version, world settings, TIFF export
+- **World** — open/recent worlds, dimension, version, world settings, TIFF export, static site export
 - **Layers** — all map overlays, grouped into Surface and Underground, with per-layer opacity
-- **Structures** — a distance-sorted "nearby" list of every predicted structure; click to fly to one
+- **Seed** — the seed value (click to copy), manual/seed-only world entry, and a distance-sorted "nearby" list of every predicted structure; click one to fly to it
 - **World Data** — entities, block entities, and POI (from the save), custom marker groups, and the marker/cave depth Y-window
 - **Saved** — dropped pins and saved routes
 - **Settings** — appearance, UI scale, and behavior
 
 The map itself has a right-click context menu (copy coords, copy `/tp`, cross-dimension coords, center here, drop a pin, start/extend a route, pin the best nearby copper/iron vein) and floating readouts: a cursor info bar, a day/night bar, and a vertical Y-range gauge.
+
+Layers with a minimum render zoom (Markers, Ore Veins, Ore Deposits) show a small "zoom ≥ N" badge next to their toggle that reflects whether they're actually visible right now — muted when off, amber when enabled but too zoomed out to render anything, green once you're zoomed in enough.
 
 ---
 
@@ -43,12 +45,12 @@ The map itself has a right-click context menu (copy coords, copy `/tp`, cross-di
 - **Drag & drop** — drop a `level.dat` or world folder onto the window
 - **Recent worlds** — quick-access list sorted by last modified
 - **Seed-only mode** — enter a seed manually without opening a world file
-- **World type support** — Default, Large Biomes, Amplified, Flat, Single Biome (auto-detected)
+- **World type support** — Default, Large Biomes, Amplified, Flat, Single Biome, Custom (auto-detected)
 
 ### Map rendering
-- **Biome map** — cubiomes-generated biome colors at low zoom; Overworld, Nether, and End *(Java accurate; Bedrock approximate — see above)*
-- **Real block colors** — at zoom ≥ 3, reads actual surface blocks from `.mca` / LevelDB with hillshading and water depth tinting
-- **Cave mode** — underground block colors at a configurable Y depth with adjustable scan window
+- **Biome map** — cubiomes-generated biome colors at low zoom; Overworld, Nether, and End, with real terrain-noise-based hillshading (Overworld and End) *(Java accurate; Bedrock approximate — see above)*
+- **Real block colors** — at zoom ≥ 3 by default (adjustable in Settings), reads actual surface blocks from `.mca` / LevelDB with hillshading and water depth tinting
+- **Cave mode** — underground block colors at a configurable Y depth with adjustable scan window; zoom is restricted to a per-dimension range while active, and springs back to it if you scroll/pinch past the edge instead of hard-blocking
 - **Underground biomes** — biome colors for a subsurface Y slice (a mode of the biome layer)
 - **Tile cache** — rendered tiles cached to disk as PNGs; invalidated automatically on world save
 - **Tile pre-generation** — pre-render all tiles for a configurable radius around spawn so subsequent viewport loads are near-instant
@@ -62,20 +64,20 @@ All cubiomes-supported structures with labels, loot summaries, and variant annot
 
 **End** — End City, End Gateway, End Island
 
-The Structures panel lists them sorted by distance from the player (or origin), grouped by type with per-variant filtering; click any to fly to it.
+The Seed panel lists them sorted by distance from the player (or origin), grouped by type with per-variant filtering; click any to fly to it.
 
 All toggleable from the **Layers** panel, grouped Surface / Underground, each with adjustable opacity.
 
-- **Terrain relief** — hillshade relief computed from cubiomes surface heights
 - **Slime chunks** — Overworld slime chunk grid
-- **Ore veins** — copper and iron ore vein probability per chunk (1.18+), in density or footprint mode
-- **Ore deposits** — individual ore deposits (diamond, gold, redstone, and others) plotted from accurate worldgen; high zoom only
+- **Ore veins** — copper and iron ore vein footprint per chunk (1.18+), real per-column generation at zoom ≥ 5
+- **Ore deposits** — individual ore deposits (diamond, gold, redstone, and others) plotted from accurate worldgen; high zoom only, live app only
 - **Caves & ravines** — carver footprints (cave and ravine columns) from worldgen
-- **Cave entrances** — marks chunk columns with significant cave openings, ravines, and overhangs
 - **Local difficulty** — per-chunk special difficulty multiplier based on inhabited time, world time, and game difficulty
 - **Chunk grid** — 16-block chunk boundary overlay
-- **Region grid** — 512-block region boundary overlay
-- **Spawn radius** — world-spawn radius overlay
+- **Region grid** — 512-block region (`.mca`) boundary overlay
+- **Spawn radius** — 24-block no-spawn and 128-block despawn radius around the *player* (mob spawning/despawning, not the world spawn point)
+- **Spawn chunks** — the always-loaded (2r+1)² chunk square around world spawn, from the `spawnChunkRadius` gamerule (Overworld only)
+- **World border** — the save's configured world border, enforced identically in Overworld and Nether block coordinates; hidden when untouched from vanilla's default
 
 The **Chunk Data** (block-color) layer also outlines which region files actually exist on disk — i.e. where the world has been explored.
 
@@ -94,7 +96,16 @@ Placed by you (in the **Saved** panel):
 
 Always on:
 - **Player marker** — last known in-game position; updates on world save
-- **Spawn marker** — world spawn point with optional spawn radius overlay
+- **Player respawn marker** — each player's bed/respawn-anchor point, when set, shown only in the dimension it's in
+- **Spawn marker** — the world's actual spawn point (from `level.dat`, reflects `/setworldspawn`); also shows the seed's cubiomes-predicted default spawn as a second marker when it differs
+
+### Static site export
+- **Export as website** (World panel) — bakes a self-contained folder of PNG tiles + JSON that runs in any browser, no Sojourner backend required. Pick which dimensions and tile layers to include (biome, underground biome, block-color with/without water, cave mode with baked Y presets, ore veins, carvers, local difficulty); structures, block entities, entities, POI, and custom marker groups are always included. Every zoom level is pre-rendered ahead of time — nothing is generated live in the browser. Works for both Java and Bedrock worlds.
+- **Headless export CLI** (`export_cli`) — runs the same export pipeline with no GUI, for scripted or CI exports. Java worlds only for now. From `src-tauri/`:
+  ```bash
+  cargo run --release --bin export_cli -- --world <name-or-path> --output <dir> [--dimensions overworld,nether,end] [--layers biome,chunk,...]
+  ```
+  Run with `--help` for the full flag list.
 
 ### Other
 - **Dimensions** — Overworld, Nether, End; Nether coordinates shown at 1:8 scale
@@ -212,7 +223,7 @@ npm run build    # production build → src-tauri/target/release/bundle/
 | Zoom | Scroll wheel |
 | Coordinates | Hover — shown bottom-right; click to copy X Z |
 | Context menu | Right-click the map or a marker |
-| Copy seed | Click the seed value in the World panel |
+| Copy seed | Click the seed value in the Seed panel |
 | Jump to player | Press `P` or click **Go to player** |
 | Drop a pin | Ctrl+click on the map, or right-click → **Add pin** |
 | Rename a pin | Click the pin label in the Saved panel |
@@ -223,7 +234,7 @@ npm run build    # production build → src-tauri/target/release/bundle/
 | Toggle slime chunks | `S` (Overworld only) |
 | Toggle cave mode | `C` (requires open world with known player Y) |
 | Toggle chunk data | `D` |
-| Cycle ore veins | `V` (off → density → footprint; 1.18+ Overworld) |
+| Toggle ore veins | `V` (footprint mode; 1.18+ Overworld) |
 | Toggle route planner | `R` |
 | Focus coordinate input | `G` |
 

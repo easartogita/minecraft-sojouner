@@ -5,48 +5,74 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
 use super::{
-    lock_cubiomes,
+    lock_cubiomes, slot_matches_locked, GeneratorKey,
     cm_setup_generator, cm_find_structures, cm_get_strongholds, cm_free_results,
     cm_get_structure_loot, cm_get_structure_chests, cm_free_string, cm_item_name,
     cm_enchantment_name, cm_potion_name_for_effect,
     cm_get_end_gateway_links, seed_parts,
 };
 
+// How cubiomes places each structure type — three distinct mechanisms a single
+// "region_size: Option<i32>" field used to conflate (see bugs-resolved.md).
+enum Placement {
+    /// One salt-offset candidate per `region_size*16`-block region. village and
+    /// ruined_portal_nether also need `region_size_for()`'s version gate on top.
+    RegionGrid(i32),
+    /// Rarity-gated per-chunk roll, not a region grid (desert_well/geode/
+    /// buried_treasure/mineshaft) — kept distinct so it can't be handed a bogus size.
+    DecoratorFeature,
+    /// A ring iterator around the world center — not grid-based at all.
+    StrongholdRing,
+}
+
 struct StructureDef {
     name:        &'static str,
     cubiomes_id: i32,
-    region_size: Option<i32>,  // cubiomes region size; None = stronghold iterator
+    placement:   Placement,
     dimension:   i32,          // 0=overworld, -1=nether, 1=end
 }
 
 const STRUCTURE_DEFS: &[StructureDef] = &[
-    StructureDef { name: "village",              cubiomes_id:  5, region_size: Some(32), dimension:  0 },
-    StructureDef { name: "desert_temple",        cubiomes_id:  1, region_size: Some(32), dimension:  0 },
-    StructureDef { name: "jungle_temple",        cubiomes_id:  2, region_size: Some(32), dimension:  0 },
-    StructureDef { name: "witch_hut",            cubiomes_id:  3, region_size: Some(32), dimension:  0 },
-    StructureDef { name: "igloo",                cubiomes_id:  4, region_size: Some(32), dimension:  0 },
-    StructureDef { name: "ocean_ruins",          cubiomes_id:  6, region_size: Some(20), dimension:  0 },
-    StructureDef { name: "shipwreck",            cubiomes_id:  7, region_size: Some(24), dimension:  0 },
-    StructureDef { name: "ocean_monument",       cubiomes_id:  8, region_size: Some(32), dimension:  0 },
-    StructureDef { name: "mansion",              cubiomes_id:  9, region_size: Some(80), dimension:  0 },
-    StructureDef { name: "outpost",              cubiomes_id: 10, region_size: Some(32), dimension:  0 },
-    StructureDef { name: "ruined_portal",        cubiomes_id: 11, region_size: Some(40), dimension:  0 },
-    StructureDef { name: "ancient_city",         cubiomes_id: 13, region_size: Some(24), dimension:  0 },
-    StructureDef { name: "buried_treasure",      cubiomes_id: 14, region_size: Some(1),  dimension:  0 },
-    StructureDef { name: "mineshaft",            cubiomes_id: 15, region_size: Some(1),  dimension:  0 },
-    StructureDef { name: "desert_well",          cubiomes_id: 16, region_size: Some(40), dimension:  0 },
-    StructureDef { name: "geode",                cubiomes_id: 17, region_size: Some(1),  dimension:  0 },
-    StructureDef { name: "trail_ruins",          cubiomes_id: 23, region_size: Some(34), dimension:  0 },
-    StructureDef { name: "trial_chambers",       cubiomes_id: 24, region_size: Some(24), dimension:  0 },
-    StructureDef { name: "abandoned_camp",       cubiomes_id: 25, region_size: Some(34), dimension:  0 },
-    StructureDef { name: "stronghold",           cubiomes_id: -1, region_size: None,     dimension:  0 },
-    StructureDef { name: "fortress",             cubiomes_id: 18, region_size: Some(27), dimension: -1 },
-    StructureDef { name: "bastion",              cubiomes_id: 19, region_size: Some(27), dimension: -1 },
-    StructureDef { name: "ruined_portal_nether", cubiomes_id: 12, region_size: Some(25), dimension: -1 },
-    StructureDef { name: "end_city",             cubiomes_id: 20, region_size: Some(20), dimension:  1 },
-    StructureDef { name: "end_gateway",          cubiomes_id: 21, region_size: Some(1),  dimension:  1 },
-    StructureDef { name: "end_island",           cubiomes_id: 22, region_size: Some(1),  dimension:  1 },
+    StructureDef { name: "village",              cubiomes_id:  5, placement: Placement::RegionGrid(34), dimension:  0 },
+    StructureDef { name: "desert_temple",        cubiomes_id:  1, placement: Placement::RegionGrid(32), dimension:  0 },
+    StructureDef { name: "jungle_temple",        cubiomes_id:  2, placement: Placement::RegionGrid(32), dimension:  0 },
+    StructureDef { name: "witch_hut",            cubiomes_id:  3, placement: Placement::RegionGrid(32), dimension:  0 },
+    StructureDef { name: "igloo",                cubiomes_id:  4, placement: Placement::RegionGrid(32), dimension:  0 },
+    StructureDef { name: "ocean_ruins",          cubiomes_id:  6, placement: Placement::RegionGrid(20), dimension:  0 },
+    StructureDef { name: "shipwreck",            cubiomes_id:  7, placement: Placement::RegionGrid(24), dimension:  0 },
+    StructureDef { name: "ocean_monument",       cubiomes_id:  8, placement: Placement::RegionGrid(32), dimension:  0 },
+    StructureDef { name: "mansion",              cubiomes_id:  9, placement: Placement::RegionGrid(80), dimension:  0 },
+    StructureDef { name: "outpost",              cubiomes_id: 10, placement: Placement::RegionGrid(32), dimension:  0 },
+    StructureDef { name: "ruined_portal",        cubiomes_id: 11, placement: Placement::RegionGrid(40), dimension:  0 },
+    StructureDef { name: "ancient_city",         cubiomes_id: 13, placement: Placement::RegionGrid(24), dimension:  0 },
+    StructureDef { name: "buried_treasure",      cubiomes_id: 14, placement: Placement::DecoratorFeature, dimension:  0 },
+    StructureDef { name: "mineshaft",            cubiomes_id: 15, placement: Placement::DecoratorFeature, dimension:  0 },
+    StructureDef { name: "desert_well",          cubiomes_id: 16, placement: Placement::DecoratorFeature, dimension:  0 },
+    StructureDef { name: "geode",                cubiomes_id: 17, placement: Placement::DecoratorFeature, dimension:  0 },
+    StructureDef { name: "trail_ruins",          cubiomes_id: 24, placement: Placement::RegionGrid(34), dimension:  0 },
+    StructureDef { name: "trial_chambers",       cubiomes_id: 25, placement: Placement::RegionGrid(34), dimension:  0 },
+    StructureDef { name: "abandoned_camp",       cubiomes_id: 26, placement: Placement::RegionGrid(37), dimension:  0 },
+    StructureDef { name: "stronghold",           cubiomes_id: -1, placement: Placement::StrongholdRing, dimension:  0 },
+    StructureDef { name: "fortress",             cubiomes_id: 18, placement: Placement::RegionGrid(27), dimension: -1 },
+    StructureDef { name: "bastion",              cubiomes_id: 19, placement: Placement::RegionGrid(27), dimension: -1 },
+    StructureDef { name: "ruined_portal_nether", cubiomes_id: 12, placement: Placement::RegionGrid(40), dimension: -1 },
+    StructureDef { name: "end_city",             cubiomes_id: 21, placement: Placement::RegionGrid(20), dimension:  1 },
+    StructureDef { name: "end_gateway",          cubiomes_id: 22, placement: Placement::RegionGrid(1),  dimension:  1 },
+    StructureDef { name: "end_island",           cubiomes_id: 23, placement: Placement::RegionGrid(1),  dimension:  1 },
 ];
+
+// cubiomes gates region_size on version for these two; Sojourner's MC_1_16 bucket
+// covers both real 1.16 and 1.17 saves, so a single hardcoded value would be wrong
+// for one side. See bugs-resolved.md.
+const MC_1_17: i32 = 21;
+
+fn region_size_for(def: &StructureDef, current: i32, mc_version: i32) -> i32 {
+    match def.name {
+        "village" if mc_version <= MC_1_17               => 32,
+        "ruined_portal_nether" if mc_version <= MC_1_17  => 25,
+        _ => current,
+    }
+}
 
 #[derive(Serialize)]
 pub struct StructureHit {
@@ -101,47 +127,51 @@ pub fn find_all_structures(
         if def.dimension != dimension { continue; }
         if !enabled.iter().any(|e| e == def.name) { continue; }
 
-        if def.region_size.is_none() {
-            let mut buf = vec![0i32; 256];
-            let count = unsafe { cm_get_strongholds(slot, 128, buf.as_mut_ptr()) };
-            for i in 0..count as usize {
-                results.push(StructureHit {
-                    struct_type: def.name.to_string(),
-                    x:     buf[i * 2],
-                    z:     buf[i * 2 + 1],
-                    flags: 0,
-                    variant_tag: None, variant_color: None,
-                });
+        let region_size = match def.placement {
+            Placement::StrongholdRing => {
+                let mut buf = vec![0i32; 256];
+                let count = unsafe { cm_get_strongholds(slot, 128, buf.as_mut_ptr()) };
+                for i in 0..count as usize {
+                    results.push(StructureHit {
+                        struct_type: def.name.to_string(),
+                        x:     buf[i * 2],
+                        z:     buf[i * 2 + 1],
+                        flags: 0,
+                        variant_tag: None, variant_color: None,
+                    });
+                }
+                continue;
             }
-        } else {
-            let region_size   = def.region_size.unwrap();
-            let region_blocks = region_size * 16;
-            let rx0 = bx0.div_euclid(region_blocks) - 1;
-            let rz0 = bz0.div_euclid(region_blocks) - 1;
-            let rx1 = bx1.div_euclid(region_blocks) + 1;
-            let rz1 = bz1.div_euclid(region_blocks) + 1;
-            if (rx1 - rx0 + 1).saturating_mul(rz1 - rz0 + 1) > 65536 { continue; }
+            Placement::RegionGrid(size) => region_size_for(def, size, mc_version),
+            Placement::DecoratorFeature => 1,
+        };
 
-            let ptr = unsafe { cm_find_structures(slot, def.cubiomes_id, rx0, rz0, rx1, rz1) };
-            if ptr.is_null() { continue; }
-            let count = unsafe { *ptr } as usize;
-            for i in 0..count {
-                let base  = 1 + i * 3;
-                let flags = unsafe { *ptr.add(base + 2) };
-                let (vtag, vcolor) = resolve_variant(def.name, flags)
-                    .map(|(t, c)| (Some(t.to_string()), Some(c.to_string())))
-                    .unwrap_or((None, None));
-                results.push(StructureHit {
-                    struct_type:   def.name.to_string(),
-                    x:             unsafe { *ptr.add(base) },
-                    z:             unsafe { *ptr.add(base + 1) },
-                    flags,
-                    variant_tag:   vtag,
-                    variant_color: vcolor,
-                });
-            }
-            unsafe { cm_free_results(ptr) };
+        let region_blocks = region_size * 16;
+        let rx0 = bx0.div_euclid(region_blocks) - 1;
+        let rz0 = bz0.div_euclid(region_blocks) - 1;
+        let rx1 = bx1.div_euclid(region_blocks) + 1;
+        let rz1 = bz1.div_euclid(region_blocks) + 1;
+        if (rx1 - rx0 + 1).saturating_mul(rz1 - rz0 + 1) > 65536 { continue; }
+
+        let ptr = unsafe { cm_find_structures(slot, def.cubiomes_id, rx0, rz0, rx1, rz1) };
+        if ptr.is_null() { continue; }
+        let count = unsafe { *ptr } as usize;
+        for i in 0..count {
+            let base  = 1 + i * 3;
+            let flags = unsafe { *ptr.add(base + 2) };
+            let (vtag, vcolor) = resolve_variant(def.name, flags)
+                .map(|(t, c)| (Some(t.to_string()), Some(c.to_string())))
+                .unwrap_or((None, None));
+            results.push(StructureHit {
+                struct_type:   def.name.to_string(),
+                x:             unsafe { *ptr.add(base) },
+                z:             unsafe { *ptr.add(base + 1) },
+                flags,
+                variant_tag:   vtag,
+                variant_color: vcolor,
+            });
         }
+        unsafe { cm_free_results(ptr) };
     }
 
     results
@@ -154,13 +184,8 @@ pub fn find_all_structures(
 /// user has enabled.
 const STRUCT_TILE_BLOCKS: i32 = 512;
 
-// Bump whenever cm_find_structures' selection logic changes (viability checks
-// added/removed, etc.) so previously cached tiles — computed under the old,
-// possibly-wrong logic — are treated as a cache miss and recomputed instead of
-// silently served stale forever. v2: added the End City / 1.18+ terrain
-// checks (isViableEndCityTerrain, isViableStructureTerrain) that were missing,
-// which had been over-reporting End Cities (and desert temples/jungle
-// temples/mansions on 1.18+) at biome-valid but terrain-invalid positions.
+// Bump whenever cm_find_structures' selection logic changes, so tiles cached under
+// the old logic are treated as a miss and recomputed. History: bugs-resolved.md.
 const STRUCT_CACHE_VERSION: i32 = 2;
 
 #[derive(Serialize, Deserialize)]
@@ -240,7 +265,7 @@ fn compute_tile(seed: i64, mc_version: i32, dim: i32, world_flags: i32, tx: i32,
     let bz0 = tz * STRUCT_TILE_BLOCKS;
     let bz1 = (tz + 1) * STRUCT_TILE_BLOCKS;
     let all: Vec<String> = STRUCTURE_DEFS.iter()
-        .filter(|d| d.dimension == dim && d.region_size.is_some())
+        .filter(|d| d.dimension == dim && !matches!(d.placement, Placement::StrongholdRing))
         .map(|d| d.name.to_string())
         .collect();
     find_all_structures(seed, mc_version, dim, world_flags, bx0, bz0, bx1, bz1, &all)
@@ -331,14 +356,11 @@ pub struct LootItem {
     pub chest_z: i32,
     pub item:    String,
     pub count:   i32,
-    /// Resolved potion name (e.g. "healing") when a `set_potion` loot function
-    /// applied one — cubiomes tracks the raw mob effect, not the potion's own
-    /// id, so this is recovered by matching back against the potion table.
+    /// Resolved potion name from a `set_potion` loot function — cubiomes tracks the
+    /// raw mob effect, not the potion id, so this is matched back against the potion table.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub potion: Option<String>,
-    // Always serialized (even as `[]`) — the frontend's LootItem.enchantments
-    // is a required array field, not optional; omitting it when empty would
-    // leave it `undefined` there and crash formatLootItem's `.length` check.
+    // Always serialized, even as `[]` — frontend's LootItem.enchantments is required.
     pub enchantments: Vec<EnchantmentInfo>,
 }
 
@@ -352,11 +374,14 @@ const LOOT_ITEM_STRIDE: usize = 4 + 2 + 1 + 16 * 2;
 /// `mc_version` is used to resolve item ids to names.
 #[tauri::command]
 pub async fn cubiomes_get_structure_loot(
-    slot: i32, struct_type: i32, pos_x: i32, pos_z: i32, mc_version: i32,
+    slot: i32, seed_low: i32, seed_high: i32, dimension: i32, world_flags: i32, mc_version: i32,
+    struct_type: i32, pos_x: i32, pos_z: i32,
 ) -> Vec<LootItem> {
+    let key = GeneratorKey { seed_low, seed_high, dimension, world_flags, mc_version };
     tauri::async_runtime::spawn_blocking(move || {
         // The loot library is not thread-safe; hold the lock across the call.
         let _guard = lock_cubiomes();
+        if !slot_matches_locked(slot, key) { return Vec::new(); }
         let ptr = unsafe { cm_get_structure_loot(slot, struct_type, pos_x, pos_z) };
         if ptr.is_null() { return Vec::new(); }
         let mut items = Vec::new();
@@ -417,10 +442,8 @@ pub struct ChestSlot {
     pub chest_x: i32,
     pub chest_z: i32,
     pub table:   String,
-    /// True for a chest on an End City's End Ship piece — the piece with the
-    /// better-than-average odds of an Elytra. Tower chests share the same
-    /// "end_city_treasure" loot table name, so this can't be told apart from
-    /// `table` alone; it comes from the underlying structure piece type.
+    /// True for an End Ship chest (better Elytra odds). Tower chests share the same
+    /// loot table name, so this comes from the structure piece type, not `table`.
     pub is_ship: bool,
 }
 
@@ -430,10 +453,13 @@ pub struct ChestSlot {
 /// every visible marker.
 #[tauri::command]
 pub async fn cubiomes_get_structure_chests(
-    slot: i32, struct_type: i32, pos_x: i32, pos_z: i32,
+    slot: i32, seed_low: i32, seed_high: i32, dimension: i32, world_flags: i32, mc_version: i32,
+    struct_type: i32, pos_x: i32, pos_z: i32,
 ) -> Vec<ChestSlot> {
+    let key = GeneratorKey { seed_low, seed_high, dimension, world_flags, mc_version };
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = lock_cubiomes();
+        if !slot_matches_locked(slot, key) { return Vec::new(); }
         let ptr = unsafe { cm_get_structure_chests(slot, struct_type, pos_x, pos_z) };
         if ptr.is_null() { return Vec::new(); }
         let mut slots = Vec::new();
@@ -454,11 +480,8 @@ pub async fn cubiomes_get_structure_chests(
     }).await.unwrap_or_default()
 }
 
-/// One of the 20 fixed End Gateways generated in a ring on the main End
-/// island the first time the Ender Dragon is defeated, paired with the outer
-/// destination the game will deterministically place a gateway at the moment
-/// a player steps through — computed straight from the seed, so this is known
-/// even for gateways nobody has visited yet.
+/// One of the 20 ring End Gateways paired with its deterministic outer destination —
+/// computed straight from the seed, so known even for gateways nobody has visited.
 #[derive(Serialize)]
 pub struct GatewayLink {
     pub src_x: i32,
@@ -471,9 +494,13 @@ pub struct GatewayLink {
 /// `slot`. Empty if the slot isn't set up for the End dimension, or the MC
 /// version predates 1.13 (`getLinkedGatewayPos` is undefined before that).
 #[tauri::command]
-pub async fn cubiomes_get_end_gateway_links(slot: i32) -> Vec<GatewayLink> {
+pub async fn cubiomes_get_end_gateway_links(
+    slot: i32, seed_low: i32, seed_high: i32, dimension: i32, world_flags: i32, mc_version: i32,
+) -> Vec<GatewayLink> {
+    let key = GeneratorKey { seed_low, seed_high, dimension, world_flags, mc_version };
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = lock_cubiomes();
+        if !slot_matches_locked(slot, key) { return Vec::new(); }
         let mut buf = [0i32; 80];
         let n = unsafe { cm_get_end_gateway_links(slot, buf.as_mut_ptr()) };
         if n <= 0 { return Vec::new(); }

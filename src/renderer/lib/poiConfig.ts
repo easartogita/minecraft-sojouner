@@ -2,8 +2,6 @@ import L from 'leaflet'
 import { PROFESSION_CONFIG } from './entityConfig'
 import { tooltipText } from './chunkMarkerLayer'
 
-// ── Types & config table ──────────────────────────────────────────────────────
-
 export interface PoiConfig {
   color: string
   initial: string
@@ -30,10 +28,8 @@ const POI_CONFIG: Record<string, PoiConfig> = {
   butcher:       { color: '#546e7a', initial: 'B', label: 'Butcher' },
   mason:         { color: '#78909c', initial: 'M', label: 'Mason' },
   nitwit:        { color: '#66bb6a', initial: 'N', label: 'Nitwit' },
-  // Special POI types
-  // Matches the 'bell' entry in blockEntityConfig.ts (this is the marker
-  // actually rendered — see POI_SHADOWED_BE_TYPES in BlockEntityLayer.tsx).
-  // Deliberately not beehive's amber — the two used to be visually identical.
+  // Must match the 'bell' entry in blockEntityConfig.ts — this is the marker actually
+  // rendered (see POI_SHADOWED_BE_TYPES in BlockEntityLayer.tsx).
   meeting_point: { color: '#4f46e5', initial: 'B', label: 'Bell' },
   home:          { color: '#e91e63', initial: 'Z', label: 'Bed' },
 }
@@ -46,8 +42,6 @@ export function getPoiConfig(kind: string): PoiConfig {
   const label   = kind.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
   return { color: '#f97316', initial, label }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function netherPortalDetail(x: number, z: number, dimension: string): string {
   if (dimension === 'overworld') {
@@ -65,8 +59,6 @@ function netherPortalTooltipSuffix(x: number, z: number, dimension: string): str
   if (dimension === 'nether')    return `→ Overworld ~${x * 8}, ~${z * 8}`
   return null
 }
-
-// ── Popup ─────────────────────────────────────────────────────────────────────
 
 export function buildPopup(rec: PoiRecord, dimension = 'overworld'): string {
   const cfg = getPoiConfig(rec.kind)
@@ -88,11 +80,9 @@ export function buildPopup(rec: PoiRecord, dimension = 'overworld'): string {
     </div>`
 }
 
-// ── Tooltip ───────────────────────────────────────────────────────────────────
-
 export function buildTooltip(rec: PoiRecord, dimension = 'overworld'): string {
   const cfg    = getPoiConfig(rec.kind)
-  let subtitle: string
+  let subtitle: string | null
   if (rec.kind === 'nether_portal') {
     subtitle = netherPortalTooltipSuffix(rec.x, rec.z, dimension) ?? cfg.label
   } else if (rec.kind === 'lodestone') {
@@ -105,12 +95,10 @@ export function buildTooltip(rec: PoiRecord, dimension = 'overworld'): string {
   return tooltipText(cfg.label, subtitle)
 }
 
-// ── Icon ──────────────────────────────────────────────────────────────────────
-
 export function createIcon(cfg: PoiConfig, tooltip: string): L.DivIcon {
   return L.divIcon({
     className: '',
-    html: `<div class="be-marker" style="background:${cfg.color}" title="${tooltip}">${cfg.initial}</div>`,
+    html: `<div class="be-marker" style="background:${cfg.color}" title="${tooltip}" role="button" aria-label="${tooltip}">${cfg.initial}</div>`,
     iconSize: [16, 16],
     iconAnchor: [8, 8],
   })

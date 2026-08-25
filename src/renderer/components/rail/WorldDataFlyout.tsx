@@ -3,6 +3,7 @@ import { useApp } from '../../App'
 import { CustomMarkerGroup } from '../../lib/markerFilters'
 import { effectiveMarkerAnchorY } from '../../hooks/overlaySlice'
 import YRangeGauge from '../YRangeGauge'
+import ZoomVisibilityBadge from '../ZoomVisibilityBadge'
 import MarkerGroupRow, { PRESET_COLORS, randomId } from './MarkerGroupRow'
 
 export default function WorldDataFlyout() {
@@ -22,12 +23,12 @@ export default function WorldDataFlyout() {
     const usedColors = new Set(state.markerGroupDefs.map(g => g.color))
     const color = PRESET_COLORS.find(c => !usedColors.has(c)) ?? PRESET_COLORS[0]
     const group: CustomMarkerGroup = { id, name: 'New Group', color, beTypes: [], entityTypes: [] }
-    dispatch({ type: 'ADD_MARKER_GROUP', group } as never)
+    dispatch({ type: 'ADD_MARKER_GROUP', group })
     setExpandedId(id)
   }
 
   const doReset = () => {
-    dispatch({ type: 'RESET_MARKER_GROUPS' } as never)
+    dispatch({ type: 'RESET_MARKER_GROUPS' })
     setConfirmReset(false)
     setExpandedId(null)
   }
@@ -46,20 +47,20 @@ export default function WorldDataFlyout() {
             <label className="overlay-toggle"
               title={`Block entities (chests, spawners, signs…) and entities — requires zoom ≥ ${state.markerMinZoom}`}>
               <input type="checkbox" checked={state.showMarkers}
-                onChange={() => dispatch({ type: 'TOGGLE_MARKERS' } as never)} />
+                onChange={() => dispatch({ type: 'TOGGLE_MARKERS' })} />
               <span className="overlay-label">Show Markers</span>
-              <span className="mp-zoom-hint">zoom ≥ {state.markerMinZoom}</span>
+              <ZoomVisibilityBadge checked={state.showMarkers} currentZoom={state.zoom} minZoom={state.markerMinZoom} />
             </label>
           </div>
 
-          <div className="mp-group-section">
+          <div className={`mp-group-section${state.showMarkers ? '' : ' mp-group-section--disabled'}`}>
             <div className="mp-group-header">
               <span className="mp-group-label">Marker Types</span>
               <div className="mp-group-btns">
                 <button className="btn-sm" disabled={markerAllOn}
-                  onClick={() => dispatch({ type: 'SET_ALL_MARKER_GROUPS', enabled: true } as never)}>All</button>
+                  onClick={() => dispatch({ type: 'SET_ALL_MARKER_GROUPS', enabled: true })}>All</button>
                 <button className="btn-sm" disabled={markerAllOff}
-                  onClick={() => dispatch({ type: 'SET_ALL_MARKER_GROUPS', enabled: false } as never)}>None</button>
+                  onClick={() => dispatch({ type: 'SET_ALL_MARKER_GROUPS', enabled: false })}>None</button>
               </div>
             </div>
             <div className="mgr-group-list">
@@ -68,7 +69,7 @@ export default function WorldDataFlyout() {
                 return (
                   <MarkerGroupRow key={g.id} group={g} enabled={on}
                     expanded={expandedId === g.id}
-                    onToggleEnabled={() => dispatch({ type: 'SET_MARKER_GROUP', group: g.id, enabled: !on } as never)}
+                    onToggleEnabled={() => dispatch({ type: 'SET_MARKER_GROUP', group: g.id, enabled: !on })}
                     onToggleExpanded={() => setExpandedId(expandedId === g.id ? null : g.id)} />
                 )
               })}
@@ -90,7 +91,7 @@ export default function WorldDataFlyout() {
             <div className="mp-y-section mp-y-section--below">
               <label className="overlay-toggle">
                 <input type="checkbox" checked={state.markerYFilterEnabled}
-                  onChange={() => dispatch({ type: 'SET_MARKER_Y_FILTER', enabled: !state.markerYFilterEnabled } as never)} />
+                  onChange={() => dispatch({ type: 'SET_MARKER_Y_FILTER', enabled: !state.markerYFilterEnabled })} />
                 <span className="overlay-label">Y filter</span>
                 {yAnchor != null && (
                   <span className="mp-y-center-badge"
@@ -104,8 +105,8 @@ export default function WorldDataFlyout() {
                   <YRangeGauge
                     anchorY={yAnchor} low={state.markerYLow} high={state.markerYHigh}
                     playerY={playerY} locked={state.markerYLockedToPlayer} snap={5}
-                    onRangeChange={(low, high) => dispatch({ type: 'SET_MARKER_Y_FILTER', low, high } as never)}
-                    onLockChange={(locked, anchorY) => dispatch({ type: 'SET_MARKER_Y_LOCK', locked, anchorY } as never)}
+                    onRangeChange={(low, high) => dispatch({ type: 'SET_MARKER_Y_FILTER', low, high })}
+                    onLockChange={(locked, anchorY) => dispatch({ type: 'SET_MARKER_Y_LOCK', locked, anchorY })}
                   />
                 </div>
               )}

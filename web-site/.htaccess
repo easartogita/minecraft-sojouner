@@ -1,0 +1,4 @@
+# Custom 404 page — matches the site's own theme instead of the host's default.
+# Path is root-relative to the domain, not to this file, so it resolves the
+# same regardless of which directory a request 404'd from (e.g. /bad-land/x).
+ErrorDocument 404 /404.html

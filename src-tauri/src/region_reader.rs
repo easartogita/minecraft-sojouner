@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 // 16×16 RGBA for one chunk — alpha encodes Y for renderer-side hillshading
 pub type ChunkColors = Vec<u8>; // len = 16 * 16 * 4
 
-// ── Local difficulty ──────────────────────────────────────────────────────────
-
 const MOON_BRIGHTNESS: [f64; 8] = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
 const DIFFICULTY_MAX:  [f64; 4] = [0.0, 2.25, 4.5, 6.75];
 
@@ -31,8 +29,6 @@ pub fn compute_local_difficulty(game_difficulty: i32, world_time: i64, inhabited
     (special, regional)
 }
 
-// ── Chunk info (hover lookup) ─────────────────────────────────────────────────
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkInfo {
@@ -50,7 +46,9 @@ pub struct ChunkInfo {
 
 /// Find the .mca region file for a given region coord, handling old and new layouts.
 /// Return the region directories for a given dimension (both legacy and 1.21.5 paths).
-fn region_dirs(world_dir: &str, dimension: &str) -> [PathBuf; 2] {
+/// `pub(crate)` so structure_copy.rs can pick a matching layout for a
+/// destination world without duplicating this path logic.
+pub(crate) fn region_dirs(world_dir: &str, dimension: &str) -> [PathBuf; 2] {
     let base = Path::new(world_dir);
     match dimension {
         "nether" => [
@@ -68,7 +66,21 @@ fn region_dirs(world_dir: &str, dimension: &str) -> [PathBuf; 2] {
     }
 }
 
-/// Scan all region directories and return every (rx, rz) pair that has an .mca file.
+/// True if an .mca's chunk location table has at least one populated entry. Anvil
+/// eagerly creates the region file the moment any chunk is merely touched (structure
+/// search, a chunk ticket) — long before real terrain — so many on-disk regions are
+/// empty stubs. Reading just the 4KiB location table is enough to tell real from stub.
+fn region_file_has_chunks(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut header = [0u8; 4096];
+    let Ok(n) = f.read(&mut header) else { return false };
+    header[..n].chunks_exact(4).any(|entry| entry != [0, 0, 0, 0])
+}
+
+/// Scan all region directories and return every (rx, rz) pair whose .mca file
+/// actually contains at least one generated chunk (see `region_file_has_chunks`
+/// for why file-existence alone isn't a reliable signal).
 pub fn list_regions(world_dir: &str, dimension: &str) -> Vec<(i32, i32)> {
     let mut regions = Vec::new();
     for dir in region_dirs(world_dir, dimension) {
@@ -83,7 +95,9 @@ pub fn list_regions(world_dir: &str, dimension: &str) -> Vec<(i32, i32)> {
                 .unwrap_or_default();
             if parts.len() == 2 {
                 if let (Ok(rx), Ok(rz)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
-                    regions.push((rx, rz));
+                    if region_file_has_chunks(&entry.path()) {
+                        regions.push((rx, rz));
+                    }
                 }
             }
         }
@@ -100,10 +114,9 @@ pub fn find_region_file(world_dir: &str, dimension: &str, rx: i32, rz: i32) -> O
         .find(|p| p.exists())
 }
 
-// ── Packed-long unpacking (1.16+ padded format) ───────────────────────────────
-// Values never span a 64-bit boundary, so no hi/lo boundary handling needed.
-
-fn unpack_long(longs: &[i64], index: usize, bits_per_value: u32) -> u32 {
+// 1.16+ padded format: values never span a 64-bit boundary, no hi/lo boundary handling.
+// pub(crate): also reused by structure_copy::blocks for the same packed-LongArray convention.
+pub(crate) fn unpack_long(longs: &[i64], index: usize, bits_per_value: u32) -> u32 {
     let vpl = 64 / bits_per_value as usize;
     let long_idx = index / vpl;
     if long_idx >= longs.len() {
@@ -114,7 +127,17 @@ fn unpack_long(longs: &[i64], index: usize, bits_per_value: u32) -> u32 {
     ((longs[long_idx] as u64 >> bit_off) & mask) as u32
 }
 
-// ── NBT navigation helpers ────────────────────────────────────────────────────
+/// Write-side mirror of `unpack_long`. Values are unchecked (`< 2^bits_per_value`) —
+/// callers always pack valid palette indices.
+pub(crate) fn pack_long(values: &[u32], bits_per_value: u32) -> Vec<i64> {
+    let vpl = 64 / bits_per_value as usize;
+    let mut longs = vec![0i64; values.len().div_ceil(vpl)];
+    for (index, &v) in values.iter().enumerate() {
+        let bit_off = (index % vpl) * bits_per_value as usize;
+        longs[index / vpl] |= ((v as u64) << bit_off) as i64;
+    }
+    longs
+}
 
 fn cmp(v: &Value) -> Option<&HashMap<String, Value>> {
     if let Value::Compound(m) = v { Some(m) } else { None }
@@ -153,8 +176,6 @@ fn as_list(v: &Value) -> Option<&Vec<Value>> {
     if let Value::List(l) = v { Some(l) } else { None }
 }
 
-// ── Section helpers ───────────────────────────────────────────────────────────
-
 struct SectionView<'a> {
     palette: Vec<&'a str>,  // block names (without minecraft: prefix where possible)
     data:    &'a [i64],
@@ -178,6 +199,15 @@ fn parse_biomes(section: &Value) -> Option<BiomeView<'_>> {
         .filter_map(as_str)
         .map(|s| s.strip_prefix("minecraft:").unwrap_or(s))
         .collect();
+    // If a future snapshot compacts this the way 26.3 Snapshot 7 did block_states
+    // (compound wrapper / mixed shapes), this filter_map would silently drop entries
+    // and desync `bpv` below exactly like that bug did.
+    if palette.len() != palette_vals.len() {
+        crate::format_guard::format_warn(
+            "biome palette",
+            "some biome palette entries weren't plain strings and were dropped — palette indices may now be misaligned",
+        );
+    }
     if palette.is_empty() {
         return None;
     }
@@ -197,14 +227,24 @@ fn parse_section(section: &Value) -> Option<SectionView<'_>> {
         return None;
     }
 
+    // Every known on-disk shape for a palette entry; the next MC rename should
+    // be added here, not as a fresh `.or_else()` chain. See bugs-resolved.md
+    // ("26.3 Snapshot 7 block-palette rename") for why this alias list exists.
+    const BLOCK_NAME_KEYS: &[&str] = &["Name", "id", ""];
     let palette: Vec<&str> = palette_vals
         .iter()
         .filter_map(|entry| {
-            get(entry, "Name")
-                .and_then(as_str)
+            crate::format_guard::resolve_aliased_str(entry, BLOCK_NAME_KEYS)
                 .map(|s| if let Some(rest) = s.strip_prefix("minecraft:") { rest } else { s })
         })
         .collect();
+
+    if palette.len() != palette_vals.len() {
+        crate::format_guard::format_warn(
+            "block_states palette",
+            "some block_states palette entries didn't match any known shape (bare string / Name / id / \"\") and were dropped — palette indices are now misaligned, same failure as the 26.3 Snapshot 7 rename bug",
+        );
+    }
 
     let data = get(bs, "data")
         .and_then(as_long_array)
@@ -242,8 +282,6 @@ fn get_biome_in_section<'a>(sv: &'a SectionView<'a>, local_y: usize, bx: usize, 
     bv.palette.get(palette_idx).copied().unwrap_or("")
 }
 
-// ── Main extraction ───────────────────────────────────────────────────────────
-
 const AIR: &[&str] = &["air", "cave_air", "void_air"];
 
 fn is_air(name: &str) -> bool {
@@ -270,14 +308,9 @@ fn extract_surface(
         return vec![];
     };
 
-    // Gate on terrain presence, not the Status string. A chunk is renderable as
-    // soon as it has a populated surface heightmap — true for `features`,
-    // `initialize_light`, `light` and `full`. The old `== "full"` check needlessly
-    // blanked ~thousands of fully-terrained proto-chunks (e.g. initialize_light)
-    // at the frontier of explored area, leaving the biome layer showing through.
-    // Earlier stages (structure_starts, biomes, surface, carvers, noise) have no
-    // usable heightmap and fall through to the empty return below — there is no
-    // terrain on disk to draw, so the biome layer is the correct fallback there.
+    // Gate on terrain presence, not the Status string — a chunk is renderable as soon
+    // as it has a populated heightmap (true for `features`/`initialize_light`/`light`/
+    // `full`); earlier stages have none and fall through to the empty return below.
 
     // Heightmap — MOTION_BLOCKING for normal, OCEAN_FLOOR when hiding water
     let hm = get(root, "Heightmaps");
@@ -295,15 +328,18 @@ fn extract_surface(
         .and_then(as_long_array)
         .unwrap_or(&[]);
 
-    // A full heightmap is 37 packed longs (256 columns × 9 bits). Anything shorter
-    // means no usable heightmap — but the chunk may still be terrained. Proto-chunks
-    // at the exploration frontier (e.g. `carvers` status) carry real terrain sections
-    // with NO Heightmaps at all; those must be rendered by scanning the sections
-    // top-down for the surface, or they'd leave a blank seam (the biome layer shows
-    // through). Only truly-empty chunks (no terrain) fall through to the empty return.
+    // A full heightmap is 37 packed longs (256 columns × 9 bits). Shorter means no
+    // usable heightmap — proto-chunks (e.g. `carvers` status) can still carry real
+    // terrain sections with none, so those get scanned top-down for the surface instead.
     let has_heightmap = hm_longs.len() >= 37;
 
-    let y_pos: i32 = get(root, "yPos").and_then(as_i32).unwrap_or(-4);
+    let y_pos: i32 = get(root, "yPos").and_then(as_i32).unwrap_or_else(|| {
+        crate::format_guard::format_warn(
+            "chunk yPos",
+            "chunk root has no yPos int — defaulting to -4; every block's absolute Y for this chunk may now be wrong",
+        );
+        -4
+    });
     let min_y = y_pos * 16;
 
     // Build section map: sectionY → parsed SectionView
@@ -314,10 +350,16 @@ fn extract_surface(
 
     let mut section_map: HashMap<i32, SectionView> = HashMap::new();
     for s in sections_list {
-        if let Some(y) = get(s, "Y").and_then(as_i32) {
-            if let Some(sv) = parse_section(s) {
-                section_map.insert(y, sv);
+        match get(s, "Y").and_then(as_i32) {
+            Some(y) => {
+                if let Some(sv) = parse_section(s) {
+                    section_map.insert(y, sv);
+                }
             }
+            None => crate::format_guard::format_warn(
+                "chunk section Y",
+                "a section in the sections list has no Y int — that section is silently dropped (missing floor/floating terrain)",
+            ),
         }
     }
 
@@ -444,8 +486,6 @@ fn extract_surface(
     result
 }
 
-// ── .mca file parsing ─────────────────────────────────────────────────────────
-
 pub fn decompress_chunk(data: &[u8], compression: u8) -> Option<Vec<u8>> {
     match compression {
         1 => {
@@ -504,6 +544,52 @@ pub fn read_chunk_nbt(file_buf: &[u8], local_x: usize, local_z: usize) -> Option
 
     let raw = decompress_chunk(&file_buf[byte_offset + 5..data_end], compression)?;
     fastnbt::from_bytes(&raw).ok()
+}
+
+/// Same header/offset parsing as `read_chunk_nbt`, but returns the chunk's
+/// on-disk payload verbatim (4-byte length prefix + compression-type byte +
+/// still-compressed data) instead of decoding it. Used by the chunk-level
+/// writer (`structure_copy.rs`) to pass untouched chunks through a region
+/// rewrite byte-for-byte, without a wasted decompress/recompress round trip.
+pub(crate) fn read_chunk_raw_payload(file_buf: &[u8], local_x: usize, local_z: usize) -> Option<Vec<u8>> {
+    let header_offset = 4 * (local_x + local_z * 32);
+    if header_offset + 4 > file_buf.len() {
+        return None;
+    }
+
+    let sector_offset = ((file_buf[header_offset] as usize) << 16)
+        | ((file_buf[header_offset + 1] as usize) << 8)
+        | (file_buf[header_offset + 2] as usize);
+    let sector_count = file_buf[header_offset + 3] as usize;
+
+    if sector_offset == 0 || sector_count == 0 {
+        return None;
+    }
+
+    let byte_offset = sector_offset * 4096;
+    if byte_offset + 5 > file_buf.len() {
+        return None;
+    }
+
+    let data_len = u32::from_be_bytes([
+        file_buf[byte_offset],
+        file_buf[byte_offset + 1],
+        file_buf[byte_offset + 2],
+        file_buf[byte_offset + 3],
+    ]) as usize;
+
+    if data_len <= 1 {
+        return None;
+    }
+
+    // Whole on-disk payload = the 4-byte length prefix itself + the data_len
+    // bytes it describes (compression-type byte + compressed NBT).
+    let data_end = byte_offset + 4 + data_len;
+    if data_end > file_buf.len() {
+        return None;
+    }
+
+    Some(file_buf[byte_offset..data_end].to_vec())
 }
 
 /// Also find the entity file for a given region (1.17+ separate entity files).
@@ -635,55 +721,6 @@ fn parse_chunk_colors(
     ChunkParse::Colors(rgba)
 }
 
-// ── Cave entrance detection ───────────────────────────────────────────────────
-
-/// Returns how much any column's solid floor dips below the chunk's highest solid point.
-///
-/// Uses OCEAN_FLOOR (strictly solid blocks — skips all foliage, vines, water) instead of
-/// WORLD_SURFACE vs MOTION_BLOCKING.  The old WS-MB approach flagged any tall vegetation
-/// (jungle canopy, vines) as a cave entrance because leaves/vines appear in WS but not MB.
-///
-/// New approach: find max(OCEAN_FLOOR) across the chunk (= terrain surface peak), then
-/// report max(peak - col_OF).  A column under a leaf canopy has OF = solid ground = peak,
-/// so delta = 0.  A ravine or cave-entrance column has OF = cavity floor, well below peak.
-fn extract_heightmap_delta(chunk: &Value) -> i32 {
-    let root = if get(chunk, "Status").is_some() {
-        chunk
-    } else if let Some(level) = get(chunk, "Level") {
-        level
-    } else {
-        return -1;
-    };
-
-    let status = get(root, "Status").and_then(as_str).unwrap_or("");
-    if !status.contains("full") && status != "minecraft:full" {
-        return -1;
-    }
-
-    let hm = match get(root, "Heightmaps") {
-        Some(h) => h,
-        None => return -1,
-    };
-    let of_longs = match get(hm, "OCEAN_FLOOR").and_then(as_long_array) {
-        Some(l) if l.len() >= 37 => l,
-        _ => return -1,
-    };
-
-    let mut peak = 0i32;
-    for col in 0..256usize {
-        let v = unpack_long(of_longs, col, 9) as i32;
-        if v > peak { peak = v; }
-    }
-
-    let mut max_delta = 0i32;
-    for col in 0..256usize {
-        let v     = unpack_long(of_longs, col, 9) as i32;
-        let delta = (peak - v).max(0);
-        if delta > max_delta { max_delta = delta; }
-    }
-    max_delta
-}
-
 /// Read InhabitedTime for a rectangular chunk range.
 /// Returns a flat Vec<i64> in row-major order: index = (cz-cz0)*width + (cx-cx0).
 /// -1 means the chunk is absent (region file missing or chunk slot empty).
@@ -692,6 +729,10 @@ pub fn get_inhabited_times_from_mca(
     dimension: &str,
     cx0: i32, cz0: i32, cx1: i32, cz1: i32,
 ) -> Vec<i64> {
+    // Same chunk-count cap as the cubiomes FFI callers (carvers.rs, ore_veins.rs,
+    // structures.rs): reject an out-of-range request before sizing an allocation
+    // off unclamped width*height.
+    if (cx1 - cx0 + 1).saturating_mul(cz1 - cz0 + 1) > 65536 { return Vec::new(); }
     let width  = (cx1 - cx0 + 1) as usize;
     let height = (cz1 - cz0 + 1) as usize;
     let mut out = vec![-1i64; width * height];
@@ -721,46 +762,6 @@ pub fn get_inhabited_times_from_mca(
 
     out
 }
-
-/// Read per-chunk max(WORLD_SURFACE - MOTION_BLOCKING) for a rectangular chunk range.
-/// Returns a flat Vec<i32> in row-major (cz-major) order: index = (cz-cz0)*width + (cx-cx0).
-/// -1 means the chunk is absent or not fully generated.
-pub fn get_cave_entrances_from_mca(
-    world_dir: &str,
-    dimension: &str,
-    cx0: i32, cz0: i32, cx1: i32, cz1: i32,
-) -> Vec<i32> {
-    let width  = (cx1 - cx0 + 1) as usize;
-    let height = (cz1 - cz0 + 1) as usize;
-    let mut out = vec![-1i32; width * height];
-
-    let mut by_region: HashMap<(i32, i32), Vec<(i32, i32)>> = HashMap::new();
-    for cz in cz0..=cz1 {
-        for cx in cx0..=cx1 {
-            by_region.entry((cx.div_euclid(32), cz.div_euclid(32))).or_default().push((cx, cz));
-        }
-    }
-
-    for ((rx, rz), region_chunks) in &by_region {
-        let Some(mca_path) = find_region_file(world_dir, dimension, *rx, *rz) else { continue };
-        let file_buf = match std::fs::read(&mca_path) {
-            Ok(b) if b.len() >= 4096 => b,
-            _ => continue,
-        };
-        for &(cx, cz) in region_chunks {
-            let lx = cx.rem_euclid(32) as usize;
-            let lz = cz.rem_euclid(32) as usize;
-            let delta = read_chunk_nbt(&file_buf, lx, lz)
-                .map(|v| extract_heightmap_delta(&v))
-                .unwrap_or(-1);
-            out[(cz - cz0) as usize * width + (cx - cx0) as usize] = delta;
-        }
-    }
-
-    out
-}
-
-// ── Public API ────────────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize, Clone)]
 pub struct ChunkRequest {
@@ -811,8 +812,15 @@ pub fn read_chunk_colors_from_mca(
         // Read the whole region file once — stable snapshot even if MC is writing
         let file_buf = match std::fs::read(&mca_path) {
             Ok(b) if b.len() >= 4096 => b,
-            _ => {
-                // File exists but is unreadable / smaller than its headers → mid-write.
+            Ok(_) => {
+                // Under the two-sector header minimum: treat as absent, no retry. See bugs-resolved.md.
+                for req in region_chunks {
+                    results.insert((req.cx, req.cz), (None, false));
+                }
+                continue;
+            }
+            Err(_) => {
+                // Unreadable: treat as a torn read and retry. See bugs-resolved.md.
                 for req in region_chunks {
                     results.insert((req.cx, req.cz), (None, true));
                 }

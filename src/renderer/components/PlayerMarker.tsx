@@ -137,6 +137,18 @@ function PlayerMarker({ map }: { map: L.Map }) {
             player.mountName ? ` — “${escapeHtml(player.mountName)}”` : ''}</div>`
         : ''
 
+      // If this player has a bed/anchor set, that's already its own marker
+      // (PlayerRespawnMarker) — no need to duplicate it here. Only the no-bed
+      // case needs a pointer, since vanilla falls back to the world's Set
+      // Spawn and that's otherwise not tied to this player at all.
+      const hasBed = player.respawnX != null && player.respawnY != null && player.respawnZ != null
+      const spawnX = seedData!.spawnX
+      const spawnZ = seedData!.spawnZ
+      const spawnBtnId = `player-spawn-flyto-${idx}`
+      const spawnLine = hasBed ? '' : (viewingDim === 'minecraft:overworld'
+        ? `<div class="popup-hint">Spawn (no bed set): X: ${spawnX}, Z: ${spawnZ} — <a href="#" id="${spawnBtnId}">Jump there</a></div>`
+        : `<div class="popup-hint">Spawn (no bed set): X: ${spawnX}, Z: ${spawnZ} (Overworld)</div>`)
+
       const icon = L.divIcon({
         className: '',
         html: `<div class="${markerClass}" style="border-color:${ring};box-shadow:0 0 0 2px ${glow},0 1px 4px rgba(0,0,0,0.6)" title="${label}${dimSuffix}${mountTitle}">
@@ -153,8 +165,21 @@ function PlayerMarker({ map }: { map: L.Map }) {
           <div class="popup-coords">X: ${Math.round(displayX)}, Y: ${Math.round(player.y)}, Z: ${Math.round(displayZ)}</div>
           ${mountLine}
           ${sameDimension ? '<div class="popup-hint">No-spawn: 24 blocks · Despawn: 128 blocks</div>' : ''}
+          ${spawnLine}
         </div>`
       )
+      if (!hasBed && viewingDim === 'minecraft:overworld') {
+        marker.on('popupopen', () => {
+          const link = document.getElementById(spawnBtnId)
+          if (link) {
+            link.onclick = (e) => {
+              e.preventDefault()
+              const { x: slng, y: slat } = minecraftToLeaflet(spawnX, spawnZ)
+              map.flyTo(L.latLng(slat, slng), Math.max(map.getZoom(), 3))
+            }
+          }
+        })
+      }
       marker.addTo(map)
       layersRef.current.push(marker)
     })

@@ -6,7 +6,7 @@
 <title>Sojourner — a map viewer for Minecraft</title>
 <meta name="description" content="Sojourner is a desktop map viewer for Minecraft. It reads your actual world — chests, villagers, spawners, biomes, structures, ore veins — and renders it locally. No server, no account, no telemetry. Java and Bedrock.">
 <meta property="og:title" content="Sojourner — a map viewer for Minecraft">
-<meta property="og:description" content="See everything that's actually in your world. Runs entirely on your machine — no server, no account, no telemetry. Java + Bedrock.">
+<meta property="og:description" content="See everything in your world. Runs entirely on your machine — no server, no account, no telemetry. Java + Bedrock.">
 <meta property="og:type" content="website">
 <style>
 :root{
@@ -41,16 +41,11 @@ body::after{content:'';position:fixed;inset:0;z-index:98;pointer-events:none;
   mask-image:radial-gradient(ellipse 60% 55% at 50% 45%,#000 0%,transparent 75%)}
 .block-icon{width:2.6rem;height:2.6rem;margin:0 auto 1.1rem;image-rendering:pixelated;image-rendering:crisp-edges;
   filter:drop-shadow(0 3px 10px rgba(0,0,0,.6))}
-.mark{font-size:clamp(2.6rem,11vw,5.4rem);letter-spacing:.1em;line-height:.95;color:var(--white);
-  text-shadow:0 0 50px rgba(232,232,224,.25),0 0 110px rgba(255,170,0,.10),3px 3px 0 rgba(0,0,0,.85)}
+.mark{font-size:clamp(2.2rem,8vw,3.6rem);letter-spacing:.08em;line-height:.95;color:var(--white);
+  text-shadow:1px 1px 0 rgba(0,0,0,.85)}
 .tag{font-family:var(--micr);font-size:clamp(.66rem,1.5vw,.78rem);letter-spacing:.22em;color:var(--amber-dim);margin-top:1.1rem}
 .hook{color:var(--white);font-size:clamp(1rem,2.3vw,1.22rem);line-height:1.65;margin:1.6rem auto 0;max-width:30em}
 .hook b{color:var(--amber);font-weight:400}
-/* xp bar — a little "world loaded" flourish, not an actual progress indicator */
-.xp{width:min(340px,70vw);height:6px;margin:2rem auto 0;background:#1a1400;border:1px solid #000;
-  box-shadow:inset 1px 1px 0 rgba(0,0,0,.6);position:relative;overflow:hidden}
-.xp::before{content:'';position:absolute;inset:1px;background:linear-gradient(#8adb3e,#5da621);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}
 
 /* sections */
 section{margin-bottom:clamp(2.6rem,6vw,3.6rem);border-left:1px solid var(--amber-dim);padding-left:clamp(1rem,3vw,1.6rem)}
@@ -68,28 +63,25 @@ li::before{content:'›';position:absolute;left:0;top:.1em;width:1.1em;height:1.
 li b,p b{color:var(--white);font-weight:400}
 .k{color:var(--amber)}
 
-/* trust block — the load-bearing one */
-.trust{border-left-color:var(--amber)}
-.trust li::before{content:'✓'}
-.fineprint{font-size:.82rem;color:var(--muted);margin-top:1rem;line-height:1.6}
-
 /* get it */
 .get{text-align:center;border-left:none;padding-left:0;margin-top:clamp(3rem,7vw,4.5rem)}
-.plats{font-family:var(--micr);font-size:.74rem;letter-spacing:.16em;color:var(--muted);margin:.4rem 0 1.4rem}
-.cta{display:inline-block;font-family:var(--mono);font-size:.9rem;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--amber);text-decoration:none;border:1px solid var(--amber);padding:.7rem 1.8rem;background:#0c0900;
-  box-shadow:inset 1px 1px 0 rgba(255,170,0,.16),inset -2px -2px 0 rgba(0,0,0,.65);
-  transition:color .18s,background .18s,box-shadow .18s}
-.cta:hover,.cta:focus-visible{background:var(--amber);color:var(--bg);
-  box-shadow:inset 1px 1px 0 rgba(255,255,255,.4),inset -2px -2px 0 rgba(0,0,0,.25),0 0 30px rgba(255,170,0,.4);outline:none}
-/* not-yet-shipped: ghost the CTA and stamp a badge on it */
-.cta.soon{color:var(--amber-dim);border-color:var(--amber-dim);cursor:not-allowed;pointer-events:none;opacity:.7}
-.badge{display:inline-block;font-family:var(--micr);font-size:.6rem;letter-spacing:.18em;text-transform:uppercase;
-  color:var(--bg);background:var(--amber-dim);padding:.12rem .5rem;margin-left:.7rem;vertical-align:middle;line-height:1.6}
-.alt{display:block;margin-top:1rem;font-size:.78rem;letter-spacing:.1em;color:var(--muted)}
-.alt a{color:var(--amber-dim);text-decoration:none}.alt a:hover{color:var(--amber)}
-.alt .soon{color:#4a4030;text-decoration:none;pointer-events:none}
-.ver{font-family:var(--micr);color:var(--amber-dim)}
+.releases{list-style:none;margin:1.4rem auto 0;max-width:34em;display:flex;flex-direction:column;gap:.6rem;text-align:left}
+.release{position:relative;display:flex;align-items:baseline;gap:.6rem .9rem;flex-wrap:wrap;
+  padding:.85rem 1.1rem .85rem 1.7em;border:1px solid var(--amber-dim);background:#0c0900;
+  box-shadow:inset 1px 1px 0 rgba(255,170,0,.1),inset -2px -2px 0 rgba(0,0,0,.6)}
+.release::before{content:'›';position:absolute;left:.6em;top:.95rem;color:var(--amber);font-size:.85em}
+.release .rver{color:var(--amber);font-weight:400}
+.release .rtag{font-family:var(--micr);font-size:.64rem;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.release .rlinks{display:flex;gap:1rem;flex-wrap:wrap;margin-left:auto}
+.release .rlinks a{color:var(--amber-dim);text-decoration:none;font-size:.86rem}
+.release .rlinks a:hover,.release .rlinks a:focus-visible{color:var(--amber)}
+.release.soon{opacity:.6}
+.archive{margin:1.1rem auto 0;max-width:34em;text-align:left}
+.archive summary{cursor:pointer;color:var(--muted);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase}
+.archive summary:hover{color:var(--amber-dim)}
+.archive p{margin-top:.6rem;color:var(--muted);font-size:.82rem}
+.disc-blunt{margin:1.3rem auto 0;max-width:34em;text-align:left;color:var(--muted);font-size:.82rem}
+.credits a{color:var(--amber-dim);text-decoration:none;font-size:.86em}.credits a:hover{color:var(--amber)}
 
 /* footer */
 footer{margin-top:clamp(3.5rem,8vw,5rem);padding-top:1.6rem;border-top:1px solid #1a1400;text-align:center;
@@ -105,7 +97,8 @@ section:nth-of-type(1){animation-delay:.06s}
 section:nth-of-type(2){animation-delay:.12s}
 section:nth-of-type(3){animation-delay:.18s}
 section:nth-of-type(4){animation-delay:.24s}
-.get{animation-delay:.3s}footer{animation-delay:.36s}
+section:nth-of-type(5){animation-delay:.3s}
+.get{animation-delay:.36s}footer{animation-delay:.42s}
 /* gallery — grid breaks out wider than the reading column */
 .gallery{margin-top:clamp(3.5rem,8vw,5.5rem);margin-bottom:clamp(3.5rem,8vw,5.5rem)}
 .gallery .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:1.6rem;margin-top:2rem;
@@ -123,6 +116,22 @@ section:nth-of-type(4){animation-delay:.24s}
 .mystery .redact{flex:1;min-height:150px;display:flex;align-items:center;justify-content:center;font-family:var(--micr);
   letter-spacing:.35em;color:#33260a;font-size:1rem;line-height:1.9;text-align:center;border-bottom:1px solid var(--amber-dim);
   background:repeating-linear-gradient(45deg,#080600,#080600 9px,#0c0900 9px,#0c0900 18px)}
+/* live demos — same item-slot list as everywhere else, but each row is its own link */
+.demos{list-style:none;margin:1.1rem 0 .4rem;display:flex;flex-direction:column;gap:.6rem}
+.demos li{padding-left:0;margin-bottom:0}
+.demos li::before{content:none}
+.demo{position:relative;display:flex;align-items:baseline;gap:.9rem;padding:.85rem 1.1rem .85rem 1.7em;
+  border:1px solid var(--amber-dim);background:#0c0900;text-decoration:none;color:var(--white);
+  box-shadow:inset 1px 1px 0 rgba(255,170,0,.1),inset -2px -2px 0 rgba(0,0,0,.6);
+  transition:border-color .18s,box-shadow .18s}
+.demo::before{content:'›';position:absolute;left:.6em;top:.95rem;color:var(--amber);font-size:.85em}
+.demo:hover,.demo:focus-visible{border-color:var(--amber);
+  box-shadow:inset 1px 1px 0 rgba(255,170,0,.1),inset -2px -2px 0 rgba(0,0,0,.6),0 0 26px rgba(255,170,0,.18);outline:none}
+.demo b{color:var(--amber);font-weight:400;flex-shrink:0}
+.demo span{color:#a89f88;font-size:.84rem}
+.demos .soon{opacity:.55;pointer-events:none}
+.demos .soon .demo{cursor:not-allowed}
+.demo-note{color:var(--muted);font-size:.78rem;margin-top:.9rem}
 /* lightbox */
 .lightbox{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;
   padding:clamp(1rem,4vw,3rem);background:rgba(1,1,0,.93);cursor:zoom-out;animation:lbfade .18s ease both}
@@ -133,18 +142,7 @@ section:nth-of-type(4){animation-delay:.24s}
 .lb-close:hover,.lb-close:focus-visible{opacity:1;outline:none;text-shadow:0 0 16px rgba(255,170,0,.65)}
 .lb-hint{position:fixed;bottom:1rem;left:0;right:0;text-align:center;font-size:.7rem;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;pointer-events:none}
 @keyframes lbfade{from{opacity:0}to{opacity:1}}
-/* achievement toast — pops the one time you scroll into the trust section */
-.toast{position:fixed;top:1rem;right:1rem;z-index:500;display:flex;align-items:center;gap:.7rem;
-  background:rgba(20,16,8,.95);border:2px solid var(--amber-dim);padding:.55rem .9rem;
-  box-shadow:inset 1px 1px 0 rgba(255,170,0,.12),inset -2px -2px 0 rgba(0,0,0,.6),0 4px 18px rgba(0,0,0,.5);
-  max-width:min(300px,80vw);pointer-events:none;
-  transform:translateX(calc(100% + 1.5rem));transition:transform .4s cubic-bezier(.2,.8,.3,1)}
-.toast.show{transform:translateX(0)}
-.toast-icon{width:26px;height:26px;flex-shrink:0;image-rendering:pixelated;image-rendering:crisp-edges}
-.toast-lines{display:flex;flex-direction:column;gap:.2rem;min-width:0}
-.toast-kind{font-family:var(--micr);font-size:.6rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
-.toast-name{font-size:.82rem;color:var(--amber);text-shadow:0 0 10px rgba(255,170,0,.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-@media(prefers-reduced-motion:reduce){*{animation:none!important}html{scroll-behavior:auto}.toast{transition:none}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}html{scroll-behavior:auto}}
 </style>
 </head>
 <body>
@@ -165,33 +163,32 @@ section:nth-of-type(4){animation-delay:.24s}
     </svg>
     <h1 class="mark">SOJOURNER</h1>
     <div class="tag">MAP VIEWER &middot; MINECRAFT &middot; JAVA + BEDROCK</div>
-    <p class="hook">I wanted to see my whole world — not a postcard of the terrain, but <b>everything that's actually in it</b>. Nothing did that. So I wrote this.</p>
-    <div class="xp" role="presentation"></div>
+    <p class="hook">Reads a Minecraft world save and renders it in full — <b>terrain, structures, ore veins, chests, villagers, loot</b> — pulled directly from the world files. Nothing else shows you all of it.</p>
   </header>
 
   <section>
-    <span class="lbl">// why this exists</span>
-    <h2>I wanted to see everything that's in there.</h2>
-    <p class="lede">Every map tool draws the ground and goes quiet. Beautiful hills and oceans — and not a word about the chest you forgot, the villager three biomes over, the spawner under your base. The seed tools go the other way: a flawless generated world you don't actually have, nothing you built, nothing alive. I didn't want either. I wanted to open a map and see the <span class="k">living world</span> — what's really on the disk, blocks and builds and mobs and loot and all. Nobody read the save the way I wanted it read, so I read it myself.</p>
+    <span class="lbl">// what's missing everywhere else</span>
+    <h2>Every other map tool stops at the terrain.</h2>
+    <p class="lede">Beautiful hills and oceans — and not a word about the chest you forgot, the villager three biomes over, the spawner under your base. Seed tools go the other way: a flawless generated world you don't actually have, nothing you built, nothing alive. Sojourner reads the world you actually have — the <span class="k">living world</span>, blocks and builds and mobs and loot and all, straight off the save.</p>
   </section>
 
   <section>
-    <span class="lbl">// what it actually shows you</span>
+    <span class="lbl">// what you get</span>
     <h2>The living world, not just its skin.</h2>
-    <p class="lede">Open a save and it draws what's <em>there</em> — the real blocks you placed, the biomes and structures from the seed, the ore veins, the caves. And then the part nobody else bothers with:</p>
+    <p class="lede">Open a save and it draws what's <em>there</em> — the real blocks you placed, the biomes and structures from the seed, the ore veins, the caves. Then the part nobody else bothers with:</p>
     <ul>
       <li><b>Every chest and exactly what's in it.</b> Spawners, signs, banners, beehives, brewing stands — all of it, grouped and searchable.</li>
       <li><b>Every villager and what they do.</b> Mobs, item frames, minecarts, bosses — placed where they actually stand.</li>
       <li><b>Beds, workstations, bells.</b> The bones of a settlement, straight off the save.</li>
       <li><b>And the seed side</b> — biomes, structures, slime chunks, ore veins, cave mode, relief.</li>
     </ul>
-    <p>On <span class="k">Java and Bedrock both</span>. The chest-and-villager depth is the part the fast, pretty renderers never read — and it's the whole reason I built this one.</p>
+    <p>On <span class="k">Java and Bedrock both</span>. The chest-and-villager depth is the part every fast, pretty renderer skips entirely.</p>
   </section>
 
   <section class="gallery">
     <span class="lbl">// see it</span>
-    <h2>Here's what it actually looks like.</h2>
-    <p class="lede">These are real — my world, my builds, my loot, drawn on my machine, nothing uploaded to make them. <span class="hint">Click any shot for full resolution.</span></p>
+    <h2>What it actually renders.</h2>
+    <p class="lede">Real screenshots — actual worlds, actual loot, rendered locally. No mockups, nothing staged. <span class="hint">Click any shot for full resolution.</span></p>
     <div class="grid">
 
       <figure class="shot">
@@ -247,30 +244,58 @@ section:nth-of-type(4){animation-delay:.24s}
     </div>
   </section>
 
-  <section class="trust">
-    <span class="lbl">// how it works</span>
-    <h2>Runs entirely on your machine.</h2>
-    <p>Sojourner is a local desktop app, full stop — no cloud, no login, nothing phoned home. Here's exactly what that gets you:</p>
-    <ul>
-      <li><b>No server.</b> There's nothing to phone home to. Cut it off the network entirely and it works exactly the same.</li>
-      <li><b>Read-only.</b> It opens your save files to draw them — never writes, moves, or touches anything else on disk.</li>
-      <li><b>Nothing leaves your machine.</b> No account, no telemetry, no upload, no ads. Just a map of your world, drawn where it already lives.</li>
-      <li><b>Built by one person.</b> Indie, and unapologetically so — no roadmap meetings, no growth targets, just a tool built to be useful.</li>
-    </ul>
-    <p class="fineprint">This page holds itself to the same bar: zero outside requests, no trackers, a few kilobytes.</p>
-  </section>
-
   <section>
     <span class="lbl">// what makes it different</span>
     <h2>Built for depth, not speed.</h2>
-    <p class="lede">This isn't a seed-hunting tool — it shows you the world you already have. And it's not chasing render-benchmark numbers — it's chasing completeness: every chest, every villager, every structure, read straight off your save. That's the depth other viewers skip, and it's the whole reason Sojourner exists.</p>
+    <p class="lede">Not a seed-hunting tool — it shows you the world you already have. Not chasing render-benchmark numbers either — it's chasing completeness: every chest, every villager, every structure, read straight off your save. That's the depth every other viewer skips.</p>
+  </section>
+
+  <section>
+    <span class="lbl">// try it live</span>
+    <h2>Explore a real world, right now, no install.</h2>
+    <p class="lede">These are full static exports of actual saves — the same tile rendering and data the desktop app produces, running entirely client-side in your browser. Pan and zoom a real world before you download anything.</p>
+    <ul class="demos">
+      <li><a class="demo" href="worlds/263s9/"><b>263s9</b><span>Small, early-game save &middot; quick to load, easy to get your bearings — every layer this app can render, kept simple</span></a></li>
+      <li><a class="demo" href="worlds/bad-land/"><b>Bad Land</b><span>A long-running survival world &middot; 6,300+ structures, 28,000+ chests, and 690+ villagers found — what the map looks like once you've actually lived in it</span></a></li>
+    </ul>
+    <p class="demo-note">More worlds get added here as they're exported — see <a href="worlds/">the full list</a>. Nothing here is required for the app itself to work.</p>
+  </section>
+
+  <section>
+    <span class="lbl">// standing on their shoulders</span>
+    <h2>Built on other people's hard-won work.</h2>
+    <p class="lede">Sojourner didn't solve Java's world generation or Bedrock's storage format from scratch — these projects already had, for free, and let anyone build on top. That's the only reason any of this exists.</p>
+    <ul class="credits">
+      <li><b>cubiomes</b> <span class="k">(Cubitect, MIT)</span> — the actual Java world-generation math. Every biome, structure, and seed calculation on this page runs through it. <a href="licenses/cubiomes-LICENSE.txt">License</a></li>
+      <li><b>LevelDB</b> <span class="k">(Google, BSD-3-Clause)</span> — the database format Bedrock worlds are stored in. Without it there's no Bedrock support at all. <a href="licenses/leveldb-LICENSE.txt">License</a></li>
+      <li><b>Snappy</b> <span class="k">(Google, BSD-3-Clause)</span> — the compression LevelDB runs on. <a href="licenses/snappy-COPYING.txt">License</a></li>
+      <li><b>Leaflet</b> <span class="k">(BSD-2-Clause)</span> — the map engine under every pan and zoom, including the live demo above. <a href="licenses/leaflet-LICENSE.txt">License</a></li>
+      <li><b>Tauri</b> <span class="k">(MIT / Apache-2.0)</span> — the desktop shell that makes a small, fast, no-telemetry app possible. <a href="licenses/tauri-LICENSE-MIT.txt">MIT</a> &middot; <a href="licenses/tauri-LICENSE-APACHE.txt">Apache-2.0</a></li>
+    </ul>
   </section>
 
   <section class="get">
     <span class="lbl">// get it</span>
-    <a class="cta" href="downloads/Sojourner_26.3.0-snapshot.5_amd64.AppImage" download>Download<span class="badge">Linux</span></a>
-    <div class="plats">LINUX &nbsp;|&nbsp; v<span class="ver">26.3.0-snapshot.5</span></div>
-    <span class="alt">AppImage above (no install needed) &middot; also as <a href="downloads/Sojourner_26.3.0-snapshot.5_amd64.deb">.deb</a> &amp; <a href="downloads/Sojourner-26.3.0-snapshot.5-1.x86_64.rpm">.rpm</a>. Version tracks the Minecraft release it supports. &nbsp;<span class="soon">Windows &amp; macOS &rarr; coming soon</span></span>
+    <h2>The current build, and what came before it.</h2>
+    <p class="lede">One person's project, not a company's — free, no account, no auto-updater phoning anything home. Older builds stay up here too, instead of disappearing the moment a new one ships.</p>
+    <ul class="releases">
+      <li class="release">
+        <span class="rver">26.3.0-snapshot.8</span><span class="rtag">current</span>
+        <span class="rlinks">
+          <a href="downloads/Sojourner_26.3.0-snapshot.8_amd64.deb" download>.deb</a>
+          <a href="downloads/Sojourner-26.3.0-snapshot.8-1.x86_64.rpm" download>.rpm</a>
+          <a href="downloads/Sojourner_26.3.0-snapshot.8_x64-setup.exe" download>.exe &mdash; Windows</a>
+        </span>
+      </li>
+      <li class="release soon">
+        <span class="rver">macOS</span><span class="rtag">not yet</span>
+      </li>
+    </ul>
+    <details class="archive">
+      <summary>Older builds</summary>
+      <p>Nothing retired yet &mdash; this is the first public build. Future releases get archived here instead of deleted.</p>
+    </details>
+    <p class="disc-blunt">This reads your world files directly and is unpaid, unsupported, early-stage software. Back your saves up before pointing it at anything you'd miss. It might crash, misrender, or eat an evening &mdash; that's yours to weigh, not a warranty anyone's offering. If it breaks: open an issue if you feel like it, or don't.</p>
   </section>
 
   <footer>
@@ -279,19 +304,6 @@ section:nth-of-type(4){animation-delay:.24s}
   </footer>
 
 </main>
-
-<div id="toast" class="toast" aria-hidden="true">
-  <svg class="toast-icon" viewBox="0 0 16 16" shape-rendering="crispEdges">
-    <rect x="2" y="2" width="5" height="12" fill="#6a3fb5"/>
-    <rect x="7" y="3" width="7" height="10" fill="#eee6d0"/>
-    <rect x="7" y="3" width="1" height="10" fill="#c9bd9a"/>
-    <rect x="2" y="2" width="5" height="1" fill="#8a63cf"/>
-  </svg>
-  <div class="toast-lines">
-    <span class="toast-kind">Advancement Made!</span>
-    <span class="toast-name">Read The Source</span>
-  </div>
-</div>
 
 <div id="lb" class="lightbox" hidden role="dialog" aria-modal="true" aria-label="Screenshot, full resolution">
   <button id="lb-close" class="lb-close" aria-label="Close (Esc)" type="button">&times;</button>
@@ -323,22 +335,6 @@ section:nth-of-type(4){animation-delay:.24s}
   close.addEventListener('click',shut);
   lb.addEventListener('click',function(e){ if(e.target!==img) shut(); });
   document.addEventListener('keydown',function(e){ if(e.key==='Escape' && !lb.hidden) shut(); });
-
-  // Achievement toast — fires once, the first time the trust section scrolls
-  // into view (fits the content: that's the "go verify it yourself" section).
-  var trust=document.querySelector('.trust'),toast=document.getElementById('toast');
-  if(trust && toast && 'IntersectionObserver' in window){
-    var io=new IntersectionObserver(function(entries){
-      entries.forEach(function(e){
-        if(e.isIntersecting){
-          toast.classList.add('show');
-          io.unobserve(trust);
-          setTimeout(function(){ toast.classList.remove('show'); },4500);
-        }
-      });
-    },{threshold:.4});
-    io.observe(trust);
-  }
 })();
 </script>
 </body>

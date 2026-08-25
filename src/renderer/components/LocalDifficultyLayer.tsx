@@ -1,17 +1,17 @@
 import { memo } from 'react'
 import L from 'leaflet'
 import { useApp } from '../App'
-import { TILE_SIZE, BASE_BLOCKS_PER_PIXEL } from '../lib/constants'
+import { TILE_SIZE } from '../lib/constants'
 import * as api from '../lib/tauriAPI'
 
-import { TileJobQueue } from '../lib/tileJobQueue'
+import { createOverlayQueuePair } from '../lib/tileJobQueue'
 import { postOverlay } from '../lib/overlayWorker'
 import { useTileLayer } from '../hooks/useTileLayer'
-import * as tileStats from '../lib/tileStats'
+import { tileChunkRange, blocksPerPixelAt } from '../lib/tileCoords'
 
-const CHUNK_SIZE = 16
-const queue = new TileJobQueue(4, () => tileStats.notify(), 'local-difficulty')
-tileStats.registerOverlay({ key: 'localdifficulty', label: 'Local difficulty', className: 'localdifficulty', queues: [queue], caches: [] })
+// liveCache: false — this layer's live path intentionally never caches tiles.
+const { liveQueue: queue, staticQueue, staticCache } =
+  createOverlayQueuePair('localdifficulty', 'Local difficulty', 'localdifficulty', { liveCache: false })
 
 function difficultyColor(t: number): [number, number, number] {
   if (t <= 0.5) {
@@ -36,16 +36,10 @@ function LocalDifficultyLayer({ map }: { map: L.Map }) {
     tileSize: TILE_SIZE,
     zIndex: 5,
     deps: [map, worldDir, dimension, difficulty, worldTime],
-    skip: (coords) => BASE_BLOCKS_PER_PIXEL / Math.pow(2, coords.z) > 128,
+    enabled: !api.IS_STATIC_SITE,
+    skip: (coords) => blocksPerPixelAt(coords.z) > 128,
     fetch: async (coords) => {
-      const blocksPerPixel = BASE_BLOCKS_PER_PIXEL / Math.pow(2, coords.z)
-      const totalBlocksW = TILE_SIZE * blocksPerPixel
-      const originX = coords.x * totalBlocksW
-      const originZ = coords.y * totalBlocksW
-      const cx0 = Math.floor(originX / CHUNK_SIZE)
-      const cx1 = Math.floor((originX + totalBlocksW - 1) / CHUNK_SIZE)
-      const cz0 = Math.floor(originZ / CHUNK_SIZE)
-      const cz1 = Math.floor((originZ + totalBlocksW - 1) / CHUNK_SIZE)
+      const { blocksPerPixel, originX, originZ, cx0, cx1, cz0, cz1 } = tileChunkRange(coords)
       const width = cx1 - cx0 + 1
 
       const data = await api.getLocalDifficulties(worldDir, dimension, cx0, cz0, cx1, cz1, difficulty, worldTime)
@@ -78,6 +72,23 @@ function LocalDifficultyLayer({ map }: { map: L.Map }) {
       if (!pixelsBuf) return null
       return new ImageData(new Uint8ClampedArray(pixelsBuf), TILE_SIZE, TILE_SIZE)
     },
+  })
+
+  useTileLayer({
+    map,
+    queue: staticQueue,
+    tileSize: api.getTileSizes(dimension).localDifficulty ?? TILE_SIZE,
+    zIndex: 5,
+    deps: [map, dimension],
+    enabled: api.IS_STATIC_SITE,
+    cache: staticCache,
+    maxCache: 256,
+    cacheKeyFn: (coords) => `static:${dimension}:${coords.x}:${coords.y}:${coords.z}`,
+    fetch: async coords => {
+      const tile = await api.renderOverlayTile('localDifficulty', dimension, coords.x, coords.y, coords.z)
+      return tile ? `${api.tileSrc(tile.path)}?v=${tile.mtime}` : null
+    },
+    nativeZoom: 4, // baked only to zoom 4
   })
 
   return null

@@ -10,24 +10,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
-/// Minimum gap between `region:changed` emissions for the *same* region.
-/// While Minecraft actively generates terrain it flushes a region file every
-/// few seconds (per-chunk or per render-distance batch); without this, each
-/// flush re-triggers a full `.mca` re-read + full on-screen re-render for
-/// every tile touching that region — tens of times over a minute of travel,
-/// which is what pegs the backend's CPU. The first write to a quiet region
-/// still emits immediately (leading edge, keeps responsiveness for newly
-/// visited terrain); further writes within this window are coalesced and
-/// flushed once as a trailing update after the window closes, so the final
-/// state is never dropped even if MC stops writing mid-window.
+/// Minimum gap between `region:changed` emissions for the *same* region. Without
+/// this, every flush during active worldgen (every few seconds) re-triggers a full
+/// `.mca` re-read + re-render, pegging the backend's CPU. First write to a quiet
+/// region emits immediately (leading edge); further writes in-window coalesce into
+/// one trailing update after the window closes, so the final state is never dropped.
 const REGION_SETTLE: Duration = Duration::from_secs(20);
 const REGION_SETTLE_TICK: Duration = Duration::from_millis(500);
 
-/// Payload for the `region:changed` event: the affected dimension plus the region
-/// coords that changed within it. The frontend gates on `dimension` so a write in
-/// one dimension never invalidates the identically-numbered region in another.
-/// `dimension` is `overworld` / `nether` / `end`, a custom dimension dir name, or
-/// `*` (Bedrock — dimension unknown, treated as "any" = full invalidation).
+/// Payload for `region:changed`. The frontend gates on `dimension` so a write in one
+/// dimension never invalidates the identically-numbered region in another; `*` means
+/// Bedrock (dimension unknown) — treated as "any" = full invalidation.
 #[derive(Clone, serde::Serialize)]
 struct RegionChange {
     dimension: String,
@@ -50,19 +43,14 @@ fn region_dimension(path: &Path, world_dir: &Path) -> Option<String> {
     })
 }
 
-// ── Managed state ─────────────────────────────────────────────────────────────
-
 pub struct WatchState {
     level_dat_watcher: Option<Debouncer<RecommendedWatcher>>,
     region_watcher:    Option<Debouncer<RecommendedWatcher>>,
-    /// Signals the region-settle ticker thread (if any) to stop. Set false on
-    /// `stop()`/re-`watch_world` so the previous session's thread exits; the
-    /// thread checks this every tick rather than being force-killed.
+    /// Signals the region-settle ticker thread to stop; checked each tick rather
+    /// than force-killed.
     settle_running:    Option<Arc<AtomicBool>>,
-    /// Joined in `stop()` so a rapid world switch can never leave two ticker
-    /// threads transiently alive against two independent state maps — worst
-    /// case `stop()` blocks for one `REGION_SETTLE_TICK` (500ms) while the old
-    /// thread notices the flag and exits.
+    /// Joined in `stop()` so a rapid world switch can't leave two ticker threads
+    /// alive against two state maps — worst case blocks one tick (500ms).
     settle_thread:     Option<std::thread::JoinHandle<()>>,
 }
 
@@ -90,8 +78,6 @@ impl WatchState {
 
 pub type WatchStateMutex = Mutex<WatchState>;
 
-// ── Commands ──────────────────────────────────────────────────────────────────
-
 /// Start watching a world: level.dat (500ms debounce) + region dirs (300ms debounce).
 /// Replaces any existing watchers.
 #[tauri::command]
@@ -108,14 +94,12 @@ pub fn watch_world(
     let mut ws = state.lock().map_err(|e| e.to_string())?;
     ws.stop();
 
-    // Detect edition once up front
     let edition = if world_dir.join("db").join("CURRENT").exists() {
         WorldEdition::Bedrock
     } else {
         WorldEdition::Java
     };
 
-    // ── level.dat watcher ────────────────────────────────────────────────────
     let app_ld   = app.clone();
     let dat_path = level_dat_path.clone();
     let edition2 = edition.clone();
@@ -157,19 +141,15 @@ pub fn watch_world(
 
     ws.level_dat_watcher = Some(ld_debouncer);
 
-    // ── Region / LevelDB watcher ──────────────────────────────────────────────
     let app_rg = app.clone();
 
     if edition == WorldEdition::Bedrock {
-        // Bedrock: watch db/ for LevelDB file changes.
-        // We can't extract chunk coords from LDB filenames, so emit an empty
-        // Vec to signal "all chunks may have changed" (full tile invalidation).
+        // Can't extract chunk coords from LDB filenames, so watching db/ signals a
+        // full invalidation (`*` + empty regions) for whichever dimension is viewed.
         let mut rg_debouncer = new_debouncer(
             Duration::from_millis(5_000),
             move |res: DebounceEventResult| {
                 if res.is_err() { return; }
-                // Can't map an LDB write to a dimension/region, so signal a full
-                // invalidation for whichever dimension is being viewed (`*` + empty).
                 let _ = app_rg.emit("region:changed", RegionChange {
                     dimension: "*".to_string(),
                     regions:   Vec::new(),
@@ -184,18 +164,14 @@ pub fn watch_world(
         }
         ws.region_watcher = Some(rg_debouncer);
     } else {
-        // Java: watch the world root recursively and emit per-region coords for any
-        // changed block-region .mca file. A recursive watch (rather than one watch
-        // per known region dir) means region dirs created *after* startup are still
-        // covered — e.g. the first time you enter the Nether/End, or a custom
-        // dimension whose `dimensions/<ns>/<dim>/region/` tree didn't exist yet.
+        // Recursive watch (rather than one per known region dir) so region dirs
+        // created after startup are still covered — e.g. first Nether/End entry.
         // notify auto-adds watches for newly-created subdirectories.
         let watch_root = world_dir.clone();
 
-        // Per-region settle throttle (see REGION_SETTLE doc comment above).
-        // `next_allowed`: earliest time we're allowed to emit for a region again.
-        // `pending`: regions suppressed this cycle that still need a trailing flush
-        // once their window closes, even if no further writes arrive to trigger it.
+        // Per-region settle throttle (see REGION_SETTLE doc above). `next_allowed`:
+        // earliest time we're allowed to emit for a region again. `pending`: regions
+        // suppressed this cycle that still need a trailing flush once their window closes.
         let next_allowed: Arc<Mutex<HashMap<(String, i32, i32), Instant>>> = Arc::new(Mutex::new(HashMap::new()));
         let pending: Arc<Mutex<HashSet<(String, i32, i32)>>> = Arc::new(Mutex::new(HashSet::new()));
         let next_allowed_cb = next_allowed.clone();
@@ -207,21 +183,17 @@ pub fn watch_world(
                 let events = match res {
                     Ok(evts) => evts,
                     Err(errs) => {
-                        // An inotify queue overflow under heavy MC IO surfaces here and
-                        // means events were DROPPED — a region write can be lost, so
-                        // region:changed never fires for it and its torn tile never heals.
-                        // A prime suspect for the un-healed freeze; make it visible.
+                        // An inotify queue overflow under heavy MC IO surfaces here — events
+                        // were DROPPED, so region:changed never fires and a torn tile never heals.
                         crate::tile_renderer::trace_log(&format!("region watcher error (events may be dropped): {:?}", errs));
                         return;
                     }
                 };
-                // Bucket changed regions per dimension so each event invalidates only
-                // its own dimension's tiles/markers.
                 let mut by_dim: HashMap<String, HashSet<(i32, i32)>> = HashMap::new();
                 for e in &events {
                     if e.path.extension().map_or(true, |x| x != "mca") { continue; }
-                    // Only block-region files (…/region/r.x.z.mca) — a recursive watch
-                    // also sees entities/ and poi/ .mca files, which don't feed tiles.
+                    // Only block-region files — a recursive watch also sees entities/ and
+                    // poi/ .mca files, which don't feed tiles.
                     if e.path.parent().and_then(|p| p.file_name()).map_or(true, |n| n != "region") { continue; }
                     let Some(dim) = region_dimension(&e.path, &watch_root) else { continue };
                     let Some(stem) = e.path.file_stem().and_then(|s| s.to_str()) else { continue };
@@ -233,10 +205,8 @@ pub fn watch_world(
                     by_dim.entry(dim).or_default().insert((rx, rz));
                 }
 
-                // Settle throttle: a region that's been quiet long enough (or is
-                // brand new) emits now — leading edge. One still inside its window
-                // is deferred to the ticker thread below instead of re-triggering
-                // a render immediately.
+                // A region quiet long enough (or brand new) emits now (leading edge);
+                // one still inside its window defers to the ticker thread below.
                 let now = Instant::now();
                 let mut to_emit: HashMap<String, Vec<(i32, i32)>> = HashMap::new();
                 {
@@ -273,11 +243,9 @@ pub fn watch_world(
 
         ws.region_watcher = Some(rg_debouncer);
 
-        // Trailing-edge ticker: periodically flushes any region suppressed above
-        // once its settle window elapses, so a region that goes quiet mid-window
-        // still gets a final, correct render without waiting on another
-        // (possibly unrelated) write to trigger it. Cheap: an in-memory map check
-        // every 500ms, no I/O. Stopped via `running` when the watcher is replaced.
+        // Trailing-edge ticker: flushes any suppressed region once its settle window
+        // elapses, so it gets a final render without waiting on another write. Cheap
+        // in-memory map check every 500ms, no I/O. Stopped via `running` on watcher replace.
         let running = Arc::new(AtomicBool::new(true));
         ws.settle_running = Some(running.clone());
         let app_ticker = app.clone();
@@ -299,12 +267,8 @@ pub fn watch_world(
                         }
                         !due
                     });
-                    // A region's `next_allowed` entry only matters while it's still
-                    // being written to; once its window has been over for a while
-                    // with no further write (so it never re-entered `pending`), drop
-                    // it — otherwise this map grows by one entry per region ever
-                    // visited for the life of the process (thousands over a long
-                    // session spanning overworld/nether/end).
+                    // Drop entries whose window is long over with no further write —
+                    // otherwise this map grows by one entry per region visited forever.
                     next_allowed.retain(|key, &mut t| pending.contains(key) || now < t + REGION_SETTLE);
                 }
                 for (dimension, regions) in to_emit {

@@ -1,6 +1,6 @@
 [submodule "cubiomes"]
 	path = cubiomes
-	url = git@github.com:easartogita/cubiomes.git
+	url = git@github.com:xpple/cubiomes.git
 	branch = 26.3
 [submodule "leveldb"]
 	path = leveldb

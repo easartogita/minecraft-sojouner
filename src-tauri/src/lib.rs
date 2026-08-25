@@ -1,13 +1,20 @@
-mod bedrock;
+pub mod bedrock;
 mod block_colors;
 mod block_entity_reader;
 mod cubiomes;
 mod entity_reader;
 mod file_watcher;
-mod nbt_reader;
+mod format_guard;
+pub mod nbt_reader;
 mod poi_reader;
-mod region_reader;
+pub mod region_reader;
 mod slime;
+pub mod static_export;
+mod static_site_assets;
+// pub: bin/copy_blocks_cli.rs needs to reach this from outside the crate.
+// Still fully compiled out of release builds either way.
+#[cfg(debug_assertions)]
+pub mod structure_copy;
 mod tile_renderer;
 
 use bedrock::leveldb::LdbDatabase;
@@ -19,13 +26,12 @@ use std::path::Path;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
 use tauri::Manager;
 
-// ── Bedrock LevelDB connection pool ──────────────────────────────────────────
 // One open LdbDatabase per world_dir. Avoids reopening the DB on every tile.
 
-struct BedrockDbCache(Mutex<Option<(String, Arc<LdbDatabase>)>>);
+pub struct BedrockDbCache(Mutex<Option<(String, Arc<LdbDatabase>)>>);
 
 impl BedrockDbCache {
-    fn new() -> Self { BedrockDbCache(Mutex::new(None)) }
+    pub fn new() -> Self { BedrockDbCache(Mutex::new(None)) }
 
     fn get_or_open(&self, world_dir: &str) -> Result<(), String> {
         let mut guard = self.0.lock().unwrap();
@@ -62,8 +68,6 @@ impl BedrockDbCache {
     }
 }
 
-// ── Edition detection ─────────────────────────────────────────────────────────
-
 fn detect_world_edition(world_dir: &Path) -> WorldEdition {
     if world_dir.join("db").join("CURRENT").exists() {
         WorldEdition::Bedrock
@@ -72,11 +76,11 @@ fn detect_world_edition(world_dir: &Path) -> WorldEdition {
     }
 }
 
-// ── Tile render semaphore — limits concurrent .mca disk reads ─────────────────
+pub struct TileRenderSemaphore(Arc<tokio::sync::Semaphore>);
 
-struct TileRenderSemaphore(Arc<tokio::sync::Semaphore>);
-
-// ── Export cancel state ───────────────────────────────────────────────────────
+impl TileRenderSemaphore {
+    pub fn new(permits: usize) -> Self { TileRenderSemaphore(Arc::new(tokio::sync::Semaphore::new(permits))) }
+}
 
 struct ExportCancel(Mutex<Arc<AtomicBool>>);
 
@@ -91,8 +95,6 @@ impl ExportCancel {
         self.0.lock().unwrap().store(true, Ordering::Relaxed);
     }
 }
-
-// ── Level.dat / seed commands ─────────────────────────────────────────────────
 
 #[tauri::command]
 fn read_level_dat(path: String, db_cache: tauri::State<'_, BedrockDbCache>) -> Result<SeedData, String> {
@@ -157,8 +159,6 @@ async fn select_world_dir(app: tauri::AppHandle) -> Option<String> {
     }
     None
 }
-
-// ── Saves folder discovery ────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -257,19 +257,6 @@ fn list_saves_worlds() -> Vec<SavesWorldEntry> {
     // Deduplicate by path in case dirs overlap on unusual setups
 }
 
-// ── Region / chunk commands ───────────────────────────────────────────────────
-
-#[tauri::command]
-async fn get_cave_entrances(
-    world_dir: String,
-    dimension: String,
-    cx0: i32, cz0: i32, cx1: i32, cz1: i32,
-) -> Vec<i32> {
-    tauri::async_runtime::spawn_blocking(move || {
-        region_reader::get_cave_entrances_from_mca(&world_dir, &dimension, cx0, cz0, cx1, cz1)
-    }).await.unwrap_or_default()
-}
-
 #[tauri::command]
 async fn get_inhabited_times(
     world_dir: String,
@@ -335,26 +322,49 @@ async fn get_local_difficulties(
     }).await.unwrap_or_default()
 }
 
-// ── Tile cache commands ───────────────────────────────────────────────────────
-
 #[tauri::command]
 async fn render_biome_tile(
-    app:        tauri::AppHandle,
-    slot:       i32,
-    seed_low:   i32,
-    seed_high:  i32,
-    mc_version: i32,
-    dimension:  String,
-    tile_x:     i32,
-    tile_y:     i32,
-    zoom:       i32,
-) -> Option<String> {
+    app:         tauri::AppHandle,
+    slot:        i32,
+    seed_low:    i32,
+    seed_high:   i32,
+    mc_version:  i32,
+    world_flags: i32,
+    dimension:   String,
+    tile_x:      i32,
+    tile_y:      i32,
+    zoom:        i32,
+) -> Option<(String, u64)> {
     let cache_root = app.path().app_cache_dir()
         .map(|p| p.join("tile-cache").join(format!("v{}", tile_renderer::CACHE_VERSION)))
         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/msm-tile-cache"));
     tauri::async_runtime::spawn_blocking(move || {
         tile_renderer::render_biome_tile(
-            &cache_root, slot, seed_low, seed_high, mc_version, &dimension,
+            &cache_root, slot, seed_low, seed_high, mc_version, world_flags, &dimension,
+            tile_x, tile_y, zoom,
+        )
+    }).await.ok().flatten()
+}
+
+#[tauri::command]
+async fn render_underground_biome_tile(
+    app:         tauri::AppHandle,
+    slot:        i32,
+    seed_low:    i32,
+    seed_high:   i32,
+    mc_version:  i32,
+    world_flags: i32,
+    dimension:   String,
+    tile_x:      i32,
+    tile_y:      i32,
+    zoom:        i32,
+) -> Option<(String, u64)> {
+    let cache_root = app.path().app_cache_dir()
+        .map(|p| p.join("tile-cache").join(format!("v{}", tile_renderer::CACHE_VERSION)))
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/msm-tile-cache"));
+    tauri::async_runtime::spawn_blocking(move || {
+        tile_renderer::render_underground_biome_tile(
+            &cache_root, slot, seed_low, seed_high, mc_version, world_flags, &dimension,
             tile_x, tile_y, zoom,
         )
     }).await.ok().flatten()
@@ -382,15 +392,13 @@ async fn render_tile(
 
     if edition == "bedrock" {
         let _ = db_cache.get_or_open(&world_dir);
-        // Bedrock: build closures around the DB cache
         let permit = sem.0.clone().acquire_owned().await.map_err(|_| ())?;
-        // Clone what we need before moving into spawn_blocking
+        // db_cache (Tauri State) can't move into spawn_blocking, so collect the chunk
+        // colors synchronously here — fast enough for most tiles since the semaphore
+        // limits concurrency.
         let world_dir2 = world_dir.clone();
         let dim2 = dimension.clone();
 
-        // We can't move db_cache (Tauri State) into spawn_blocking, so we collect
-        // the chunk colors synchronously here and pass the Vec in.
-        // For most tiles this is fast enough — the semaphore limits concurrency.
         let _ = permit; // release permit — blocking work is below on current thread
         let result = {
             let ldb_result = db_cache.with(&world_dir, |db| {
@@ -400,9 +408,8 @@ async fn render_tile(
                     &dim2,
                     tile_x, tile_y, zoom,
                     hide_water, cave_y, cave_scan_low, cave_scan_high,
-                    // mtime closure
+                    false, // Bedrock LevelDB reads are atomic — never torn, no retry needed.
                     |_, _, _, _| bedrock::chunk_reader::max_ldb_mtime(&world_dir2),
-                    // chunk colors closure
                     |reqs| bedrock::chunk_reader::read_bedrock_chunk_colors(
                         db, &dim2, reqs, hide_water, cave_y, cave_scan_low, cave_scan_high,
                     ),
@@ -410,25 +417,58 @@ async fn render_tile(
             });
             ldb_result
         };
-        Ok(result.flatten())
+        Ok(result.flatten().map(|(path, mtime, _torn)| (path, mtime)))
     } else {
-        let permit = sem.0.clone().acquire_owned().await.map_err(|_| ())?;
-        tauri::async_runtime::spawn_blocking(move || {
-            let _permit = permit;
-            tile_renderer::get_or_render_tile(
-                &cache_root,
-                &world_dir,
-                &dimension,
-                tile_x, tile_y, zoom,
-                hide_water, cave_y, cave_scan_low, cave_scan_high,
-                |min_cx, max_cx, min_cz, max_cz| {
-                    tile_renderer::max_mca_mtime(&world_dir, &dimension, min_cx, max_cx, min_cz, max_cz)
-                },
-                |reqs| region_reader::read_chunk_colors_from_mca(
-                    &world_dir, &dimension, reqs, hide_water, cave_y, cave_scan_low, cave_scan_high,
-                ),
-            )
-        }).await.map_err(|_| ())
+        // A torn .mca read self-heals once the file settles, but accepting it as-is
+        // would cache the bad render under a normal mtime and freeze it there. Retry
+        // a bounded few times with backoff instead; sleeps happen outside the
+        // semaphore permit so a torn tile doesn't hold up other tiles' render slots.
+        const RETRY_DELAYS_SECS: [u64; 3] = [6, 12, 24];
+
+        let mut attempt = 0usize;
+        loop {
+            let force_fresh = attempt > 0;
+            let permit = sem.0.clone().acquire_owned().await.map_err(|_| ())?;
+            let world_dir_c = world_dir.clone();
+            let dimension_c = dimension.clone();
+            let cache_root_c = cache_root.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                let _permit = permit;
+                tile_renderer::get_or_render_tile(
+                    &cache_root_c,
+                    &world_dir_c,
+                    &dimension_c,
+                    tile_x, tile_y, zoom,
+                    hide_water, cave_y, cave_scan_low, cave_scan_high,
+                    force_fresh,
+                    |min_cx, max_cx, min_cz, max_cz| {
+                        tile_renderer::max_mca_mtime(&world_dir_c, &dimension_c, min_cx, max_cx, min_cz, max_cz)
+                    },
+                    |reqs| region_reader::read_chunk_colors_from_mca(
+                        &world_dir_c, &dimension_c, reqs, hide_water, cave_y, cave_scan_low, cave_scan_high,
+                    ),
+                )
+            }).await.map_err(|_| ())?;
+
+            let torn = matches!(&result, Some((_, _, true)));
+            if !torn || attempt == RETRY_DELAYS_SECS.len() {
+                if torn {
+                    eprintln!(
+                        "sojourner: tile z={zoom} ({tile_x},{tile_y}) still torn after {attempt} \
+                         retries — giving up, caching as-is",
+                    );
+                }
+                return Ok(result.map(|(path, mtime, _torn)| (path, mtime)));
+            }
+            let delay = RETRY_DELAYS_SECS[attempt];
+            eprintln!(
+                "sojourner: tile z={zoom} ({tile_x},{tile_y}) read torn (Minecraft mid-flush) — \
+                 retry {}/{} in {delay}s",
+                attempt + 1, RETRY_DELAYS_SECS.len(),
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            attempt += 1;
+        }
     }
 }
 
@@ -524,8 +564,6 @@ fn invalidate_mca_tiles(
     tile_renderer::invalidate_mca_tiles(&cache_root, &world_dir, &regions);
 }
 
-// ── Export commands ───────────────────────────────────────────────────────────
-
 #[tauri::command]
 fn list_regions(
     world_dir: String,
@@ -551,6 +589,31 @@ async fn select_export_path(app: tauri::AppHandle, default_name: String) -> Opti
         .add_filter("TIFF Image", &["tif", "tiff"])
         .set_file_name(&default_name)
         .blocking_save_file()
+        .map(|p| p.to_string())
+}
+
+// Structure templates (dev-only — see structure_copy/templates.rs). Dialog-only
+// commands; the actual save/load work is a separate command taking the returned path.
+#[cfg(debug_assertions)]
+#[tauri::command]
+async fn select_template_save_path(app: tauri::AppHandle, default_name: String) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .file()
+        .add_filter("Minecraft Structure", &["nbt"])
+        .set_file_name(&default_name)
+        .blocking_save_file()
+        .map(|p| p.to_string())
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+async fn select_template_file(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .file()
+        .add_filter("Minecraft Structure", &["nbt"])
+        .blocking_pick_file()
         .map(|p| p.to_string())
 }
 
@@ -611,7 +674,6 @@ fn cancel_export(app: tauri::AppHandle) {
     app.state::<ExportCancel>().cancel();
 }
 
-// ── Metrics stubs ─────────────────────────────────────────────────────────────
 // The Rust backend does not (yet) track per-render timing metrics.
 // These stubs keep the renderer's ChunkDataOverlay wired up without crashing.
 
@@ -670,8 +732,6 @@ fn reset_mca_metrics() {
     // No-op — metrics are not currently tracked in the Rust backend.
 }
 
-// ── App entry point ───────────────────────────────────────────────────────────
-
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -679,6 +739,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(WatchStateMutex::new(file_watcher::WatchState::new()))
         .manage(ExportCancel::new())
+        .manage(static_export::StaticExportCancel::new())
         .manage(TileRenderSemaphore(Arc::new(tokio::sync::Semaphore::new(4))))
         .manage(BedrockDbCache::new())
         .invoke_handler(tauri::generate_handler![
@@ -689,7 +750,6 @@ pub fn run() {
             select_world_dir,
             list_saves_worlds,
             // Region / chunks
-            get_cave_entrances,
             get_inhabited_times,
             get_block_at,
             get_local_difficulties,
@@ -700,6 +760,7 @@ pub fn run() {
             poi_reader::get_poi_cmd,
             // Tile cache
             render_biome_tile,
+            render_underground_biome_tile,
             render_tile,
             tile_source_mtime,
             delete_tile_cache,
@@ -711,6 +772,9 @@ pub fn run() {
             select_export_path,
             export_world_map,
             cancel_export,
+            static_export::select_export_dir,
+            static_export::export_static_site,
+            static_export::cancel_static_export,
             // Metrics
             get_mca_metrics,
             reset_mca_metrics,
@@ -727,16 +791,31 @@ pub fn run() {
             cubiomes::cubiomes_get_biomes_along_line,
             cubiomes::cubiomes_get_spawn,
             cubiomes::cubiomes_get_height_region,
-            cubiomes::cubiomes_get_ore_veins_at,
-            cubiomes::cubiomes_get_ore_veins_ex,
             cubiomes::cubiomes_generate_ore_features,
             cubiomes::cubiomes_get_carved_columns,
             cubiomes::cubiomes_get_ore_vein_columns,
+            cubiomes::cubiomes_get_ore_vein_column_at,
             cubiomes::cubiomes_cancel_request,
             cubiomes::structures::cubiomes_get_structure_loot,
             cubiomes::structures::cubiomes_get_structure_chests,
             cubiomes::structures::cubiomes_get_end_gateway_links,
-            cubiomes::cubiomes_get_surface_heights,
+            // Structure copy (dev-only — see structure_copy.rs)
+            #[cfg(debug_assertions)]
+            structure_copy::copy_regions,
+            #[cfg(debug_assertions)]
+            structure_copy::copy_chunks,
+            #[cfg(debug_assertions)]
+            structure_copy::force_relight_chunks,
+            #[cfg(debug_assertions)]
+            structure_copy::blocks::copy_blocks,
+            #[cfg(debug_assertions)]
+            structure_copy::templates::save_structure_template,
+            #[cfg(debug_assertions)]
+            structure_copy::templates::paste_structure_template,
+            #[cfg(debug_assertions)]
+            select_template_save_path,
+            #[cfg(debug_assertions)]
+            select_template_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

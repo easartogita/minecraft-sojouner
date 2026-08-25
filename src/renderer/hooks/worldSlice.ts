@@ -80,10 +80,9 @@ export type WorldAction =
 
 // ── Pin storage — world-scoped ────────────────────────────────────────────────
 
-// Pins are user data, not a regenerable cache — their storage key must stay
-// stable when a world is upgraded. So key on the save itself (level.dat path),
-// never the worldgen version. The `version` param is kept only to recover pins
-// written by older builds that baked it into the seed key (see migration below).
+// Pins are user data, not a regenerable cache, so they're keyed on the save
+// itself (level.dat path), never worldgen version. `version` is kept only to
+// recover pins written by older builds that baked it into the seed key.
 export function pinWorldKey(levelDatPath: string | null, seed: string | null, _version?: MCVersionKey): string | null {
   if (levelDatPath) return levelDatPath
   if (seed) return `seed:${seed}`
@@ -186,7 +185,7 @@ export function worldInitialState(session: {
     levelDatPath: null,
     worldDir: null,
     seedData: null,
-    selectedVersion: session.selectedVersion ?? 'MC_1_21',
+    selectedVersion: session.selectedVersion ?? 'MC_1_21_4',
     dimension: dim,
     structuresByDimension,
     enabledStructures: new Set(structuresByDimension[dim] ?? getDefaultStructures(dim)),

@@ -42,7 +42,7 @@ export const BIOME_COLORS: Record<number, RGB> = {
   // Taiga
   5:  [11, 102, 89],      // taiga
   19: [22, 112, 98],      // taiga_hills
-  30: [49, 66, 60],       // snowy_taiga
+  30: [58, 92, 80],       // snowy_taiga — brightened/greened off dark neutral grey (34) for contrast
   31: [36, 53, 47],       // snowy_taiga_hills
   158: [36, 53, 47],      // snowy_taiga_mountains
   32: [89, 102, 81],      // giant_tree_taiga (old_growth_pine_taiga)
@@ -116,7 +116,7 @@ export const BIOME_COLORS: Record<number, RGB> = {
   185: [225, 100, 160],   // cherry_grove
   // 1.21
   186: [195, 205, 180],   // pale_garden
-  // 26.2 (Chaos Cubed)
+  // 26.2
   187: [200, 180, 60],    // sulfur_caves
   // 26.3
   188: [235, 146, 52],    // dappled_forest
@@ -180,7 +180,7 @@ export const BIOME_NAMES: Record<number, string> = {
   185: 'Cherry Grove',
   // 1.21
   186: 'Pale Garden',
-  // 26.2 (Chaos Cubed)
+  // 26.2
   187: 'Sulfur Caves',
   // 26.3
   188: 'Dappled Forest',

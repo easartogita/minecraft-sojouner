@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Live world demos — Sojourner</title>
+<meta name="description" content="Full static exports of real Minecraft worlds rendered by Sojourner — pan and zoom client-side, no install.">
+<meta name="robots" content="noindex">
+<style>
+:root{--amber:#ffaa00;--amber-dim:#6b4700;--white:#e8e8e0;--muted:#7a6a50;--bg:#010100;--mono:Consolas,'Courier New',monospace}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--white);font-family:var(--mono);font-size:1rem;line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:640px;margin:0 auto;padding:clamp(3rem,9vw,5rem) clamp(1.4rem,5vw,2.2rem) 4rem}
+.tag{font-size:.7rem;letter-spacing:.22em;color:var(--amber-dim);text-transform:uppercase}
+.mark{font-size:clamp(1.8rem,7vw,2.6rem);letter-spacing:.06em;margin-top:.5rem;text-shadow:0 0 26px rgba(255,170,0,.28)}
+.hook{color:#c9c4b4;margin-top:1rem;max-width:32em}
+.back{display:inline-block;margin-top:1.4rem;color:var(--amber-dim);text-decoration:none;font-size:.86rem}
+.back:hover,.back:focus-visible{color:var(--amber)}
+/* same item-slot demo cards as the homepage's "try it live" section */
+.demos{list-style:none;margin:2.2rem 0 .4rem;display:flex;flex-direction:column;gap:.6rem}
+.demo{position:relative;display:flex;flex-direction:column;gap:.55rem;padding:.85rem 1.1rem .85rem 1.7em;
+  border:1px solid var(--amber-dim);background:#0c0900;text-decoration:none;color:var(--white);
+  box-shadow:inset 1px 1px 0 rgba(255,170,0,.1),inset -2px -2px 0 rgba(0,0,0,.6);
+  transition:border-color .18s,box-shadow .18s}
+.demo::before{content:'›';position:absolute;left:.6em;top:.95rem;color:var(--amber);font-size:.85em}
+.demo:hover,.demo:focus-visible{border-color:var(--amber);
+  box-shadow:inset 1px 1px 0 rgba(255,170,0,.1),inset -2px -2px 0 rgba(0,0,0,.6),0 0 26px rgba(255,170,0,.18);outline:none}
+.demo-head{display:flex;align-items:baseline;gap:.9rem;flex-wrap:wrap}
+.demo b{color:var(--amber);font-weight:400;flex-shrink:0}
+.demo span{color:#a89f88;font-size:.84rem}
+.demo-note{color:var(--muted);font-size:.78rem;margin-top:1.1rem}
+/* meta.json is best-effort — older exports predate it and just show no info/pills */
+.demo-meta{color:var(--muted);font-size:.72rem;letter-spacing:.04em}
+.demo-pills{display:flex;flex-wrap:wrap;gap:.35rem}
+.pill{font-size:.66rem;letter-spacing:.03em;padding:.15rem .5rem;border:1px solid #2e2200;color:var(--muted)}
+.pill.on{color:var(--amber);border-color:var(--amber-dim)}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="tag">SOJOURNER &middot; LIVE DEMOS</div>
+  <h1 class="mark">/worlds</h1>
+  <p class="hook">Full static exports of real saves — the same tile rendering and data the desktop app produces, running entirely client-side. Pan and zoom before you download anything.</p>
+
+  <ul class="demos" id="demos"></ul>
+  <p class="demo-note">More worlds get added here as they're exported. Nothing in this folder is required for the app itself to work.</p>
+
+  <a class="back" href="/">&lsaquo; back to sojourner</a>
+</main>
+<script>
+// worlds.json: { "folder-name": "description" } — add a world here, no HTML edit needed.
+// Display title is the folder name with hyphens turned to spaces and title-cased.
+// A "~"-prefixed name (e.g. "~bad-land", matching an in-progress "~bad-land/"
+// upload) is staging — skipped here so a slow multi-GB upload never shows up
+// half-finished. Drop the "~" from both the folder and this key to publish it.
+const LAYER_LABELS = {
+  biome: 'Biome', underground: 'Underground', chunk: 'Chunk Data',
+  chunkHideWater: 'Hide Water', cave: 'Cave Mode', oreVeins: 'Ore Veins',
+  carvers: 'Carvers', localDifficulty: 'Local Difficulty',
+}
+
+fetch('worlds.json').then(r => r.json()).then(worlds => {
+  const list = document.getElementById('demos')
+  for (const [name, description] of Object.entries(worlds)) {
+    if (name.startsWith('~')) continue
+    const title = name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+    const a = document.createElement('a')
+    a.className = 'demo'
+    a.href = name + '/'
+    const head = document.createElement('div')
+    head.className = 'demo-head'
+    const b = document.createElement('b')
+    b.textContent = title
+    const span = document.createElement('span')
+    span.textContent = description
+    head.append(b, span)
+    a.append(head)
+    const li = document.createElement('li')
+    li.append(a)
+    list.append(li)
+
+    // meta.json (src-tauri/src/static_export.rs) — best-effort: exports made
+    // before it existed 404 here and the card just shows no info/pills.
+    fetch(name + '/meta.json').then(r => r.ok ? r.json() : null).then(meta => {
+      if (!meta) return
+      const info = document.createElement('div')
+      info.className = 'demo-meta'
+      const edition = meta.edition === 'bedrock' ? 'Bedrock' : 'Java'
+      const regions = meta.regions.toLocaleString()
+      info.textContent = `${edition} ${meta.versionName} · ${regions} region${meta.regions === 1 ? '' : 's'}`
+      const pills = document.createElement('div')
+      pills.className = 'demo-pills'
+      for (const [key, label] of Object.entries(LAYER_LABELS)) {
+        const pill = document.createElement('span')
+        pill.className = 'pill' + (meta.layers[key] ? ' on' : '')
+        pill.textContent = label
+        pills.append(pill)
+      }
+      a.append(info, pills)
+    }).catch(() => {})
+  }
+}).catch(() => {
+  document.getElementById('demos').outerHTML = '<p class="demo-note">Couldn’t load the world list.</p>'
+})
+</script>
+</body>
+</html>

@@ -6,27 +6,17 @@ use std::sync::Mutex;
 pub(super) static CUBIOMES_LOCK: Mutex<()> = Mutex::new(());
 
 /// Acquire `CUBIOMES_LOCK`, recovering from poison instead of propagating it.
-///
-/// A `.lock().unwrap()` on a poisoned mutex panics — and since a panic while
-/// *holding* this lock is exactly what poisons it, that first panic would
-/// otherwise kill worldgen/map rendering for the rest of the process (every
-/// later FFI call panics too, with no way back short of restarting the app).
-/// The guarded region only ever calls into cubiomes' C globals; a poisoning
-/// panic there means at worst a bad tile for the request that hit it, not a
-/// corrupted mutex we should keep honoring forever. Recovering treats a stale
-/// poisoned guard as if it were released cleanly — the safer choice.
+/// A panic while holding this lock poisons it; without recovery every later FFI
+/// call would panic too, killing worldgen for the rest of the process over what's
+/// at worst one bad tile.
 pub(super) fn lock_cubiomes() -> std::sync::MutexGuard<'static, ()> {
     CUBIOMES_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-// Cooperative cancellation for long-running overlay computations.
-//
-// Overlay tiles all serialise on CUBIOMES_LOCK, so an abandoned tile (scrolled
-// out of view) that is still queued on — or just acquired — the lock would
-// otherwise run its full computation and starve the tiles actually on screen.
-// The frontend tags each heavy tile fetch with a unique `req_id` and calls
-// `cubiomes_cancel_request` on tileunload; heavy commands call `take_cancelled`
-// right after acquiring the lock (and once more at the end) and bail early.
+// Cooperative cancellation: overlay tiles all serialise on CUBIOMES_LOCK, so an
+// abandoned tile (scrolled out of view) would otherwise still run to completion and
+// starve on-screen tiles. Frontend tags each fetch with a `req_id` and cancels it on
+// tileunload; heavy commands check `take_cancelled` after acquiring the lock.
 pub(super) static CANCELLED: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
 
 /// Remove `req_id` from the cancelled set, returning true if it was present.
@@ -54,7 +44,18 @@ unsafe extern "C" {
         flags:      i32,
     ) -> i32;
 
-    pub(super) fn cm_slot_matches(slot: i32, seed_low: i32, seed_high: i32, dimension: i32) -> i32;
+    /// Exporter-only: always (re)configures the one reserved generator slot
+    /// instead of round-robining, so a long-running export never loses its
+    /// generator to concurrent live-map use. See cubiomes_bridge.c.
+    pub(super) fn cm_setup_generator_reserved(
+        seed_low:   i32,
+        seed_high:  i32,
+        mc_version: i32,
+        dimension:  i32,
+        flags:      i32,
+    ) -> i32;
+
+    pub(super) fn cm_slot_matches(slot: i32, seed_low: i32, seed_high: i32, dimension: i32, flags: i32, mc_version: i32) -> i32;
 
     pub(super) fn cm_get_biome_region(
         slot:   i32,
@@ -103,17 +104,6 @@ unsafe extern "C" {
         out_y: *mut f32,
     ) -> i32;
 
-    pub(super) fn cm_get_ore_veins_at2(
-        seed_lo:       i32,
-        seed_hi:       i32,
-        cx:            i32,
-        cz:            i32,
-        copper_y_out:  *mut i32,
-        copper_sz_out: *mut i32,
-        iron_y_out:    *mut i32,
-        iron_sz_out:   *mut i32,
-    );
-
     pub(super) fn cm_generate_ore_features(
         slot:      i32,
         ore_types: *const i32,
@@ -138,6 +128,12 @@ unsafe extern "C" {
         cz0:  i32,
         cx1:  i32,
         cz1:  i32,
+    ) -> *mut i32;
+
+    pub(super) fn cm_get_ore_vein_column_at(
+        slot: i32,
+        bx:   i32,
+        bz:   i32,
     ) -> *mut i32;
 
     pub(super) fn cm_get_structure_loot(
@@ -176,6 +172,27 @@ unsafe extern "C" {
     pub(super) fn cm_free_results(ptr: *mut i32);
 }
 
+/// A generator config (seed, dimension, world flags, MC version) to verify a slot
+/// against. `slot` itself is deliberately excluded — it's nullable on the frontend
+/// and callers always check it separately.
+#[derive(Clone, Copy)]
+pub(super) struct GeneratorKey {
+    pub(super) seed_low:    i32,
+    pub(super) seed_high:   i32,
+    pub(super) dimension:   i32,
+    pub(super) world_flags: i32,
+    pub(super) mc_version:  i32,
+}
+
+/// True if `slot` is currently configured for exactly `key`, without acquiring
+/// `CUBIOMES_LOCK` — for callers that already hold the guard (re-locking would
+/// deadlock; the mutex is non-reentrant). Slots are recycled round-robin, so a
+/// queued command can land on a slot mid-repointed to another world/dimension/MC
+/// version. See `biomes::slot_matches` for the self-locking counterpart.
+pub(super) fn slot_matches_locked(slot: i32, key: GeneratorKey) -> bool {
+    unsafe { cm_slot_matches(slot, key.seed_low, key.seed_high, key.dimension, key.world_flags, key.mc_version) != 0 }
+}
+
 pub(super) fn seed_parts(seed: i64) -> (i32, i32) {
     let u = seed as u64;
     (u as i32, (u >> 32) as i32)
@@ -189,9 +206,7 @@ pub mod biomes;
 pub mod structures;
 pub mod ore_veins;
 pub mod carvers;
-pub mod terrain;
 
 pub use biomes::*;
 pub use ore_veins::*;
 pub use carvers::*;
-pub use terrain::*;

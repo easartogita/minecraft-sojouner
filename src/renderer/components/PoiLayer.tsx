@@ -8,15 +8,18 @@ import { useChunkMarkerLayer, type LayerStats, makeLayerStats, updateLayerStats,
 import { getPoiConfig, buildPopup, buildTooltip, createIcon } from '../lib/poiConfig'
 import { effectiveMarkerAnchorY } from '../hooks/overlaySlice'
 import { attachMarkerContextMenu } from '../lib/contextMenuBus'
-
-// ── Module-level stats ────────────────────────────────────────────────────────
+import { TileJobQueue } from '../lib/tileJobQueue'
+import * as tileStats from '../lib/tileStats'
 
 export type PoiLayerStats = LayerStats
 let _stats: LayerStats = makeLayerStats()
 export function getPoiLayerStats(): LayerStats { return { ..._stats } }
 export function resetPoiLayerStats(): void { _stats = makeLayerStats() }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// Single-slot queue purely so an in-flight load shows up in TileLoadingHud/DebugOverlay
+// via the same registerOverlay mechanism the tile-queue layers use.
+const loadQueue = new TileJobQueue(1, () => tileStats.notify(), 'poi')
+tileStats.registerOverlay({ key: 'poi', label: 'POI', className: 'poi', queues: [loadQueue], caches: [] })
 
 function PoiLayer({ map }: { map: L.Map }) {
   const { state } = useApp()
@@ -35,6 +38,7 @@ function PoiLayer({ map }: { map: L.Map }) {
     dimension,
     enabled: jobsiteVisible || netherPortalVisible || lodestoneVisible,
     minZoom: markerMinZoom,
+    loadQueue,
     onClear: () => { _stats.lastCount = 0 },
     onLoad: async (pool, group, bounds, isAborted) => {
       const { minCx, maxCx, minCz, maxCz } = bounds

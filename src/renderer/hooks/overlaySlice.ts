@@ -16,14 +16,11 @@ export interface OverlayState {
   showOreVeins: boolean
   showCopperVeins: boolean
   showIronVeins: boolean
-  oreVeinMode: 'density' | 'footprint'
   oreOpacity: number
   showOreFeatures: boolean
   oreFeatureTypes: string[]
   showCarvers: boolean
   carverOpacity: number
-  showTerrain: boolean
-  terrainOpacity: number
   hideWater: boolean
   showChunkGrid: boolean
   showRegionGrid: boolean
@@ -53,10 +50,8 @@ export interface OverlayState {
   caveAnchorY: number | null
   caveZoomMinOverworld: number
   caveZoomMinNether: number
-  showCaveEntrances: boolean
-  caveEntranceOpacity: number
   showLocalDifficulty: boolean
-  biomeMode: 'surface' | 'underground' | 'deep'
+  biomeMode: 'surface' | 'underground'
   tileCacheVersion: number
   overlayCacheVersion: number
   structureRevision: number
@@ -70,6 +65,33 @@ export interface OverlayState {
   rulerCurrentMode: TravelMode
   activeRouteId: string | null
   boatMinSegmentBlocks: number
+  /** Non-persisted: dev-only Structures panel mounted — forces chunk-data into
+   *  low-zoom region-outline mode at every zoom (region copy doesn't need per-block render). */
+  structureCopyPanelOpen: boolean
+  /** Non-persisted: checked regions in the Structures panel, for StructureCopySelectionLayer. */
+  structureCopySelectedRegions: [number, number][]
+  /** Non-persisted: copy granularity — 'region' (v0, whole-.mca), 'chunk' (v1,
+   *  relocatable + v2's Y-trim), or 'box' (v3, arbitrary box + rotation/mirror). */
+  structureCopyMode: 'region' | 'chunk' | 'box'
+  /** Non-persisted: selected chunk coords in chunk mode. */
+  structureCopySelectedChunks: [number, number][]
+  /** Non-persisted: armed to place the destination anchor on next map click. */
+  structureCopyPlacingDest: boolean
+  /** Non-persisted: destination anchor chunk (selection's bounding-box min corner) once placed. */
+  structureCopyDestChunk: [number, number] | null
+  /** Non-persisted, box mode: first-click X/Z corner pending the second. */
+  structureCopyBoxAnchor: [number, number] | null
+  /** Non-persisted, box mode: finalized X/Z footprint. No Y — can't be picked
+   *  from the 2D map, so Y range is local state in StructureCopyFlyout instead. */
+  structureCopyBoxSelection: { x0: number; z0: number; x1: number; z1: number } | null
+  /** Non-persisted, box mode: armed to place the box destination X/Z on next click. */
+  structureCopyPlacingBoxDest: boolean
+  /** Non-persisted, box mode: rotated box's min corner, block-granularity
+   *  (v3's paste position isn't chunk-aligned); Y set manually, same as above. */
+  structureCopyBoxDest: { x: number; y: number; z: number } | null
+  /** Non-persisted, box mode: rotation/mirror applied before pasting. */
+  structureCopyRotation: 0 | 90 | 180 | 270
+  structureCopyMirror: 'x' | 'z' | null
 }
 
 export type OverlayAction =
@@ -83,14 +105,11 @@ export type OverlayAction =
   | { type: 'TOGGLE_ORE_VEINS' }
   | { type: 'TOGGLE_COPPER_VEINS' }
   | { type: 'TOGGLE_IRON_VEINS' }
-  | { type: 'SET_ORE_VEIN_MODE'; mode: 'density' | 'footprint' }
   | { type: 'SET_ORE_OPACITY'; opacity: number }
   | { type: 'TOGGLE_ORE_FEATURES' }
   | { type: 'SET_ORE_FEATURE_TYPES'; ids: string[] }
   | { type: 'TOGGLE_CARVERS' }
   | { type: 'SET_CARVER_OPACITY'; opacity: number }
-  | { type: 'TOGGLE_TERRAIN' }
-  | { type: 'SET_TERRAIN_OPACITY'; opacity: number }
   | { type: 'TOGGLE_HIDE_WATER' }
   | { type: 'TOGGLE_CHUNK_GRID' }
   | { type: 'TOGGLE_REGION_GRID' }
@@ -111,16 +130,15 @@ export type OverlayAction =
   | { type: 'TOGGLE_CAVE_MODE' }
   | { type: 'SET_CAVE_SCAN_RANGE'; low: number; high: number }
   | { type: 'SET_CAVE_ZOOM_MIN'; dimension: 'overworld' | 'nether'; min: number }
-  | { type: 'TOGGLE_CAVE_ENTRANCES' }
-  | { type: 'SET_CAVE_ENTRANCE_OPACITY'; opacity: number }
   | { type: 'TOGGLE_LOCAL_DIFFICULTY' }
-  | { type: 'SET_BIOME_MODE'; mode: 'surface' | 'underground' | 'deep' }
+  | { type: 'SET_BIOME_MODE'; mode: 'surface' | 'underground' }
   | { type: 'CLEAR_TILE_CACHE' }
   | { type: 'CLEAR_OVERLAY_CACHE' }
   | { type: 'CLEAR_STRUCTURE_CACHE' }
   | { type: 'TOGGLE_DEBUG_OVERLAY' }
   | { type: 'RESET_OVERLAYS' }
   | { type: 'SET_ZOOM'; zoom: number }
+  | { type: 'APPLY_SHARE_LINK_FILTERS'; filters: Partial<OverlayState> }
   | { type: 'SET_UI_SCALE'; scale: number }
   | { type: 'RULER_TOGGLE' }
   | { type: 'RULER_ADD_WAYPOINT'; x: number; z: number }
@@ -134,6 +152,21 @@ export type OverlayAction =
   | { type: 'SET_BOAT_MIN_SEGMENT'; blocks: number }
   | { type: 'RULER_START_EDITING' }
   | { type: 'SET_CAVE_LOCK'; locked: boolean; anchorY: number | null }
+  | { type: 'SET_STRUCTURE_COPY_PANEL_OPEN'; open: boolean }
+  | { type: 'SET_STRUCTURE_COPY_SELECTED_REGIONS'; regions: [number, number][] }
+  | { type: 'TOGGLE_STRUCTURE_COPY_REGION'; rx: number; rz: number }
+  | { type: 'SET_STRUCTURE_COPY_MODE'; mode: 'region' | 'chunk' | 'box' }
+  | { type: 'SET_STRUCTURE_COPY_SELECTED_CHUNKS'; chunks: [number, number][] }
+  | { type: 'TOGGLE_STRUCTURE_COPY_CHUNK'; cx: number; cz: number }
+  | { type: 'SET_STRUCTURE_COPY_PLACING_DEST'; placing: boolean }
+  | { type: 'SET_STRUCTURE_COPY_DEST_CHUNK'; dest: [number, number] | null }
+  | { type: 'SET_STRUCTURE_COPY_BOX_ANCHOR'; anchor: [number, number] | null }
+  | { type: 'SET_STRUCTURE_COPY_BOX_SELECTION'; selection: { x0: number; z0: number; x1: number; z1: number } | null }
+  | { type: 'SET_STRUCTURE_COPY_PLACING_BOX_DEST'; placing: boolean }
+  | { type: 'SET_STRUCTURE_COPY_BOX_DEST'; dest: { x: number; y: number; z: number } | null }
+  | { type: 'SET_STRUCTURE_COPY_BOX_DEST_XZ'; x: number; z: number }
+  | { type: 'SET_STRUCTURE_COPY_ROTATION'; rotation: 0 | 90 | 180 | 270 }
+  | { type: 'SET_STRUCTURE_COPY_MIRROR'; mirror: 'x' | 'z' | null }
 
 // Effective cave-mode zoom range for a dimension. 'end' has no range of its own
 // (cave mode has no effect there) and falls back to the overworld range.
@@ -183,10 +216,8 @@ export interface OverlaySession {
   showSlimeChunks?: boolean
   showCopperVeins?: boolean
   showIronVeins?: boolean
-  oreVeinMode?: 'density' | 'footprint'
   oreFeatureTypes?: string[]
   carverOpacity?: number
-  terrainOpacity?: number
   showChunkData?: boolean
   chunkDataMinZoom?: number
   showChunkGrid?: boolean
@@ -204,12 +235,10 @@ export interface OverlaySession {
   markerYHigh?: number
   /** Deprecated (pre-gauge symmetric radius) — read for migration, never written. */
   markerYFilterRadius?: number
-  showCaveEntrances?: boolean
-  caveEntranceOpacity?: number
   caveZoomMinOverworld?: number
   caveZoomMinNether?: number
   showLocalDifficulty?: boolean
-  biomeMode?: 'surface' | 'underground' | 'deep'
+  biomeMode?: 'surface' | 'underground'
   zoom?: number
   uiScale?: number
   rulerWaypoints?: { x: number; z: number }[]
@@ -249,10 +278,8 @@ export function saveOverlaySession(
     showSlimeChunks:         state.showSlimeChunks,
     showCopperVeins:         state.showCopperVeins,
     showIronVeins:           state.showIronVeins,
-    oreVeinMode:             state.oreVeinMode,
     oreFeatureTypes:         state.oreFeatureTypes,
     carverOpacity:           state.carverOpacity,
-    terrainOpacity:          state.terrainOpacity,
     showChunkData:           state.showChunkData,
     chunkDataMinZoom:        state.chunkDataMinZoom,
     showChunkGrid:           state.showChunkGrid,
@@ -268,8 +295,6 @@ export function saveOverlaySession(
     markerYFilterEnabled:    state.markerYFilterEnabled,
     markerYLow:              state.markerYLow,
     markerYHigh:             state.markerYHigh,
-    showCaveEntrances:       state.showCaveEntrances,
-    caveEntranceOpacity:     state.caveEntranceOpacity,
     caveZoomMinOverworld:    state.caveZoomMinOverworld,
     caveZoomMinNether:       state.caveZoomMinNether,
     showLocalDifficulty:     state.showLocalDifficulty,
@@ -300,14 +325,11 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
     showOreVeins:            false,
     showCopperVeins:         s.showCopperVeins           ?? true,
     showIronVeins:           s.showIronVeins             ?? true,
-    oreVeinMode:             s.oreVeinMode               ?? 'density',
     oreOpacity:              s.oreOpacity               ?? 1,
     showOreFeatures:         false,
     oreFeatureTypes:         s.oreFeatureTypes           ?? ALL_ORE_FEATURE_IDS,
     showCarvers:             false,
     carverOpacity:           s.carverOpacity             ?? 1,
-    showTerrain:             false,
-    terrainOpacity:          s.terrainOpacity            ?? 0.6,
     hideWater:               s.hideWater                ?? false,
     showChunkGrid:           s.showChunkGrid             ?? false,
     showRegionGrid:          s.showRegionGrid            ?? false,
@@ -322,7 +344,7 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
       : DEFAULT_MARKER_GROUPS,
     enabledMarkerGroups:     Array.isArray(s.enabledMarkerGroups) && s.enabledMarkerGroups.length > 0
       ? new Set(s.enabledMarkerGroups)
-      : new Set(DEFAULT_MARKER_GROUPS.map(g => g.id)),
+      : new Set<string>(['villagers']),
     markerYFilterEnabled:    s.markerYFilterEnabled      ?? false,
     // Migration: old sessions stored a symmetric radius around the player.
     markerYLow:              s.markerYLow  ?? (s.markerYFilterRadius != null ? -s.markerYFilterRadius : -32),
@@ -336,10 +358,11 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
     caveAnchorY:             null,
     caveZoomMinOverworld:    s.caveZoomMinOverworld      ?? CAVE_MODE_MIN_ZOOM,
     caveZoomMinNether:       s.caveZoomMinNether         ?? CAVE_MODE_MIN_ZOOM,
-    showCaveEntrances:       s.showCaveEntrances         ?? false,
-    caveEntranceOpacity:     s.caveEntranceOpacity       ?? 0.7,
     showLocalDifficulty:     s.showLocalDifficulty       ?? false,
-    biomeMode:               s.biomeMode                 ?? 'surface',
+    // Legacy persisted state may still say 'deep' (removed — Cave/Deep merged
+    // into one Y-scanning 'underground' mode); fold it forward instead of
+    // letting an old save silently drop into neither surface nor underground.
+    biomeMode:               s.biomeMode == null ? 'surface' : s.biomeMode === 'surface' ? 'surface' : 'underground',
     tileCacheVersion:        0,
     overlayCacheVersion:     0,
     structureRevision:       0,
@@ -353,6 +376,18 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
     rulerCurrentMode:        s.rulerCurrentMode ?? 'walk',
     activeRouteId:           s.activeRouteId ?? null,
     boatMinSegmentBlocks:    s.boatMinSegmentBlocks ?? 32,
+    structureCopyPanelOpen:      false,
+    structureCopySelectedRegions: [],
+    structureCopyMode:           'region',
+    structureCopySelectedChunks: [],
+    structureCopyPlacingDest:    false,
+    structureCopyDestChunk:      null,
+    structureCopyBoxAnchor:      null,
+    structureCopyBoxSelection:   null,
+    structureCopyPlacingBoxDest: false,
+    structureCopyBoxDest:        null,
+    structureCopyRotation:       0,
+    structureCopyMirror:         null,
   }
 }
 
@@ -362,27 +397,31 @@ const RESET: OverlayState = {
   showBiomes: true, biomeOpacity: 1, chunkOpacity: 1, slimeOpacity: 1, oreOpacity: 1,
   showChunkData: true, chunkDataMinZoom: DEFAULT_CHUNK_DATA_MIN_ZOOM,
   showSlimeChunks: false, showOreVeins: false, showCopperVeins: true, showIronVeins: true,
-  oreVeinMode: 'density',
   showOreFeatures: false, oreFeatureTypes: ALL_ORE_FEATURE_IDS,
-  showCarvers: false, carverOpacity: 1, showTerrain: false, terrainOpacity: 0.6,
+  showCarvers: false, carverOpacity: 1,
   hideWater: false, showChunkGrid: false, showRegionGrid: false, showSpawnRadius: false, showSpawnChunks: false,
   showWorldBorder: false,
   showStructures: true,
   showMarkers: false,
   markerMinZoom: DEFAULT_MARKER_MIN_ZOOM,
   markerGroupDefs: DEFAULT_MARKER_GROUPS,
-  enabledMarkerGroups: new Set(DEFAULT_MARKER_GROUPS.map(g => g.id)),
+  enabledMarkerGroups: new Set<string>(['villagers']),
   markerYFilterEnabled: false, markerYLow: -32, markerYHigh: 32,
   markerYLockedToPlayer: true, markerYAnchorY: null,
   caveMode: false, caveScanLow: -40, caveScanHigh: 40,
   caveLockedToPlayer: true, caveAnchorY: null,
   caveZoomMinOverworld: CAVE_MODE_MIN_ZOOM, caveZoomMinNether: CAVE_MODE_MIN_ZOOM,
-  showCaveEntrances: false, caveEntranceOpacity: 0.7,
   showLocalDifficulty: false,
   biomeMode: 'surface',
   tileCacheVersion: 0, overlayCacheVersion: 0, structureRevision: 0, debugOverlayOpen: false, zoom: 2, uiScale: 1,
   rulerActive: false, rulerPlacementMode: false, rulerWaypoints: [], rulerLegModes: [], rulerCurrentMode: 'walk', activeRouteId: null,
   boatMinSegmentBlocks: 32,
+  structureCopyPanelOpen: false, structureCopySelectedRegions: [],
+  structureCopyMode: 'region', structureCopySelectedChunks: [],
+  structureCopyPlacingDest: false, structureCopyDestChunk: null,
+  structureCopyBoxAnchor: null, structureCopyBoxSelection: null,
+  structureCopyPlacingBoxDest: false, structureCopyBoxDest: null,
+  structureCopyRotation: 0, structureCopyMirror: null,
 }
 
 export function overlayReducer<S extends OverlayState>(state: S, action: { type: string }): S {
@@ -415,10 +454,6 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
       return { ...state, showCopperVeins: !state.showCopperVeins }
     case 'TOGGLE_IRON_VEINS':
       return { ...state, showIronVeins: !state.showIronVeins }
-    case 'SET_ORE_VEIN_MODE': {
-      const a = action as OverlayAction & { type: 'SET_ORE_VEIN_MODE' }
-      return { ...state, oreVeinMode: a.mode }
-    }
     case 'SET_ORE_OPACITY': {
       const a = action as OverlayAction & { type: 'SET_ORE_OPACITY' }
       return { ...state, oreOpacity: a.opacity }
@@ -434,12 +469,6 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
     case 'SET_CARVER_OPACITY': {
       const a = action as OverlayAction & { type: 'SET_CARVER_OPACITY' }
       return { ...state, carverOpacity: a.opacity }
-    }
-    case 'TOGGLE_TERRAIN':
-      return { ...state, showTerrain: !state.showTerrain }
-    case 'SET_TERRAIN_OPACITY': {
-      const a = action as OverlayAction & { type: 'SET_TERRAIN_OPACITY' }
-      return { ...state, terrainOpacity: a.opacity }
     }
     case 'TOGGLE_HIDE_WATER':
       return { ...state, hideWater: !state.hideWater }
@@ -498,7 +527,7 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
       return {
         ...state,
         markerGroupDefs: DEFAULT_MARKER_GROUPS,
-        enabledMarkerGroups: new Set(DEFAULT_MARKER_GROUPS.map(g => g.id)),
+        enabledMarkerGroups: new Set<string>(['villagers']),
       }
     case 'SET_MARKER_Y_FILTER': {
       const a = action as OverlayAction & { type: 'SET_MARKER_Y_FILTER' }
@@ -535,12 +564,6 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
         ? { ...state, caveZoomMinNether: a.min }
         : { ...state, caveZoomMinOverworld: a.min }
     }
-    case 'TOGGLE_CAVE_ENTRANCES':
-      return { ...state, showCaveEntrances: !state.showCaveEntrances }
-    case 'SET_CAVE_ENTRANCE_OPACITY': {
-      const a = action as OverlayAction & { type: 'SET_CAVE_ENTRANCE_OPACITY' }
-      return { ...state, caveEntranceOpacity: a.opacity }
-    }
     case 'TOGGLE_LOCAL_DIFFICULTY':
       return { ...state, showLocalDifficulty: !state.showLocalDifficulty }
     case 'SET_BIOME_MODE': {
@@ -556,22 +579,104 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
     case 'CLEAR_STRUCTURE_CACHE':
       return { ...state, structureRevision: state.structureRevision + 1 }
     case 'RESET_OVERLAYS':
-      return { ...state, ...RESET, tileCacheVersion: state.tileCacheVersion, overlayCacheVersion: state.overlayCacheVersion, debugOverlayOpen: state.debugOverlayOpen, zoom: state.zoom, uiScale: state.uiScale }
+      return {
+        ...state, ...RESET, tileCacheVersion: state.tileCacheVersion, overlayCacheVersion: state.overlayCacheVersion,
+        debugOverlayOpen: state.debugOverlayOpen, zoom: state.zoom, uiScale: state.uiScale,
+        structureCopyPanelOpen: state.structureCopyPanelOpen, structureCopySelectedRegions: state.structureCopySelectedRegions,
+        structureCopyMode: state.structureCopyMode, structureCopySelectedChunks: state.structureCopySelectedChunks,
+        structureCopyPlacingDest: state.structureCopyPlacingDest, structureCopyDestChunk: state.structureCopyDestChunk,
+        structureCopyBoxAnchor: state.structureCopyBoxAnchor, structureCopyBoxSelection: state.structureCopyBoxSelection,
+        structureCopyPlacingBoxDest: state.structureCopyPlacingBoxDest, structureCopyBoxDest: state.structureCopyBoxDest,
+        structureCopyRotation: state.structureCopyRotation, structureCopyMirror: state.structureCopyMirror,
+      }
+    case 'SET_STRUCTURE_COPY_PANEL_OPEN': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_PANEL_OPEN' }
+      return { ...state, structureCopyPanelOpen: a.open }
+    }
+    case 'SET_STRUCTURE_COPY_SELECTED_REGIONS': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_SELECTED_REGIONS' }
+      return { ...state, structureCopySelectedRegions: a.regions }
+    }
+    case 'TOGGLE_STRUCTURE_COPY_REGION': {
+      const a = action as OverlayAction & { type: 'TOGGLE_STRUCTURE_COPY_REGION' }
+      const exists = state.structureCopySelectedRegions.some(([rx, rz]) => rx === a.rx && rz === a.rz)
+      const next: [number, number][] = exists
+        ? state.structureCopySelectedRegions.filter(([rx, rz]) => !(rx === a.rx && rz === a.rz))
+        : [...state.structureCopySelectedRegions, [a.rx, a.rz]]
+      return { ...state, structureCopySelectedRegions: next }
+    }
+    case 'SET_STRUCTURE_COPY_MODE': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_MODE' }
+      return { ...state, structureCopyMode: a.mode }
+    }
+    case 'SET_STRUCTURE_COPY_SELECTED_CHUNKS': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_SELECTED_CHUNKS' }
+      return { ...state, structureCopySelectedChunks: a.chunks }
+    }
+    case 'TOGGLE_STRUCTURE_COPY_CHUNK': {
+      const a = action as OverlayAction & { type: 'TOGGLE_STRUCTURE_COPY_CHUNK' }
+      const exists = state.structureCopySelectedChunks.some(([cx, cz]) => cx === a.cx && cz === a.cz)
+      const next: [number, number][] = exists
+        ? state.structureCopySelectedChunks.filter(([cx, cz]) => !(cx === a.cx && cz === a.cz))
+        : [...state.structureCopySelectedChunks, [a.cx, a.cz]]
+      return { ...state, structureCopySelectedChunks: next }
+    }
+    case 'SET_STRUCTURE_COPY_PLACING_DEST': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_PLACING_DEST' }
+      return { ...state, structureCopyPlacingDest: a.placing }
+    }
+    case 'SET_STRUCTURE_COPY_DEST_CHUNK': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_DEST_CHUNK' }
+      return { ...state, structureCopyDestChunk: a.dest, structureCopyPlacingDest: false }
+    }
+    case 'SET_STRUCTURE_COPY_BOX_ANCHOR': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_BOX_ANCHOR' }
+      return { ...state, structureCopyBoxAnchor: a.anchor }
+    }
+    case 'SET_STRUCTURE_COPY_BOX_SELECTION': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_BOX_SELECTION' }
+      return { ...state, structureCopyBoxSelection: a.selection, structureCopyBoxAnchor: null }
+    }
+    case 'SET_STRUCTURE_COPY_PLACING_BOX_DEST': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_PLACING_BOX_DEST' }
+      return { ...state, structureCopyPlacingBoxDest: a.placing }
+    }
+    case 'SET_STRUCTURE_COPY_BOX_DEST': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_BOX_DEST' }
+      return { ...state, structureCopyBoxDest: a.dest, structureCopyPlacingBoxDest: false }
+    }
+    case 'SET_STRUCTURE_COPY_BOX_DEST_XZ': {
+      // Click-to-place only ever sets X/Z (Y can't be picked from a 2D map)
+      // — reducer-side merge against whatever Y is already set (or 0) avoids
+      // MapView's click handler needing a ref just to read it back.
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_BOX_DEST_XZ' }
+      const y = state.structureCopyBoxDest?.y ?? 0
+      return { ...state, structureCopyBoxDest: { x: a.x, y, z: a.z }, structureCopyPlacingBoxDest: false }
+    }
+    case 'SET_STRUCTURE_COPY_ROTATION': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_ROTATION' }
+      return { ...state, structureCopyRotation: a.rotation }
+    }
+    case 'SET_STRUCTURE_COPY_MIRROR': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_MIRROR' }
+      return { ...state, structureCopyMirror: a.mirror }
+    }
     case 'SET_ZOOM': {
       const a = action as OverlayAction & { type: 'SET_ZOOM' }
       return { ...state, zoom: a.zoom }
+    }
+    case 'APPLY_SHARE_LINK_FILTERS': {
+      const a = action as OverlayAction & { type: 'APPLY_SHARE_LINK_FILTERS' }
+      return { ...state, ...a.filters }
     }
     case 'SET_UI_SCALE': {
       const a = action as OverlayAction & { type: 'SET_UI_SCALE' }
       return { ...state, uiScale: a.scale }
     }
-    // Cross-cutting: a world/seed switch invalidates any in-progress route — its
-    // waypoints are coordinates in the *old* world, meaningless in the new one.
-    // Pins/SavedRoutes are already world-scoped storage and reload correctly on
-    // their own (worldSlice.ts); the active/in-progress ruler route isn't scoped
-    // that way, so it has to be explicitly cleared here or it silently carries
-    // over into whatever world loads next. Leaves rulerActive alone — if the
-    // panel was open, it stays open, just empty and ready for a new route.
+    // A world/seed switch invalidates any in-progress route — its waypoints are
+    // coordinates in the old world. Unlike Pins/SavedRoutes (already
+    // world-scoped storage), the ruler route isn't, so it's cleared explicitly
+    // here. rulerActive is left alone so an open panel stays open, just empty.
     case 'SET_SEED':
     case 'SET_MANUAL_SEED':
       return { ...state, rulerWaypoints: [], rulerLegModes: [], activeRouteId: null }
@@ -606,10 +711,8 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
     }
     case 'RULER_LOAD_ROUTE': {
       const a = action as OverlayAction & { type: 'RULER_LOAD_ROUTE' }
-      // View-only by default — promoting/selecting a route (map click on a thin
-      // alternate, or the panel's Load button) should not also drop you into
-      // "map clicks add a point" mode. See RULER_START_EDITING for the explicit
-      // opt-in to actually extend the route.
+      // View-only by default — loading a route shouldn't also drop you into
+      // "map clicks add a point" mode; see RULER_START_EDITING for that opt-in.
       return {
         ...state, rulerActive: true, rulerPlacementMode: false,
         rulerWaypoints: a.waypoints, rulerLegModes: a.legModes, activeRouteId: a.id,

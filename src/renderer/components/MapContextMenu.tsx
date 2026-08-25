@@ -1,8 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef } from 'react'
 import ReactDOM from 'react-dom'
 import type { Dimension } from '../lib/constants'
-
-// ── State type (shared with MapView) ──────────────────────────────────────────
+import * as api from '../lib/tauriAPI'
 
 export interface ContextMenuState {
   screenX: number
@@ -16,13 +15,12 @@ export interface ContextMenuState {
   markerLabel?: string | null
 }
 
-// ── Props ─────────────────────────────────────────────────────────────────────
-
 interface Props extends ContextMenuState {
   dimension:         Dimension
   onAddPin:          (x: number, z: number) => void
   onDeletePin?:      (id: string)            => void
   onCenter:          (x: number, z: number)  => void
+  onCopyLink?:       (x: number, z: number)  => void   // static export only
   onStartRoute:      (x: number, z: number)  => void
   onAddRoutePoint?:  () => void   // defined only when a route is active but not being edited
   onPinBestCopper?:  () => void   // defined only when copper veins are visible
@@ -30,13 +28,11 @@ interface Props extends ContextMenuState {
   onClose:           () => void
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
-
 export default function MapContextMenu({
   screenX, screenY, blockX, blockZ, blockY,
   markerKind, pinId, markerLabel,
   dimension,
-  onAddPin, onDeletePin, onCenter, onStartRoute, onAddRoutePoint,
+  onAddPin, onDeletePin, onCenter, onCopyLink, onStartRoute, onAddRoutePoint,
   onPinBestCopper, onPinBestIron,
   onClose,
 }: Props) {
@@ -107,7 +103,6 @@ export default function MapContextMenu({
       className="ctx-menu"
       style={{ position: 'fixed', left: screenX, top: screenY, zIndex: 9999, visibility: 'hidden' }}
     >
-      {/* Header: show kind + label, or just coords for background */}
       {isMarker ? (
         <div className="ctx-header">
           {kindLabel}{markerLabel ? `: ${markerLabel}` : ''}
@@ -118,7 +113,6 @@ export default function MapContextMenu({
       )}
       <div className="ctx-sep" />
 
-      {/* ── Background-map items ────────────────────────────── */}
       {isBackground && (
         <button className="ctx-item" onClick={() => { onAddPin(blockX, blockZ); onClose() }}>
           <CtxIcon d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
@@ -140,7 +134,6 @@ export default function MapContextMenu({
         </button>
       )}
 
-      {/* ── Copy items (all menus) ──────────────────────────── */}
       <button className="ctx-item" onClick={() => copy(coordStr)}>
         <CtxIcon d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z" />
         Copy coords
@@ -153,6 +146,13 @@ export default function MapContextMenu({
         <span className="ctx-hint">{blockX} {yToken} {blockZ}</span>
       </button>
 
+      {api.IS_STATIC_SITE && onCopyLink && (
+        <button className="ctx-item" onClick={() => { onCopyLink(blockX, blockZ); onClose() }}>
+          <CtxIcon d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z" />
+          Copy link to here...
+        </button>
+      )}
+
       {other && (
         <button className="ctx-item" onClick={() => copy(`${other.x}, ${other.z}`)}>
           <CtxIcon d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z" />
@@ -161,7 +161,6 @@ export default function MapContextMenu({
         </button>
       )}
 
-      {/* ── Background-only: Center here + ore vein pins ───── */}
       {isBackground && (
         <>
           <div className="ctx-sep" />
@@ -191,7 +190,6 @@ export default function MapContextMenu({
         </>
       )}
 
-      {/* ── Pin-specific: Delete ────────────────────────────── */}
       {isPin && pinId && onDeletePin && (
         <>
           <div className="ctx-sep" />
@@ -205,8 +203,6 @@ export default function MapContextMenu({
     document.body,
   )
 }
-
-// ── Tiny inline SVG icon ──────────────────────────────────────────────────────
 
 function CtxIcon({ d, color }: { d: string; color?: string }) {
   return (

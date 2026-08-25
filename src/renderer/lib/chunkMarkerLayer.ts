@@ -1,23 +1,18 @@
 import { useCallback, useEffect, useRef } from 'react'
 import L from 'leaflet'
-import { BASE_BLOCKS_PER_PIXEL } from './constants'
+import { lngToBlockX, latToBlockZ } from './tileCoords'
 import { setupDebouncedMapListeners } from './mapListeners'
+import { TileJobQueue } from './tileJobQueue'
 
-// Active worldgen flushes many region files in quick succession, each firing a
-// region:changed event. Coalesce that burst into a single reload: without it,
-// each event kicks off a full-viewport .mca re-read that supersedes (aborts) the
-// previous one before it can prune, so no load ever wins the race and stale
-// markers linger on screen while the backend churns through doomed fetches.
+// Coalesces bursts of region:changed events (active worldgen flushes many region files
+// in quick succession) into one reload, since each event would otherwise abort the
+// previous viewport re-read before it can complete and prune.
 const REGION_RELOAD_DEBOUNCE_MS = 600
-
-// ── Tooltip helper ────────────────────────────────────────────────────────────
 
 // Joins non-empty parts with ' · ' for use as a marker title attribute.
 export function tooltipText(...parts: (string | null | undefined | false)[]): string {
   return (parts.filter(Boolean) as string[]).join(' · ')
 }
-
-// ── Y-filter bounds ───────────────────────────────────────────────────────────
 
 /** Returns [yMin, yMax] for the marker Y-filter. `anchorY` is the resolved
  *  window anchor (effectiveMarkerAnchorY); null means no filtering. */
@@ -29,8 +24,6 @@ export function markerYBounds(
   if (anchorY == null) return [-Infinity, Infinity]
   return [anchorY + low, anchorY + high]
 }
-
-// ── Shared stats ──────────────────────────────────────────────────────────────
 
 export interface LayerStats {
   loadCount: number
@@ -51,8 +44,6 @@ export function updateLayerStats(stats: LayerStats, elapsed: number, count: numb
   stats.totalFetched += count
 }
 
-// ── Viewport → chunk bounds ───────────────────────────────────────────────────
-
 export interface ChunkBounds {
   minCx: number
   maxCx: number
@@ -62,16 +53,13 @@ export interface ChunkBounds {
 
 export function viewportChunkBounds(map: L.Map, maxChunkSpan = 512): ChunkBounds | null {
   const b = map.getBounds()
-  const f = BASE_BLOCKS_PER_PIXEL
-  const minCx = Math.floor(Math.floor( b.getWest()  * f) / 16)
-  const maxCx = Math.floor(Math.ceil ( b.getEast()  * f) / 16)
-  const minCz = Math.floor(Math.floor(-b.getNorth() * f) / 16)
-  const maxCz = Math.floor(Math.ceil (-b.getSouth() * f) / 16)
+  const minCx = Math.floor(Math.floor(lngToBlockX(b.getWest())) / 16)
+  const maxCx = Math.floor(Math.ceil (lngToBlockX(b.getEast())) / 16)
+  const minCz = Math.floor(Math.floor(latToBlockZ(b.getNorth())) / 16)
+  const maxCz = Math.floor(Math.ceil (latToBlockZ(b.getSouth())) / 16)
   if (maxCx - minCx > maxChunkSpan || maxCz - minCz > maxChunkSpan) return null
   return { minCx, maxCx, minCz, maxCz }
 }
-
-// ── Hook ──────────────────────────────────────────────────────────────────────
 
 export type OnLoadFn = (
   pool: Map<string, L.Marker>,
@@ -90,15 +78,18 @@ interface HookOpts {
   debounceMs?: number        // default 300
   onLoad: OnLoadFn
   onClear?: () => void       // called whenever the pool is cleared
+  // Status signal only (TileLoadingHud/DebugOverlay): this hook does its own
+  // one-load-at-a-time generation-counter cancellation, so the queue's concurrency/
+  // priority machinery goes unused here.
+  loadQueue?: TileJobQueue
 }
 
 // Returns a stable triggerLoad() for use in a second useEffect for filter deps.
 export function useChunkMarkerLayer(map: L.Map, opts: HookOpts): () => void {
   const layerGroupRef = useRef<L.LayerGroup | null>(null)
   const poolRef       = useRef<Map<string, L.Marker>>(new Map())
-  // Generation counter (same mechanism as StructureLayer's updateGenRef): each
-  // load takes a generation; anything that should cancel in-flight loads bumps
-  // it. A shared boolean can't do this — a newer load resetting the flag would
+  // Generation counter (same pattern as StructureLayer's updateGenRef): a shared
+  // boolean can't cancel in-flight loads since a newer load resetting it would
   // un-abort an older fetch still awaiting its response.
   const genRef        = useRef(0)
   const prevIdRef     = useRef('')
@@ -120,6 +111,7 @@ export function useChunkMarkerLayer(map: L.Map, opts: HookOpts): () => void {
     // layer silently renders nothing. E.g. minZoom 3 → 512 chunks.
     maxChunkSpan = Math.ceil(4096 / 2 ** minZoom),
     debounceMs   = 300,
+    loadQueue,
   } = opts
 
   // Structural effect: pool lifecycle, identity reset, map listeners.
@@ -161,7 +153,18 @@ export function useChunkMarkerLayer(map: L.Map, opts: HookOpts): () => void {
       const bounds = viewportChunkBounds(map, maxChunkSpan)
       if (!bounds) return
 
-      await onLoadRef.current(poolRef.current, group, bounds, () => gen !== genRef.current)
+      if (!loadQueue) {
+        await onLoadRef.current(poolRef.current, group, bounds, () => gen !== genRef.current)
+        return
+      }
+      let released = false
+      const release = () => { if (!released) { released = true; loadQueue.release() } }
+      loadQueue.enqueue(0, () => {})
+      try {
+        await onLoadRef.current(poolRef.current, group, bounds, () => gen !== genRef.current)
+      } finally {
+        release()
+      }
     }
 
     loadFnRef.current = load

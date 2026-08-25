@@ -54,7 +54,13 @@ fn extract_poi(chunk: &Value) -> Vec<PoiRecord> {
     // and values are compounds with Records and Valid fields.
     let sections_val = match root.get("Sections") {
         Some(v) => v,
-        None    => return vec![],
+        None    => {
+            crate::format_guard::format_warn(
+                "POI Sections",
+                "chunk has no Sections compound — all POI markers for it are silently dropped",
+            );
+            return vec![];
+        }
     };
     let sections = match cmp(sections_val) {
         Some(m) => m,
@@ -75,7 +81,13 @@ fn extract_poi(chunk: &Value) -> Vec<PoiRecord> {
 
         let records = match section.get("Records") {
             Some(Value::List(l)) => l,
-            _ => continue,
+            _ => {
+                crate::format_guard::format_warn(
+                    "POI Records",
+                    "a valid POI section has no Records list — its markers (job sites, beds, etc.) are silently dropped",
+                );
+                continue;
+            }
         };
 
         for rec_val in records {

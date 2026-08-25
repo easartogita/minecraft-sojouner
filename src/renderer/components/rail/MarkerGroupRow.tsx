@@ -17,7 +17,7 @@ export function randomId(): string {
   return Math.random().toString(36).slice(2, 10)
 }
 
-// ── BE types grouped by render group ─────────────────────────────────────────
+// BE types grouped by render group
 
 const BE_GROUPS_ORDER: BEFilterGroup[] = [
   'containers', 'spawners', 'signs', 'bees', 'utility', 'archeology', 'decorative', 'technical',
@@ -27,7 +27,7 @@ const BE_TYPES_BY_GROUP = new Map<BEFilterGroup, typeof BE_TYPE_DEFS>(
   BE_GROUPS_ORDER.map(g => [g, BE_TYPE_DEFS.filter(t => t.group === g)])
 )
 
-// ── Entity types grouped by render group ──────────────────────────────────────
+// Entity types grouped by render group
 
 const ENTITY_GROUPS_ORDER: EntityFilterGroup[] = [
   'villagers', 'mounts', 'pets', 'animals', 'livestock',
@@ -38,7 +38,7 @@ const ENTITY_TYPES_BY_GROUP = new Map<EntityFilterGroup, typeof ENTITY_TYPE_DEFS
   ENTITY_GROUPS_ORDER.map(g => [g, ENTITY_TYPE_DEFS.filter(t => t.group === g)])
 )
 
-// ── Sub-section component ─────────────────────────────────────────────────────
+// Sub-section component
 
 function TypeSubSection({
   heading,
@@ -98,7 +98,7 @@ function TypeSubSection({
   )
 }
 
-// ── Group row: visibility toggle + inline editor ──────────────────────────────
+// Group row: visibility toggle + inline editor
 
 /**
  * One marker group in the World Data panel: the collapsed row combines the
@@ -122,7 +122,7 @@ export default function MarkerGroupRow({
 
   const commitName = () => {
     const name = editingName.trim()
-    if (name) dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { name } } as never)
+    if (name) dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { name } })
     setEditing(false)
   }
 
@@ -135,18 +135,18 @@ export default function MarkerGroupRow({
     const beTypes = g.beTypes.includes(type)
       ? g.beTypes.filter(t => t !== type)
       : [...g.beTypes, type]
-    dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { beTypes } } as never)
+    dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { beTypes } })
   }
 
   const toggleEntityType = (type: string) => {
     const entityTypes = g.entityTypes.includes(type)
       ? g.entityTypes.filter(t => t !== type)
       : [...g.entityTypes, type]
-    dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { entityTypes } } as never)
+    dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { entityTypes } })
   }
 
   const setColor = (color: string) => {
-    dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { color } } as never)
+    dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { color } })
   }
 
   const typeCount = g.beTypes.length + g.entityTypes.length
@@ -188,7 +188,7 @@ export default function MarkerGroupRow({
         </span>
 
         <button className="mgr-delete-btn" title="Delete group"
-          onClick={() => dispatch({ type: 'DELETE_MARKER_GROUP', id: g.id } as never)}>✕</button>
+          onClick={() => dispatch({ type: 'DELETE_MARKER_GROUP', id: g.id })}>✕</button>
 
         <button className="mgr-expand-btn" onClick={onToggleExpanded}
           title={expanded ? 'Collapse' : 'Edit group'}>
@@ -207,7 +207,7 @@ export default function MarkerGroupRow({
               types={[{ type: 'jobsite', label: 'Villager Job Sites (POI)' }]}
               selected={g.beTypes}
               onToggle={toggleBeType}
-              onSetAll={next => dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { beTypes: next } } as never)}
+              onSetAll={next => dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { beTypes: next } })}
             />
 
             {BE_GROUPS_ORDER.map(grpKey => {
@@ -221,7 +221,7 @@ export default function MarkerGroupRow({
                   types={types}
                   selected={g.beTypes}
                   onToggle={toggleBeType}
-                  onSetAll={next => dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { beTypes: next } } as never)}
+                  onSetAll={next => dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { beTypes: next } })}
                 />
               )
             })}
@@ -241,7 +241,7 @@ export default function MarkerGroupRow({
                   types={types}
                   selected={g.entityTypes}
                   onToggle={toggleEntityType}
-                  onSetAll={next => dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { entityTypes: next } } as never)}
+                  onSetAll={next => dispatch({ type: 'UPDATE_MARKER_GROUP', id: g.id, changes: { entityTypes: next } })}
                 />
               )
             })}

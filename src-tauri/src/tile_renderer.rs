@@ -5,43 +5,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
 
-const TILE_SIZE:         usize = 128;
-const BIOME_TILE_SIZE:   usize = 128;
-const BASE_BLOCKS_PER_PIXEL: f64 = 16.0;
+pub(crate) const TILE_SIZE:         usize = 128;
+pub(crate) const BIOME_TILE_SIZE:   usize = 128;
+pub(crate) const BASE_BLOCKS_PER_PIXEL: f64 = 16.0;
 const CHUNK:             usize = 16;
-// Bump on any change to render output. v3: render terrained proto-chunks
-// (heightmap-gated, not Status=="full"); capture .mca mtime before the read.
-// v4: render terrained proto-chunks that have NO heightmap at all (e.g. `carvers`
-// frontier chunks) by scanning sections top-down — fixes blank seams.
-// v5: (reverted) hot/cold ms freshness pegged the backend CPU re-rendering every
-// hot tile every probe — reverted to whole-second file mtime.
-// v6: back to seconds mtime; drops the incompatible ms-stamped v5 tiles.
-// v7: torn-read gating — a tile with any mid-flush chunk is stamped mtime 0 (never
-// frozen); drops any partial tiles frozen by earlier versions.
-// v8: 26.3 block colors (poplar set, red shrub, shelf mushroom) — drops tiles
-// rendered with the grey-fallback for those blocks.
-// v9: per-biome grass/foliage tint from section biome palettes — drops tiles
-// rendered with the static single-green colors.
-// v10: per-biome water tint (swamp/mangrove/warm+cold+frozen ocean…) — drops
-// tiles rendered with the single depth-shaded default blue.
-pub const CACHE_VERSION: u32   = 10;
+// Bump on any change to render output so stale cached tiles get dropped, not served.
+pub const CACHE_VERSION: u32   = 13;
 
-// ── Torn-tile diagnostic tracing ────────────────────────────────────────────────
-// Env-gated (SOJOURNER_TILE_TRACE=1) so it's silent in normal runs. Used this
-// session to trace why region:changed / Clear Chunk don't heal frozen torn tiles:
-// correlates region:changed emits, invalidate_mca_tiles deletions, and per-tile
-// torn renders / stale-cache serves on one timeline. Grep the terminal for
-// `[tile-trace]`. Rip out once the heal path is understood.
+// Env-gated (SOJOURNER_TILE_TRACE=1) so it's silent in normal runs. See bugs-resolved.md.
 pub fn tile_trace() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var("SOJOURNER_TILE_TRACE").is_ok())
 }
 
-/// Append one timestamped trace line to /tmp/sojourner-tile-trace.log (a dedicated
-/// file so the trace is readable without scraping the noisy dev terminal). The log
-/// is truncated once per process launch, so each run is a clean timeline. No-op
-/// unless SOJOURNER_TILE_TRACE is set.
+/// Appends one timestamped line to /tmp/sojourner-tile-trace.log, truncated once
+/// per process launch. No-op unless SOJOURNER_TILE_TRACE is set.
 pub fn trace_log(msg: &str) {
     if !tile_trace() { return; }
     use std::io::Write;
@@ -63,8 +42,6 @@ pub fn trace_log(msg: &str) {
         let _ = writeln!(f, "{ms} {msg}");
     }
 }
-
-// ── Path helpers ──────────────────────────────────────────────────────────────
 
 fn world_hash(world_dir: &str) -> String {
     // FNV-1a 64-bit — stable across Rust versions, no extra dependencies
@@ -106,14 +83,13 @@ pub fn delete_tile_cache(cache_root: &Path, world_dir: &str) {
 
 pub fn clear_biome_tile_cache(cache_root: &Path, seed_low: i32, seed_high: i32) {
     let seed = ((seed_high as i64) << 32) | (seed_low as u32 as i64);
-    let dir = cache_root.join("biome").join(format!("{:016x}", seed as u64));
-    let _ = std::fs::remove_dir_all(dir);
+    let seed_hex = format!("{:016x}", seed as u64);
+    let _ = std::fs::remove_dir_all(cache_root.join("biome").join(&seed_hex));
+    let _ = std::fs::remove_dir_all(cache_root.join("underground").join(&seed_hex));
 }
 
-/// Delete only the cached PNG tiles that overlap the given .mca region files.
-/// Each .mca covers a 512×512 block area starting at (rx*512, rz*512).
-/// We walk every zoom-level subdirectory and delete files whose tile coords
-/// intersect that area — far cheaper than nuking the whole world cache dir.
+/// Deletes only the cached PNG tiles overlapping the given .mca regions (each
+/// covering a 512×512 block area) — cheaper than nuking the whole cache dir.
 pub fn invalidate_mca_tiles(
     cache_root: &Path,
     world_dir:  &str,
@@ -122,7 +98,7 @@ pub fn invalidate_mca_tiles(
     let world_root = cache_root.join(world_hash(world_dir));
     if !world_root.exists() { return; }
 
-    // Walk dim+hw variant dirs (e.g. "overworld_hw0", "overworld_hw1_c64_l-8_h8")
+    // dim+hw variant dirs, e.g. "overworld_hw0", "overworld_hw1_c64_l-8_h8"
     let dim_dirs = match std::fs::read_dir(&world_root) {
         Ok(d) => d,
         Err(_) => return,
@@ -132,7 +108,6 @@ pub fn invalidate_mca_tiles(
         let dim_path = dim_entry.path();
         if !dim_path.is_dir() { continue; }
 
-        // Walk zoom-level dirs inside each variant
         let zoom_dirs = match std::fs::read_dir(&dim_path) {
             Ok(d) => d,
             Err(_) => continue,
@@ -150,7 +125,7 @@ pub fn invalidate_mca_tiles(
                 None    => continue,
             };
 
-            let tile_blocks = (TILE_SIZE as f64 * BASE_BLOCKS_PER_PIXEL / 2f64.powi(zoom)) as i32;
+            let tile_blocks = (TILE_SIZE as f64 * blocks_per_pixel_at(zoom)) as i32;
             if tile_blocks <= 0 { continue; }
 
             for &(rx, rz) in regions {
@@ -158,18 +133,13 @@ pub fn invalidate_mca_tiles(
                 let mca_block_z0 = rz * 512;
 
                 // Tile range that overlaps this 512×512 mca region
-                let tx0 = mca_block_x0.div_euclid(tile_blocks);
-                let tx1 = (mca_block_x0 + 511).div_euclid(tile_blocks);
-                let ty0 = mca_block_z0.div_euclid(tile_blocks);
-                let ty1 = (mca_block_z0 + 511).div_euclid(tile_blocks);
+                let (tx0, tx1) = cell_range(mca_block_x0, mca_block_x0 + 511, tile_blocks);
+                let (ty0, ty1) = cell_range(mca_block_z0, mca_block_z0 + 511, tile_blocks);
 
                 for tx in tx0..=tx1 {
                     for ty in ty0..=ty1 {
                         let file = zoom_path.join(format!("{tx}_{ty}.png"));
                         let removed = std::fs::remove_file(&file).is_ok();
-                        // Only report actual deletions (existing PNGs) — a torn frozen
-                        // tile SHOULD show up here; its absence means the region→tile
-                        // mapping missed it.
                         if removed {
                             trace_log(&format!("invalidate del z={} tile={},{} (region {},{})", zoom, tx, ty, rx, rz));
                         }
@@ -180,15 +150,59 @@ pub fn invalidate_mca_tiles(
     }
 }
 
-// ── PNG encode / decode ───────────────────────────────────────────────────────
+/// Mirrors MC_VERSION_LABELS in constants.ts — keep in sync when a version is added there.
+fn mc_version_label(mc_version: i32) -> &'static str {
+    match mc_version {
+        35 => "26.3",
+        34 => "26.2",
+        33 => "26.0-26.1",
+        28 => "1.21.5",
+        27 => "1.21.2-1.21.4",
+        26 => "1.21-1.21.1",
+        25 => "1.20",
+        24 => "1.19",
+        22 => "1.18",
+        21 => "1.17",
+        20 => "1.16",
+        _  => "unknown",
+    }
+}
 
-fn encode_png_sized(pixels: &[u8], size: u32) -> Vec<u8> {
+/// Biome tiles have no backing save file, so the generator identity
+/// (seed/version/flags/dimension/y-level) + block origin stand in for a
+/// region filename — enough to regenerate this exact tile again.
+fn encode_biome_tile_png(
+    pixels:       &[u8],
+    size:         u32,
+    seed_low:     i32,
+    seed_high:    i32,
+    mc_version:   i32,
+    world_flags:  i32,
+    dimension:    &str,
+    sample_y:     i32,
+    block_origin: (i32, i32),
+) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut encoder = png::Encoder::new(std::io::Cursor::new(&mut buf), size, size);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_compression(png::Compression::Fast);
+        let rendered_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = encoder.add_text_chunk("rendered-at".to_string(), rendered_at.to_string());
+        let seed = ((seed_high as i64) << 32) | (seed_low as u32 as i64);
+        let _ = encoder.add_text_chunk("seed".to_string(), seed.to_string());
+        let _ = encoder.add_text_chunk("mc-version".to_string(), mc_version_label(mc_version).to_string());
+        let _ = encoder.add_text_chunk("mc-version-id".to_string(), mc_version.to_string());
+        let _ = encoder.add_text_chunk("world-flags".to_string(), world_flags.to_string());
+        let _ = encoder.add_text_chunk("dimension".to_string(), dimension.to_string());
+        // Biome-space Y (block_y / 4); fixed per dimension, see render_biome_tile.
+        let _ = encoder.add_text_chunk("sample-y".to_string(), sample_y.to_string());
+        let (block_x, block_z) = block_origin;
+        let _ = encoder.add_text_chunk("block-origin".to_string(), format!("{block_x},{block_z}"));
         let mut writer = encoder.write_header().expect("png header");
         writer.write_image_data(pixels).expect("png data");
     }
@@ -196,8 +210,15 @@ fn encode_png_sized(pixels: &[u8], size: u32) -> Vec<u8> {
 }
 
 
-/// Like `encode_png` but embeds the source .mca max-mtime as a tEXt chunk.
-fn encode_tile_png(pixels: &[u8], mca_mtime: u64) -> Vec<u8> {
+/// Embeds the source .mca max-mtime as a tEXt chunk — load-bearing, `fresh_tile_mtime`
+/// reads it back for cache invalidation, don't rename/remove it — plus provenance chunks.
+fn encode_tile_png(
+    pixels:       &[u8],
+    mca_mtime:    u64,
+    regions:      &str,
+    chunk_bounds: (i32, i32, i32, i32),
+    block_origin: (i32, i32),
+) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut encoder = png::Encoder::new(std::io::Cursor::new(&mut buf), TILE_SIZE as u32, TILE_SIZE as u32);
@@ -205,6 +226,16 @@ fn encode_tile_png(pixels: &[u8], mca_mtime: u64) -> Vec<u8> {
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_compression(png::Compression::Fast);
         let _ = encoder.add_text_chunk("mca-mtime".to_string(), mca_mtime.to_string());
+        let rendered_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = encoder.add_text_chunk("rendered-at".to_string(), rendered_at.to_string());
+        let _ = encoder.add_text_chunk("regions".to_string(), regions.to_string());
+        let (min_cx, max_cx, min_cz, max_cz) = chunk_bounds;
+        let _ = encoder.add_text_chunk("chunk-bounds".to_string(), format!("{min_cx},{max_cx},{min_cz},{max_cz}"));
+        let (block_x, block_z) = block_origin;
+        let _ = encoder.add_text_chunk("block-origin".to_string(), format!("{block_x},{block_z}"));
         let mut writer = encoder.write_header().expect("png header");
         writer.write_image_data(pixels).expect("png data");
     }
@@ -227,18 +258,36 @@ pub fn max_mca_mtime(world_dir: &str, dimension: &str, min_cx: i32, max_cx: i32,
         .unwrap_or(0)
 }
 
+/// Blocks-per-pixel scale at `zoom` — halves every zoom level, matching the
+/// frontend's `BASE_BLOCKS_PER_PIXEL / 2^zoom` (constants.ts).
+pub(crate) fn blocks_per_pixel_at(zoom: i32) -> f64 {
+    BASE_BLOCKS_PER_PIXEL / 2f64.powi(zoom)
+}
+
+/// Block-space origin (top-left, unfloored) of a tile, plus bpp at that zoom.
+/// Shared by every (tile, zoom) -> block space mapping, including static_export.rs.
+pub(crate) fn tile_origin_blocks(tile_x: i32, tile_y: i32, zoom: i32, tile_px: usize) -> (f64, f64, f64) {
+    let bpp = blocks_per_pixel_at(zoom);
+    (tile_x as f64 * tile_px as f64 * bpp, tile_y as f64 * tile_px as f64 * bpp, bpp)
+}
+
+/// Inclusive index range of `cell_blocks`-wide grid cells overlapping `[block0, block1]`.
+/// The one conversion primitive every region↔tile↔chunk mapping in this module goes
+/// through, so they can't drift out of sync with each other (see BUGS.md).
+fn cell_range(block0: i32, block1: i32, cell_blocks: i32) -> (i32, i32) {
+    (block0.div_euclid(cell_blocks), block1.div_euclid(cell_blocks))
+}
+
 /// Chunk-coordinate span covered by a tile. Shared by the renderer and the
 /// standalone mtime probe so both agree on which region files feed a tile.
 pub fn tile_chunk_bounds(tile_x: i32, tile_y: i32, zoom: i32) -> (i32, i32, i32, i32) {
-    let blocks_per_pixel = BASE_BLOCKS_PER_PIXEL / 2f64.powi(zoom);
-    let block_x = (tile_x as f64 * TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
-    let block_z = (tile_y as f64 * TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
-    let min_cx = block_x.div_euclid(CHUNK as i32);
-    let max_cx = ((block_x as f64 + TILE_SIZE as f64 * blocks_per_pixel - 1.0) as i32)
-        .div_euclid(CHUNK as i32);
-    let min_cz = block_z.div_euclid(CHUNK as i32);
-    let max_cz = ((block_z as f64 + TILE_SIZE as f64 * blocks_per_pixel - 1.0) as i32)
-        .div_euclid(CHUNK as i32);
+    let (block_x_f, block_z_f, blocks_per_pixel) = tile_origin_blocks(tile_x, tile_y, zoom, TILE_SIZE);
+    let block_x0 = block_x_f.floor() as i32;
+    let block_z0 = block_z_f.floor() as i32;
+    let block_x1 = (block_x_f + TILE_SIZE as f64 * blocks_per_pixel - 1.0) as i32;
+    let block_z1 = (block_z_f + TILE_SIZE as f64 * blocks_per_pixel - 1.0) as i32;
+    let (min_cx, max_cx) = cell_range(block_x0, block_x1, CHUNK as i32);
+    let (min_cz, max_cz) = cell_range(block_z0, block_z1, CHUNK as i32);
     (min_cx, max_cx, min_cz, max_cz)
 }
 
@@ -278,39 +327,35 @@ pub fn get_or_render_tile(
     cave_y:         Option<i32>,
     cave_scan_low:  i32,
     cave_scan_high: i32,
-    // Closure that returns the max source-data mtime for freshness checking.
-    // Signature: (min_cx, max_cx, min_cz, max_cz) -> mtime_secs
+    // Skip the disk-cache short-circuit and force a fresh read+render. Set by
+    // the torn-tile retry loop in `render_tile` (lib.rs) — otherwise a retry
+    // would just hand back the same bad PNG the torn attempt already cached.
+    force_fresh: bool,
+    // (min_cx, max_cx, min_cz, max_cz) -> mtime_secs, for freshness checking.
     mtime_fn: impl Fn(i32, i32, i32, i32) -> u64,
-    // Closure that fetches chunk colors for a slice of ChunkRequests.
     chunk_colors_fn: impl Fn(&[ChunkRequest]) -> Vec<ChunkResult>,
-) -> Option<(String, u64)> {
+) -> Option<(String, u64, bool)> {
     let p = tile_path(
         cache_root, world_dir, dimension, hide_water,
         zoom, tile_x, tile_y, cave_y, cave_scan_low, cave_scan_high,
     );
 
-    // ── Tile's chunk bounds (needed by both cache check and render) ──
-    let blocks_per_pixel = BASE_BLOCKS_PER_PIXEL / 2f64.powi(zoom);
-    let block_x = (tile_x as f64 * TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
-    let block_z = (tile_y as f64 * TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
+    let (block_x_f, block_z_f, blocks_per_pixel) = tile_origin_blocks(tile_x, tile_y, zoom, TILE_SIZE);
+    let block_x = block_x_f.floor() as i32;
+    let block_z = block_z_f.floor() as i32;
     let (min_cx, max_cx, min_cz, max_cz) = tile_chunk_bounds(tile_x, tile_y, zoom);
 
-    // Disk cache hit — validate freshness via injected mtime function. The
-    // returned mtime is the tile's validity baseline, handed to the in-memory
-    // cache so it can detect the same staleness without re-reading the PNG.
-    if let Ok(cached_png) = std::fs::read(&p) {
+    // Skipped on a torn-tile retry (force_fresh) — see that parameter's doc.
+    if !force_fresh { if let Ok(cached_png) = std::fs::read(&p) {
         if let Some(stored) = fresh_tile_mtime(&cached_png, min_cx, max_cx, min_cz, max_cz, &mtime_fn) {
             if tile_trace() {
-                // The whole-second-freeze smoking gun: if a frozen torn tile is
-                // served here, stored == current (both the torn render's second)
-                // and we hand back the partial picture instead of re-reading.
                 let current = mtime_fn(min_cx, max_cx, min_cz, max_cz);
                 trace_log(&format!("serve-cached z={} tile={},{} stored={} current={}", zoom, tile_x, tile_y, stored, current));
             }
-            return Some((p.to_string_lossy().into_owned(), stored));
+            return Some((p.to_string_lossy().into_owned(), stored, false));
         }
         let _ = std::fs::remove_file(&p);
-    }
+    }}
 
     let mut to_fetch: Vec<ChunkRequest> = Vec::new();
     for cx in min_cx..=max_cx {
@@ -319,21 +364,16 @@ pub fn get_or_render_tile(
         }
     }
 
-    // Snapshot the source mtime *before* reading the .mca data. If Minecraft's
-    // worldgen rewrites the region while (or after) we parse it, we may render a
-    // torn/partial chunk read — but the tile gets stamped with this pre-read
-    // mtime, which is < the completed write's mtime, so the freshness check
-    // marks it stale and re-renders. Capturing the mtime *after* the read would
-    // stamp the tile with the newer write and freeze the partial render forever.
+    // Snapshot mtime *before* reading .mca data: if worldgen rewrites the region
+    // mid-parse, the tile gets stamped with the older pre-read mtime, so the
+    // freshness check marks it stale and re-renders instead of freezing a torn read.
     let data_mtime = mtime_fn(min_cx, max_cx, min_cz, max_cz);
 
     let chunk_results = chunk_colors_fn(&to_fetch);
 
-    // If any contributing chunk read torn (Minecraft mid-flush), the render is
-    // incomplete. Stamp the tile mtime 0 below — fresh_tile_mtime treats 0 as
-    // always-stale, so this tile re-renders on its next access / region:changed once
-    // the file settles, instead of freezing a half-written picture. This is bounded
-    // to the few tiles actually being written, so no viewport-wide re-render storm.
+    // Torn (mid-flush) chunk reads are handled by a bounded retry in `render_tile`
+    // (lib.rs), which uses this flag — never stamp mtime 0 here, that caused a
+    // re-render-forever CPU storm on every subsequent view of a torn tile.
     let tile_torn = chunk_results.iter().any(|r| r.torn);
 
     if tile_trace() {
@@ -342,7 +382,6 @@ pub fn get_or_render_tile(
         trace_log(&format!("render z={} tile={},{} torn={}/{} data_mtime={}", zoom, tile_x, tile_y, torn_n, total, data_mtime));
     }
 
-    // Build lookup map
     let chunk_map: HashMap<(i32, i32), Vec<u8>> = chunk_results
         .into_iter()
         .filter_map(|r| r.colors.map(|c| ((r.cx, r.cz), c)))
@@ -352,7 +391,6 @@ pub fn get_or_render_tile(
         return None;
     }
 
-    let _ = tile_torn; // torn distinction kept in ChunkParse; not acted on (CPU storm — see memory)
     let stamp_mtime = data_mtime;
 
     // ── Pixel loop ───────────────────────────────────────────────────────────
@@ -465,15 +503,22 @@ pub fn get_or_render_tile(
         }
     }
 
-    // Write PNG to disk cache with source mtime embedded; return path on success
+    // Write PNG to disk cache with source mtime + provenance embedded; return path on success
     if let Some(parent) = p.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    std::fs::write(&p, encode_tile_png(&pixels, stamp_mtime)).ok()?;
-    Some((p.to_string_lossy().into_owned(), stamp_mtime))
+    let region_files: std::collections::BTreeSet<(i32, i32)> = (min_cx..=max_cx)
+        .flat_map(|cx| (min_cz..=max_cz).map(move |cz| (cx.div_euclid(32), cz.div_euclid(32))))
+        .collect();
+    let regions_str = region_files.iter()
+        .map(|&(rx, rz)| format!("r.{rx}.{rz}.mca"))
+        .collect::<Vec<_>>()
+        .join(";");
+    std::fs::write(&p, encode_tile_png(
+        &pixels, stamp_mtime, &regions_str, (min_cx, max_cx, min_cz, max_cz), (block_x, block_z),
+    )).ok()?;
+    Some((p.to_string_lossy().into_owned(), stamp_mtime, tile_torn))
 }
-
-// ── Biome tile renderer ───────────────────────────────────────────────────────
 
 // cubiomes scale candidates, largest first — pick the largest that fits ≤ blocksPerPixel.
 // Capped at 16 (one chunk): finer scales over-sample relative to display pixels and don't
@@ -531,7 +576,7 @@ fn biome_color(id: i32) -> [u8; 3] {
         // Taiga
         5   => [11, 102, 89],
         19  => [22, 112, 98],
-        30  => [49, 66, 60],
+        30  => [58, 92, 80],   // snowy_taiga — brightened/greened off dark neutral grey (34) for contrast
         31  => [36, 53, 47],
         158 => [36, 53, 47],
         32  => [89, 102, 81],
@@ -605,97 +650,113 @@ fn biome_color(id: i32) -> [u8; 3] {
         185 => [225, 100, 160],
         // 1.21
         186 => [195, 205, 180],
+        // 26.2 (xpple fork)
+        187 => [200, 180, 60], // sulfur_caves — matches biomeColors.ts
+        // 26.3
+        188 => [235, 146, 52], // dappled_forest — matches biomeColors.ts
         _   => [80, 80, 80],
     }
 }
 
 fn biome_tile_path(
-    cache_root: &Path,
-    seed_low:   i32,
-    seed_high:  i32,
-    mc_version: i32,
-    dimension:  &str,
-    sample_y:   i32,
-    zoom:       i32,
-    tx:         i32,
-    ty:         i32,
+    cache_root:  &Path,
+    seed_low:    i32,
+    seed_high:   i32,
+    mc_version:  i32,
+    world_flags: i32,
+    dimension:   &str,
+    sample_y:    i32,
+    zoom:        i32,
+    tx:          i32,
+    ty:          i32,
 ) -> PathBuf {
     let seed = ((seed_high as i64) << 32) | (seed_low as u32 as i64);
     cache_root
         .join("biome")
         .join(format!("{:016x}", seed as u64))
-        .join(format!("{}_v{}_y{}_t{}", dimension, mc_version, sample_y, BIOME_TILE_SIZE))
+        // world_flags (large_biomes etc.) changes biome layout for the same seed+coords,
+        // so it must be in the path or a tile renders as a stale hit under another world type.
+        .join(format!("{}_v{}_wf{}_y{}_t{}", dimension, mc_version, world_flags, sample_y, BIOME_TILE_SIZE))
         .join(zoom.to_string())
         .join(format!("{tx}_{ty}.png"))
 }
 
+/// PNG mtime, used to cache-bust the frontend's `convertFileSrc` URL (`?v=<mtime>`) —
+/// biome tile paths are stable per seed/config, so WebKit's URL-keyed image cache
+/// would otherwise keep serving a stale decode after we rewrite the same path in place.
+fn file_mtime_secs(p: &Path) -> u64 {
+    std::fs::metadata(p).ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub fn render_biome_tile(
-    cache_root: &Path,
-    slot:       i32,
-    seed_low:   i32,
-    seed_high:  i32,
-    mc_version: i32,
-    dimension:  &str,
-    tile_x:     i32,
-    tile_y:     i32,
-    zoom:       i32,
-) -> Option<String> {
-    // cubiomes Range.y is in biome-space coordinates (block_y / 4).
-    // Nether ceiling = block Y 127 → biome Y 31 max; y=64 would be block Y 256, out of range.
-    // End ceiling = block Y 255 → biome Y 63 max; y=64 is also out of range.
+    cache_root:  &Path,
+    slot:        i32,
+    seed_low:    i32,
+    seed_high:   i32,
+    mc_version:  i32,
+    world_flags: i32,
+    dimension:   &str,
+    tile_x:      i32,
+    tile_y:      i32,
+    zoom:        i32,
+) -> Option<(String, u64)> {
+    // cubiomes Range.y is biome-space (block_y / 4); y=64 (block 256) is out of range
+    // for nether (ceiling block Y 127) and end (ceiling block Y 255), hence the match.
     let sample_y: i32 = match dimension {
-        "nether" => 8,   // block Y 32 — mid nether, well within valid range
-        "end"    => 16,  // block Y 64 — mid end
-        _        => 64,  // block Y 256 — overworld sky (existing behaviour, works fine)
+        "nether" => 8,   // block Y 32
+        "end"    => 16,  // block Y 64
+        _        => 64,  // block Y 256, overworld sky
     };
 
-    let p = biome_tile_path(cache_root, seed_low, seed_high, mc_version, dimension, sample_y, zoom, tile_x, tile_y);
+    let p = biome_tile_path(cache_root, seed_low, seed_high, mc_version, world_flags, dimension, sample_y, zoom, tile_x, tile_y);
 
-    // Disk cache hit — return path directly, no decode needed (tiles are deterministic)
     if p.exists() {
-        return Some(p.to_string_lossy().into_owned());
+        return Some((p.to_string_lossy().into_owned(), file_mtime_secs(&p)));
     }
 
-    // Generator slots are recycled round-robin by cm_setup_generator and the
-    // frontend holds a slot index across async renders, so a queued render can
-    // execute after the slot has been repointed — to another dimension, or to
-    // another world entirely when switching worlds (the new seed propagates to the
-    // tile layer before useGenerator finishes re-setting up the slot). Generating
-    // now would write the previous world's/dimension's biomes into this tile's
-    // (seed, dimension)-keyed cache path. Bail instead; the tile is retried once
-    // the correct generator is in place.
-    if !crate::cubiomes::slot_matches(slot, seed_low, seed_high, dim_to_cubiomes(dimension)) {
+    // Bail on a stale/repointed generator slot rather than render under the
+    // wrong config — see bugs-resolved.md.
+    let key = crate::cubiomes::GeneratorKey {
+        seed_low, seed_high, dimension: dim_to_cubiomes(dimension), world_flags, mc_version,
+    };
+    if !crate::cubiomes::slot_matches(slot, key) {
         return None;
     }
 
-    let blocks_per_pixel = BASE_BLOCKS_PER_PIXEL / (2f64).powi(zoom);
-    let block_x = (tile_x as f64 * BIOME_TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
-    let block_z = (tile_y as f64 * BIOME_TILE_SIZE as f64 * blocks_per_pixel).floor() as i32;
+    let (block_x_f, block_z_f, blocks_per_pixel) = tile_origin_blocks(tile_x, tile_y, zoom, BIOME_TILE_SIZE);
+    let block_x = block_x_f.floor() as i32;
+    let block_z = block_z_f.floor() as i32;
 
-    // ── Biome query ───────────────────────────────────────────────────────────
     let biome_scale = pick_biome_scale(blocks_per_pixel);
     let query_w = ((BIOME_TILE_SIZE as f64 * blocks_per_pixel / biome_scale as f64).ceil() as i32).max(1);
     let query_h = query_w;
     let biome_x = (block_x as f64 / biome_scale as f64).floor() as i32;
     let biome_z = (block_z as f64 / biome_scale as f64).floor() as i32;
 
-    let biomes = crate::cubiomes::get_biome_region_at(slot, biome_x, biome_z, query_w, query_h, biome_scale, sample_y)?;
+    let biomes = crate::cubiomes::get_biome_region_at(
+        slot, key, biome_x, biome_z, query_w, query_h, biome_scale, sample_y,
+    )?;
 
-    // ── Height query (overworld only, close zoom only) ────────────────────────
-    // Query one extra sample on the north (-Z) and west (-X) edges so that
-    // hillshading at tile boundaries has real neighbour data instead of clamping.
-    let heights: Option<(Vec<f32>, i32)> = if dimension == "overworld" && blocks_per_pixel <= HEIGHT_MAX_BPP {
+    // Real terrain-noise heights, not the cheaper mapApproxHeight estimate. Queries one
+    // extra sample on the north/west edges so tile-boundary hillshading has real
+    // neighbour data instead of clamping. Overworld 1.18+ or End only; close zoom only.
+    let heights: Option<(Vec<f32>, i32)> = if (dimension == "overworld" || dimension == "end") && blocks_per_pixel <= HEIGHT_MAX_BPP {
         let h_query_w = ((BIOME_TILE_SIZE as f64 * blocks_per_pixel / HEIGHT_SCALE as f64).ceil() as i32).max(1);
-        let h_x = (block_x as f64 / HEIGHT_SCALE as f64).floor() as i32;
-        let h_z = (block_z as f64 / HEIGHT_SCALE as f64).floor() as i32;
+        // Snapped to the HEIGHT_SCALE grid: cm_get_surface_heights samples at x0 + i*stride,
+        // it doesn't take pre-divided coordinates like mapApproxHeight does.
+        let h_x = (block_x as f64 / HEIGHT_SCALE as f64).floor() as i32 * HEIGHT_SCALE;
+        let h_z = (block_z as f64 / HEIGHT_SCALE as f64).floor() as i32 * HEIGHT_SCALE;
         let ext_w = h_query_w + 1;
-        crate::cubiomes::get_height_region(slot, h_x - 1, h_z - 1, ext_w, ext_w)
-            .map(|h| (h, ext_w))
+        crate::cubiomes::get_surface_height_region(slot, key, h_x - HEIGHT_SCALE, h_z - HEIGHT_SCALE, ext_w, ext_w, HEIGHT_SCALE)
+            .map(|h| (h.into_iter().map(|y| y as f32).collect(), ext_w))
     } else {
         None
     };
 
-    // ── Pixel fill ────────────────────────────────────────────────────────────
     let mut pixels = vec![0u8; BIOME_TILE_SIZE * BIOME_TILE_SIZE * 4];
     for py in 0..BIOME_TILE_SIZE {
         for px in 0..BIOME_TILE_SIZE {
@@ -732,19 +793,179 @@ pub fn render_biome_tile(
         }
     }
 
-    // Write PNG to disk cache (best-effort)
     if let Some(parent) = p.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&p, encode_png_sized(&pixels, BIOME_TILE_SIZE as u32));
+    let _ = std::fs::write(&p, encode_biome_tile_png(
+        &pixels, BIOME_TILE_SIZE as u32, seed_low, seed_high, mc_version, world_flags, dimension, sample_y, (block_x, block_z),
+    ));
 
-    Some(p.to_string_lossy().into_owned())
+    Some((p.to_string_lossy().into_owned(), file_mtime_secs(&p)))
+}
+
+/// Like `encode_biome_tile_png` but for the multi-Y underground scan — embeds
+/// the actual block-Y levels sampled instead of a single sample-y, since this
+/// tile is a composite across `UNDERGROUND_Y_LEVELS`, not one fixed depth.
+fn encode_underground_tile_png(
+    pixels:        &[u8],
+    size:          u32,
+    seed_low:      i32,
+    seed_high:     i32,
+    mc_version:    i32,
+    world_flags:   i32,
+    y_levels_used: &str,
+    block_origin:  (i32, i32),
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(std::io::Cursor::new(&mut buf), size, size);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fast);
+        let rendered_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = encoder.add_text_chunk("rendered-at".to_string(), rendered_at.to_string());
+        let seed = ((seed_high as i64) << 32) | (seed_low as u32 as i64);
+        let _ = encoder.add_text_chunk("seed".to_string(), seed.to_string());
+        let _ = encoder.add_text_chunk("mc-version".to_string(), mc_version_label(mc_version).to_string());
+        let _ = encoder.add_text_chunk("mc-version-id".to_string(), mc_version.to_string());
+        let _ = encoder.add_text_chunk("world-flags".to_string(), world_flags.to_string());
+        let _ = encoder.add_text_chunk("dimension".to_string(), "overworld".to_string());
+        let _ = encoder.add_text_chunk("block-y-levels-scanned".to_string(), y_levels_used.to_string());
+        let (block_x, block_z) = block_origin;
+        let _ = encoder.add_text_chunk("block-origin".to_string(), format!("{block_x},{block_z}"));
+        let mut writer = encoder.write_header().expect("png header");
+        writer.write_image_data(pixels).expect("png data");
+    }
+    buf
+}
+
+fn underground_tile_path(
+    cache_root:  &Path,
+    seed_low:    i32,
+    seed_high:   i32,
+    mc_version:  i32,
+    world_flags: i32,
+    zoom:        i32,
+    tx:          i32,
+    ty:          i32,
+) -> PathBuf {
+    let seed = ((seed_high as i64) << 32) | (seed_low as u32 as i64);
+    cache_root
+        .join("underground")
+        .join(format!("{:016x}", seed as u64))
+        .join(format!("v{}_wf{}_t{}", mc_version, world_flags, BIOME_TILE_SIZE))
+        .join(zoom.to_string())
+        .join(format!("{tx}_{ty}.png"))
+}
+
+/// Per column, walks `UNDERGROUND_Y_LEVELS` shallowest-first and takes the first
+/// cave-biome hit below that column's real terrain surface (queried once up front).
+/// Overworld-only: cave biomes don't generate in the Nether or End.
+pub fn render_underground_biome_tile(
+    cache_root:  &Path,
+    slot:        i32,
+    seed_low:    i32,
+    seed_high:   i32,
+    mc_version:  i32,
+    world_flags: i32,
+    dimension:   &str,
+    tile_x:      i32,
+    tile_y:      i32,
+    zoom:        i32,
+) -> Option<(String, u64)> {
+    if dimension != "overworld" {
+        return None;
+    }
+
+    let p = underground_tile_path(cache_root, seed_low, seed_high, mc_version, world_flags, zoom, tile_x, tile_y);
+
+    if p.exists() {
+        return Some((p.to_string_lossy().into_owned(), file_mtime_secs(&p)));
+    }
+
+    // See render_biome_tile's comment on this same check — a queued render
+    // can execute after the slot's been repointed to another world/config.
+    let key = crate::cubiomes::GeneratorKey {
+        seed_low, seed_high, dimension: dim_to_cubiomes(dimension), world_flags, mc_version,
+    };
+    if !crate::cubiomes::slot_matches(slot, key) {
+        return None;
+    }
+
+    let (block_x_f, block_z_f, blocks_per_pixel) = tile_origin_blocks(tile_x, tile_y, zoom, BIOME_TILE_SIZE);
+    let block_x = block_x_f.floor() as i32;
+    let block_z = block_z_f.floor() as i32;
+
+    let h_query_w = ((BIOME_TILE_SIZE as f64 * blocks_per_pixel / HEIGHT_SCALE as f64).ceil() as i32).max(1);
+    let h_query_h = h_query_w;
+    let h_x = (block_x as f64 / HEIGHT_SCALE as f64).floor() as i32;
+    let h_z = (block_z as f64 / HEIGHT_SCALE as f64).floor() as i32;
+    let heights = crate::cubiomes::get_height_region(slot, key, h_x, h_z, h_query_w, h_query_h)?;
+
+    let biome_scale = pick_biome_scale(blocks_per_pixel);
+    let query_w = ((BIOME_TILE_SIZE as f64 * blocks_per_pixel / biome_scale as f64).ceil() as i32).max(1);
+    let query_h = query_w;
+    let biome_x = (block_x as f64 / biome_scale as f64).floor() as i32;
+    let biome_z = (block_z as f64 / biome_scale as f64).floor() as i32;
+
+    // Every level must succeed, or bail entirely — a partial set here would mean
+    // deeper/shallower cave pockets quietly baked into the cached PNG as absent.
+    let mut level_grids: Vec<(i32, Vec<i32>)> = Vec::with_capacity(crate::cubiomes::UNDERGROUND_Y_LEVELS.len());
+    for &y_biome in crate::cubiomes::UNDERGROUND_Y_LEVELS {
+        let grid = crate::cubiomes::get_biome_region_at(
+            slot, key, biome_x, biome_z, query_w, query_h, biome_scale, y_biome,
+        )?;
+        level_grids.push((y_biome, grid));
+    }
+
+    let mut pixels = vec![0u8; BIOME_TILE_SIZE * BIOME_TILE_SIZE * 4];
+    for py in 0..BIOME_TILE_SIZE {
+        for px in 0..BIOME_TILE_SIZE {
+            let hx = ((px as f64 * blocks_per_pixel / HEIGHT_SCALE as f64).floor() as usize).min(h_query_w as usize - 1);
+            let hz = ((py as f64 * blocks_per_pixel / HEIGHT_SCALE as f64).floor() as usize).min(h_query_h as usize - 1);
+            let surface_h = heights[hz * h_query_w as usize + hx];
+            if !surface_h.is_finite() { continue; }
+            let surface_block_y = surface_h.round() as i32;
+
+            let bx = ((px as f64 * blocks_per_pixel / biome_scale as f64).floor() as usize).min(query_w as usize - 1);
+            let bz = ((py as f64 * blocks_per_pixel / biome_scale as f64).floor() as usize).min(query_h as usize - 1);
+            let idx = bz * query_w as usize + bx;
+
+            let hit = level_grids.iter()
+                .filter(|(y_biome, _)| y_biome * 4 < surface_block_y)
+                .find_map(|(_, grid)| {
+                    let id = grid[idx];
+                    crate::cubiomes::CAVE_BIOME_IDS.contains(&id).then_some(id)
+                });
+
+            if let Some(id) = hit {
+                let [r, g, b] = biome_color(id);
+                let off = (py * BIOME_TILE_SIZE + px) * 4;
+                pixels[off] = r; pixels[off + 1] = g; pixels[off + 2] = b; pixels[off + 3] = 220;
+            }
+        }
+    }
+
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let y_levels_used = level_grids.iter()
+        .map(|(y_biome, _)| (y_biome * 4).to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let _ = std::fs::write(&p, encode_underground_tile_png(
+        &pixels, BIOME_TILE_SIZE as u32, seed_low, seed_high, mc_version, world_flags, &y_levels_used, (block_x, block_z),
+    ));
+
+    Some((p.to_string_lossy().into_owned(), file_mtime_secs(&p)))
 }
 
 // ── World map export ──────────────────────────────────────────────────────────
 
 const REGION_BLOCKS: i32 = 512;
-const CHUNKS_PER_REGION: i32 = 32;
 const BIOME_EXPORT_SCALE: i32 = 4; // cubiomes scale used for biome fill
 
 /// Dimension string → cubiomes dimension int (overworld=0, nether=-1, end=1).
@@ -780,10 +1001,8 @@ fn render_region_to_buf(
         block_x0, block_z0, blocks_per_pixel, px, out,
     );
 
-    let min_cx = block_x0 / CHUNK as i32;
-    let max_cx = min_cx + CHUNKS_PER_REGION - 1;
-    let min_cz = block_z0 / CHUNK as i32;
-    let max_cz = min_cz + CHUNKS_PER_REGION - 1;
+    let (min_cx, max_cx) = cell_range(block_x0, block_x0 + REGION_BLOCKS - 1, CHUNK as i32);
+    let (min_cz, max_cz) = cell_range(block_z0, block_z0 + REGION_BLOCKS - 1, CHUNK as i32);
 
     let requests: Vec<ChunkRequest> = (min_cz..=max_cz)
         .flat_map(|cz| (min_cx..=max_cx).map(move |cx| ChunkRequest { cx, cz }))
@@ -999,6 +1218,25 @@ pub fn export_world_map(
         .map_err(|e| format!("TIFF init error: {e}"))?;
     let mut image = tiff.new_image::<RGBA8>(total_w as u32, total_h as u32)
         .map_err(|e| format!("TIFF image error: {e}"))?;
+    // The tiff crate's RGBA8 colortype writes SamplesPerPixel=4 but never declares the
+    // alpha sample via ExtraSamples (required by TIFF6 whenever samples exceed what
+    // PhotometricInterpretation implies) — strict readers misinterpret the channel
+    // without it. 2 = unassociated (straight, non-premultiplied) alpha.
+    image.encoder().write_tag(tiff::tags::Tag::ExtraSamples, 2u16)
+        .map_err(|e| format!("TIFF tag error: {e}"))?;
+
+    // Provenance, the TIFF equivalent of the tEXt chunks tile-cache PNGs carry.
+    let rendered_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let seed = ((seed_high as i64) << 32) | (seed_low as u32 as i64);
+    let description = format!(
+        "rendered={rendered_at};dimension={dimension};seed={seed};mc_version={};world_flags={world_flags};regions=r.{rx_min}.{rz_min}.mca..r.{rx_max}.{rz_max}.mca;bpp={bpp}",
+        mc_version_label(mc_version),
+    );
+    image.encoder().write_tag(tiff::tags::Tag::ImageDescription, description.as_str())
+        .map_err(|e| format!("TIFF tag error: {e}"))?;
 
     let mut written = 0usize;
     while written < total_px {

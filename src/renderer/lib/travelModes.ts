@@ -8,47 +8,24 @@ export interface TravelModeDef {
   netherEquivalent?: boolean // distance is leg-distance / 8 before applying speed (finished-tunnel model)
 }
 
-// Palette groups by terrain family, not just "make every mode different": land
-// modes (walk, mounted) sit in warm earth tones, water modes (boat, swim, ice)
-// sit in a blue family but spread from a clean saturated blue (boat, the "good"
-// way to cross water) down through a murky slate blue (swim, struggling through
-// open water) up to a near-white neon blue (ice, jarring on purpose — you should
-// not be here). Elytra/spectator/nether-highway stay outside both families since
-// they don't interact with terrain the same way.
+// Palette groups by terrain family: land modes get warm earth tones, water modes
+// (boat/swim/ice) share a blue family spread by how "safe" the mode is.
 export const TRAVEL_MODES: Record<TravelMode, TravelModeDef> = {
-  // Label is "On Foot," not "Walk" — the id stays `walk` (load-bearing string
-  // literal throughout the codebase), but the plain name undersold that this
-  // mode adapts: it auto-splits into swim/ice/snow sub-segments wherever the
-  // terrain isn't normal walkable ground, not just walk speed the whole leg.
+  // id stays `walk` (used as a string literal elsewhere); label says "On Foot"
+  // since this mode auto-splits into swim/ice/snow sub-segments as terrain demands.
   walk:           { id: 'walk',           label: 'On Foot',        speed: 4.317, color: '#7a4520' },
-  // Same idea — "By Boat," not "Boat": adapts to walk/ice/snow on any dry-land
-  // or icy stretch the straight leg happens to cross.
   boat:           { id: 'boat',           label: 'By Boat',        speed: 8,     color: '#1f6feb' },
   mounted:        { id: 'mounted',        label: 'Mounted',        speed: 9,     color: '#d29922' },
   elytra:         { id: 'elytra',         label: 'Elytra',         speed: 35,    color: '#a371f7' },
   spectator:      { id: 'spectator',      label: 'Spectator',      speed: 21.6,  color: '#8b949e' },
   nether_highway: { id: 'nether_highway', label: 'Nether Highway', speed: 4.317, color: '#f85149', netherEquivalent: true },
-  // Not a selectable mode — auto-detected when a `walk` leg crosses open ocean
-  // without a boat. Slower than walking and blended down further to account for
-  // having to keep surfacing for air; the punitive speed + long dash are both
-  // deliberate nudges toward switching that leg to Boat mode instead. Murky
-  // slate blue — deliberately duller than Boat's clean blue, reads as "struggling."
+  // Auto-detected only (not selectable): a `walk` leg crossing open ocean without a boat.
+  // Slow on purpose, nudging toward Boat instead.
   swim:           { id: 'swim',           label: 'Swim',           speed: 2.2,   color: '#3a6b7d' },
-  // Also auto-only. Frozen ocean (icebergs, pack ice) is bad for both boat and
-  // on-foot travel: a boat can't move through ice, and a walker is picking
-  // across jagged iceberg terrain, not swimming — so it gets its own speed
-  // regardless of whether the leg was tagged `boat` or `walk`. Faster than
-  // swimming (solid footing) but slower than plain walking (treacherous terrain).
-  // Near-white neon blue — deliberately jarring against the dark ocean background.
+  // Auto-only: frozen ocean blocks boats and forces picking across ice, so it needs its
+  // own speed regardless of whether the leg was tagged `boat` or `walk`.
   ice:            { id: 'ice',            label: 'Frozen Ocean',   speed: 3.0,   color: '#c8faff' },
-  // Also auto-only. Deep/powder snow on land (snowy plains/taiga/ice spikes,
-  // the snow-capped mountain biomes) slows walking — same "looks like normal
-  // terrain, isn't actually normal speed" problem as frozen ocean, just dry
-  // instead of wet. Applies whether the leg was tagged `boat` or `walk`, since
-  // either way you're on foot picking through snowdrifts. Deep saturated navy —
-  // NOT pale like Ice: Ice needed to pop against dark ocean, but snow's own
-  // background (snowy terrain) is pale, so a pale dash color washed out into
-  // near-invisibility there instead of contrasting with it.
+  // Auto-only: deep/powder snow on land slows walking the same way frozen ocean does at sea.
   snow:           { id: 'snow',           label: 'Snowy Terrain',  speed: 3.5,   color: '#1e3a5f' },
 }
 
@@ -68,16 +45,10 @@ function effectiveSpeed(mode: TravelMode): number {
 }
 
 /**
- * Leaflet dashArray string for a mode's line — longer dashes read as slower,
- * shorter/near-solid dashes read as faster. Purely a rendering aid (RulerLayer):
- * lets the boat/walk split in a biome-auto-split leg (and every other mode) read
- * without depending on color contrast alone, since some mode colors (walk vs. boat)
- * are close enough in hue to be hard to tell apart on a busy biome background.
- *
- * Floors are tied to the 4px line weight these render at (see RulerLayer.tsx) —
- * a gap smaller than the line's own width visually disappears, especially with
- * Leaflet's default round line-cap bleeding each dash past its nominal end.
- * Pair with `lineCap: 'butt'` on the polyline, or the floor alone won't be enough.
+ * Leaflet dashArray for a mode's line — longer dashes read as slower. Lets speed
+ * read without relying on color contrast alone (some mode colors are close in hue).
+ * Min dash/gap sizes are tied to RulerLayer's 4px line weight; pair with
+ * `lineCap: 'butt'` or Leaflet's round cap bleeds dashes past the floor.
  */
 function dashGapForMode(mode: TravelMode): { dash: number; gap: number } {
   const speed = effectiveSpeed(mode)
@@ -92,12 +63,9 @@ export function dashPatternForMode(mode: TravelMode): string {
 }
 
 /**
- * The complementary pattern + offset that exactly fills the gaps left by
- * `dashPatternForMode` — pair a polyline using this with one using the normal
- * pattern (same coordinates, drawn either order) to get a two-tone "candy-cane"
- * line where the gap is a solid color instead of showing whatever's underneath.
- * Makes the dash rhythm itself read clearly ("how long is this dash, really")
- * independent of the mode color or what biome is under the line.
+ * Complementary pattern + offset that exactly fills the gaps from `dashPatternForMode`.
+ * Draw both polylines on the same coordinates to get a two-tone "candy-cane" line
+ * so the dash rhythm reads independent of the mode color or biome underneath.
  */
 export function gapDashPatternForMode(mode: TravelMode): { dashArray: string; dashOffset: string } {
   const { dash, gap } = dashGapForMode(mode)
@@ -106,15 +74,8 @@ export function gapDashPatternForMode(mode: TravelMode): { dashArray: string; da
 
 const DEFAULT_GAP_FILL_COLOR = '#e8e8e8' // light, crisp, neutral — reads as a clean rhythm marker
 
-/**
- * Gap-fill color for `gapDashPatternForMode` — normally a fixed neutral gray so
- * the dash rhythm reads the same regardless of mode, but the "your travel time
- * here is not what you'd expect" modes (`ice`, `snow`) get blaze orange instead
- * (hunter-safety-vest orange): a visual alert layered on top of, not instead of,
- * the long-dash speed signal — on land or at sea, same alert either way. Amber
- * wasn't loud enough to actually grab the eye against a busy map — went more
- * aggressive on purpose.
- */
+/** Gap-fill color: neutral gray by default; blaze orange for `ice`/`snow` as an extra alert
+ *  that travel time here is slower than it looks, layered on top of the dash-length signal. */
 export function gapFillColorForMode(mode: TravelMode): string {
   if (mode === 'ice' || mode === 'snow') return '#ff6700'
   return DEFAULT_GAP_FILL_COLOR

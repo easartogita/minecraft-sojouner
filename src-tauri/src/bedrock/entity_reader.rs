@@ -1,9 +1,6 @@
-// Bedrock entity reader.
-//
-// Reads entity data from LevelDB (key tag 0x32 per chunk), converts the
-// Bedrock LE NBT to fastnbt::Value, then delegates to the Java entity
-// extractor in crate::entity_reader — this reuses all 40+ entity handlers
-// without duplication.
+// Reads entities from LevelDB (key tag 0x32 per chunk), converts LE NBT to
+// fastnbt::Value, then delegates to crate::entity_reader's Java extractor so
+// all entity handlers stay shared instead of duplicated per edition.
 
 use super::le_nbt::{parse_compound_sequence, LeNbt};
 use super::leveldb::LdbDatabase;
@@ -11,8 +8,6 @@ use super::chunk_reader::{chunk_key_prefix, dim_str_to_bedrock};
 use crate::entity_reader::GameEntity;
 use fastnbt::Value;
 use std::collections::HashMap;
-
-// ── LeNbt → fastnbt::Value adapter ──────────────────────────────────────────
 
 pub fn le_nbt_to_fastnbt(v: &LeNbt) -> Value {
     match v {
@@ -36,9 +31,6 @@ pub fn le_nbt_to_fastnbt(v: &LeNbt) -> Value {
     }
 }
 
-
-// ── Main entry point ─────────────────────────────────────────────────────────
-
 pub fn get_bedrock_entities(
     db:        &LdbDatabase,
     dimension: &str,
@@ -57,19 +49,17 @@ pub fn get_bedrock_entities(
             if let Some(data) = db.get(&prefix) {
                 let compounds = parse_compound_sequence(&data);
                 for m in compounds {
-                    // Normalize entity id: strip "minecraft:" prefix
                     let kind = m.get("identifier")
                         .or_else(|| m.get("id"))
                         .and_then(|v| if let LeNbt::String(s) = v { Some(s.as_str()) } else { None })
                         .unwrap_or("unknown");
                     let kind_stripped = kind.strip_prefix("minecraft:").unwrap_or(kind).to_string();
 
-                    // Build a fastnbt compound with normalized id, then delegate to Java extractor
                     let mut fmap: HashMap<String, Value> = m.iter()
                         .map(|(k, v)| (k.clone(), le_nbt_to_fastnbt(v)))
                         .collect();
 
-                    // Ensure the "id" key uses the stripped name (Java extractor expects no namespace)
+                    // Java extractor expects an unnamespaced "id"
                     fmap.insert("id".to_string(), Value::String(kind_stripped));
 
                     let compound = Value::Compound(fmap);
