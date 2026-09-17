@@ -110,7 +110,7 @@ export interface DimensionManifest {
 
   /** This dimension's own named Y-bands (see defaultCaveRangePresets) — not
    *  shared across dimensions, since Overworld and Nether don't share a Y
-   *  space. Matched against caveScanLow/High to resolve tiles.cave[id]. */
+   *  space. Matched against the shared yFilterLow/High to resolve tiles.cave[id]. */
   caveRangePresets: CaveRangePreset[]
 
   tiles: {

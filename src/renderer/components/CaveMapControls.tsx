@@ -26,14 +26,18 @@ function ZoomStepper({ zoom, min, max, onChange }: { zoom: number; min: number; 
 
 // Floating depth gauge for Chunk Data cave mode.
 //
+// This edits yFilterLow/High — the same shared Y window the marker Y-filter (World Data
+// panel) uses, if it's also on. Chunk (cave mode) and markers are independent on/off
+// switches over that one range, not two separate ranges; see overlaySlice.ts.
+//
 // Live app: the shared YRangeGauge, whose window follows or freezes relative to a real
 // player Y. Clicking a preset unlocks from the player (anchorY 0) and sets
-// caveScanLow/High to its bounds directly, then the gauge is free to fine-tune from there.
+// yFilterLow/High to its bounds directly, then the gauge is free to fine-tune from there.
 //
 // Static export: no live player position to lock to and no backend to render an arbitrary
 // window, so this renders the same gauge (anchorY pinned to 0) with dragging switched off —
 // only the preset swatches can move the window, over the fixed Y-ranges baked into the
-// bundle for the current dimension (tauriAPI.static.ts's renderTile matches caveScanLow/High
+// bundle for the current dimension (tauriAPI.static.ts's renderTile matches yFilterLow/High
 // against a preset exactly; anything else resolves to a blank tile).
 export default function CaveMapControls() {
   const { state, dispatch, mapRef } = useApp()
@@ -58,7 +62,7 @@ export default function CaveMapControls() {
   // simply out of range in Nether and resolves to nothing. anchorY 0 keeps low/high
   // numerically equal to the preset's own bounds, matching what renderTile expects.
   //
-  // Tracked via a ref, not derived from caveLockedToPlayer: once the user picks a
+  // Tracked via a ref, not derived from yFilterLockedToPlayer: once the user picks a
   // different preset within the same dimension, locked stays false and must not be
   // stomped back to preset[0] on every re-render — only an actual dimension change (or
   // fresh cave-mode enable) should force a re-snap.
@@ -78,7 +82,7 @@ export default function CaveMapControls() {
   const anchorY = effectiveCaveAnchorY(state, playerY)
   if (anchorY == null) return null
 
-  const { caveScanLow, caveScanHigh, zoom, caveLockedToPlayer: locked } = state
+  const { yFilterLow, yFilterHigh, zoom, yFilterLockedToPlayer: locked } = state
   const [caveMin, caveMax] = caveZoomRange(state, state.dimension)
   const [yMin, yMax] = yRangeFor(state.dimension)
 
@@ -88,15 +92,23 @@ export default function CaveMapControls() {
     mapRef.current?.setZoom(clamped)
   }
 
+  // Chunk (this gauge) and markers (World Data panel) are independent switches over the
+  // same shared range — when both are on, dragging this also moves what markers show.
+  const sharedWithMarkers = state.markerYFilterEnabled && (
+    <span className="cmc-shared-badge" title="Markers are also filtered to this Y range">
+      also filtering markers
+    </span>
+  )
+
   if (api.IS_STATIC_SITE) {
     return (
       <div className="cave-map-controls" onMouseDown={e => e.stopPropagation()}>
         <YRangeGauge
-          anchorY={anchorY} low={caveScanLow} high={caveScanHigh}
+          anchorY={anchorY} low={yFilterLow} high={yFilterHigh}
           playerY={playerY} draggable={false} snap={10}
           yMin={yMin} yMax={yMax}
           onRangeChange={() => {}}
-          headerExtra={<ZoomStepper zoom={zoom} min={caveMin} max={caveMax} onChange={setZoom} />}
+          headerExtra={<>{sharedWithMarkers}<ZoomStepper zoom={zoom} min={caveMin} max={caveMax} onChange={setZoom} /></>}
           presets={presets}
           onPresetSelect={p => dispatch({ type: 'SET_CAVE_SCAN_RANGE', low: p.low, high: p.high })}
         />
@@ -107,12 +119,12 @@ export default function CaveMapControls() {
   return (
     <div className="cave-map-controls" onMouseDown={e => e.stopPropagation()}>
       <YRangeGauge
-        anchorY={anchorY} low={caveScanLow} high={caveScanHigh}
+        anchorY={anchorY} low={yFilterLow} high={yFilterHigh}
         playerY={playerY} locked={locked} snap={10}
         yMin={yMin} yMax={yMax}
         onRangeChange={(low, high) => dispatch({ type: 'SET_CAVE_SCAN_RANGE', low, high })}
         onLockChange={(nextLocked, nextAnchorY) => dispatch({ type: 'SET_CAVE_LOCK', locked: nextLocked, anchorY: nextAnchorY })}
-        headerExtra={<ZoomStepper zoom={zoom} min={caveMin} max={caveMax} onChange={setZoom} />}
+        headerExtra={<>{sharedWithMarkers}<ZoomStepper zoom={zoom} min={caveMin} max={caveMax} onChange={setZoom} /></>}
         presets={presets}
         onPresetSelect={p => {
           // anchorY 0 jumps to the fixed band and drops out of following the player,

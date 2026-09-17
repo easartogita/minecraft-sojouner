@@ -86,7 +86,10 @@ export default function WorldDataFlyout() {
             </div>
           </div>
 
-          {(playerY !== null || state.markerYAnchorY != null) && (
+          {/* Chunk (cave mode) and markers are two independent on/off switches over one
+              shared Y window (see overlaySlice's yFilterLow/High) — enabling this filter
+              here edits the exact same range Cave Mode uses, and vice versa. */}
+          {(playerY !== null || state.yFilterAnchorY != null) && (
             <div className="mp-y-section mp-y-section--below">
               <label className="overlay-toggle">
                 <input type="checkbox" checked={state.markerYFilterEnabled}
@@ -94,16 +97,21 @@ export default function WorldDataFlyout() {
                 <span className="overlay-label">Y filter</span>
                 {yAnchor != null && (
                   <span className="mp-y-center-badge"
-                    title={state.markerYLockedToPlayer ? 'Window follows the player' : 'Window frozen at this Y'}>
-                    Y {yAnchor}{!state.markerYLockedToPlayer && ' ❄'}
+                    title={state.yFilterLockedToPlayer ? 'Window follows the player' : 'Window frozen at this Y'}>
+                    Y {yAnchor}{!state.yFilterLockedToPlayer && ' ❄'}
+                  </span>
+                )}
+                {state.caveMode && (
+                  <span className="mp-y-shared-badge" title="This is the same Y range Cave Mode is using for chunk rendering">
+                    also filtering chunk data
                   </span>
                 )}
               </label>
               {state.markerYFilterEnabled && yAnchor != null && (
                 <div className="mp-y-gauge-wrap">
                   <YRangeGauge
-                    anchorY={yAnchor} low={state.markerYLow} high={state.markerYHigh}
-                    playerY={playerY} locked={state.markerYLockedToPlayer} snap={5}
+                    anchorY={yAnchor} low={state.yFilterLow} high={state.yFilterHigh}
+                    playerY={playerY} locked={state.yFilterLockedToPlayer} snap={5}
                     onRangeChange={(low, high) => dispatch({ type: 'SET_MARKER_Y_FILTER', low, high })}
                     onLockChange={(locked, anchorY) => dispatch({ type: 'SET_MARKER_Y_LOCK', locked, anchorY })}
                   />

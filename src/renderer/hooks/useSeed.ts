@@ -93,7 +93,7 @@ export function useAppState() {
     state.hideWater, state.showSlimeChunks, state.showCopperVeins, state.showIronVeins,
     state.showChunkData, state.chunkDataMinZoom, state.showChunkGrid, state.showRegionGrid,
     state.showSpawnRadius, state.showMarkers, state.markerMinZoom, state.markerGroupDefs, state.enabledMarkerGroups,
-    state.markerYFilterEnabled, state.markerYLow, state.markerYHigh,
+    state.markerYFilterEnabled, state.yFilterLow, state.yFilterHigh,
     state.showLocalDifficulty, state.biomeMode,
     state.zoom, state.uiScale,
     state.rulerWaypoints, state.rulerLegModes, state.rulerCurrentMode, state.activeRouteId,

@@ -30,7 +30,7 @@ tileStats.registerOverlay({ key: 'poi', label: 'POI', className: 'poi', queues: 
 
 function PoiLayer({ map }: { map: L.Map }) {
   const { state } = useApp()
-  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, markerYLow, markerYHigh, markerMinZoom } = state
+  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, yFilterLow, yFilterHigh, markerMinZoom } = state
   const edition = state.seedData?.edition ?? 'java'
   const playerY = state.seedData?.playerY ?? null
   const yAnchor = effectiveMarkerAnchorY(state, playerY)
@@ -59,7 +59,7 @@ function PoiLayer({ map }: { map: L.Map }) {
 
       if (isAborted()) return
 
-      const [yMin, yMax] = markerYBounds(yAnchor, markerYLow, markerYHigh)
+      const [yMin, yMax] = markerYBounds(yAnchor, yFilterLow, yFilterHigh)
 
       const wanted = new Set<string>()
       for (const rec of records) {
@@ -101,7 +101,7 @@ function PoiLayer({ map }: { map: L.Map }) {
   useEffect(() => {
     triggerLoad()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yAnchor, markerYLow, markerYHigh])
+  }, [yAnchor, yFilterLow, yFilterHigh])
 
   return null
 }

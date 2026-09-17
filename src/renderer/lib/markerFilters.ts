@@ -270,10 +270,14 @@ export const DEFAULT_MARKER_GROUPS: CustomMarkerGroup[] = [
     entityTypes: ['villager', 'wandering_trader', 'zombie_villager_curing', 'zombie_villager'],
   },
   {
+    id: 'mounts', name: 'Mounts', color: '#d97706',
+    beTypes: [],
+    entityTypes: ['horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse', 'llama', 'trader_llama', 'camel', 'happy_ghast', 'boat'],
+  },
+  {
     id: 'animals', name: 'Animals', color: '#84cc16',
     beTypes: [],
     entityTypes: [
-      'horse', 'donkey', 'mule', 'skeleton_horse', 'zombie_horse', 'llama', 'trader_llama', 'camel', 'happy_ghast', 'boat',
       'wolf', 'cat', 'parrot', 'allay',
       'strider', 'goat', 'axolotl', 'iron_golem', 'copper_golem', 'shulker', 'snow_golem', 'phantom', 'sulfur_cube',
       'cow', 'pig', 'chicken', 'sheep', 'mooshroom', 'rabbit', 'frog', 'turtle',

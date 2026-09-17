@@ -49,11 +49,6 @@ function makePin(x: number, z: number, dimension: Dimension): Pin {
   return { id: `pin-${Date.now()}`, x, z, label: `${x}, ${z}`, dimension, crossDimensional: false }
 }
 
-// How long a gesture-driven zoom must sit outside the cave range before it bounces back —
-// long enough that a continuous scroll doesn't fight the animation, short enough to read
-// as immediate feedback once the user stops.
-const CAVE_BOUNCE_SETTLE_MS = 500
-
 export default function MapView() {
   const { state, dispatch, generatorSlot, generatorConfig, mapRef } = useApp()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -96,16 +91,9 @@ export default function MapView() {
   // map") — local for the same reason as boxHoverPos. Feeds StructureCopyGhostLayer.
   const [destHoverPos, setDestHoverPos] = useState<[number, number] | null>(null)
 
-  // Cave-mode elastic zoom: refs so the always-registered zoomend bounce
-  // listener (below) can read current cave state without closing over stale
-  // values or needing to re-register per state change.
-  const caveModeRef = useRef(state.caveMode)
+  // Tracks whether cave mode was already on last render, so the entry-snap
+  // effect below only flies to the player on the false→true edge.
   const wasCaveModeRef = useRef(state.caveMode)
-  const caveRangeRef = useRef<[number, number]>([MIN_ZOOM, MAX_ZOOM])
-  const caveBounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const clearCaveBounceTimer = () => {
-    if (caveBounceTimerRef.current != null) { clearTimeout(caveBounceTimerRef.current); caveBounceTimerRef.current = null }
-  }
 
   // Error banner — local copy with auto-dismiss
   const [localError, setLocalError] = useState<string | null>(null)
@@ -192,7 +180,7 @@ export default function MapView() {
       try {
         const info = await api.getBlockAt(
           state.worldDir!, edition, state.dimension, state.hideWater, caveY,
-          state.caveScanLow, state.caveScanHigh,
+          state.yFilterLow, state.yFilterHigh,
           mouseCoords.x, mouseCoords.z,
           showDifficulty ? (seedData?.difficulty ?? undefined) : undefined,
           showDifficulty ? (seedData?.worldTime  ?? undefined) : undefined,
@@ -228,7 +216,7 @@ export default function MapView() {
       }
     }, 120)
     return () => { if (blockTimerRef.current) clearTimeout(blockTimerRef.current) }
-  }, [mouseCoords, state.worldDir, state.dimension, state.hideWater, state.caveMode, state.caveLockedToPlayer, state.caveAnchorY, state.seedData?.playerY, state.zoom, state.caveScanLow, state.caveScanHigh, state.seedData?.difficulty, state.seedData?.worldTime, state.showLocalDifficulty, isBedrockWorld, generatorSlot, generatorConfig])
+  }, [mouseCoords, state.worldDir, state.dimension, state.hideWater, state.caveMode, state.yFilterLockedToPlayer, state.yFilterAnchorY, state.seedData?.playerY, state.zoom, state.yFilterLow, state.yFilterHigh, state.seedData?.difficulty, state.seedData?.worldTime, state.showLocalDifficulty, isBedrockWorld, generatorSlot, generatorConfig])
 
   // Cubiomes height fallback — used when no worldDir (seed-only mode), overworld only.
   useEffect(() => {
@@ -448,20 +436,17 @@ export default function MapView() {
     map.fitBounds(bounds, { animate: false, padding: [0, 0] })
   }, [state.seedData?.seed, map])
 
-  // Cave mode: track the dimension's cave zoom range, and snap immediately if entering
-  // cave mode (a deliberate mode-entry action) leaves the zoom out of range. Leaflet's
-  // own min/max stay at the global MIN_ZOOM/MAX_ZOOM — gesture-driven zoom is never
-  // hard-blocked, only bounced back after it settles out of range (spring, not a wall).
+  // Cave mode: snap immediately if entering cave mode (a deliberate mode-entry action)
+  // leaves the zoom out of range. That's the only time zoom is ever touched on cave
+  // mode's behalf — once in, gesture-driven zoom is left alone entirely, in or out of
+  // range. Cave data just doesn't render out of range (see ZoomVisibilityBadge in the
+  // toolbar), rather than the map bouncing the user's own zoom back for them.
   useEffect(() => {
     if (!map) return
-    const range = caveZoomRange(state, state.dimension)
-    caveRangeRef.current = range
-    caveModeRef.current = state.caveMode
-    clearCaveBounceTimer()
     if (!state.caveMode) { wasCaveModeRef.current = false; return }
     const justEntered = !wasCaveModeRef.current
     wasCaveModeRef.current = true
-    const [caveMin, caveMax] = range
+    const [caveMin, caveMax] = caveZoomRange(state, state.dimension)
     const currentZoom = map.getZoom()
     const targetZoom = (currentZoom < caveMin || currentZoom > caveMax)
       ? Math.max(caveMin, Math.min(caveMax, CAVE_MODE_ZOOM)) : currentZoom
@@ -475,30 +460,6 @@ export default function MapView() {
       map.setZoom(targetZoom)
     }
   }, [map, state.caveMode, state.dimension, state.caveZoomMinOverworld, state.caveZoomMinNether])
-
-  // Cave mode: bounce back to the cave range once a gesture-driven zoom settles outside
-  // it. Registered once for the map's lifetime (not per cave-mode toggle); reads current
-  // cave state via the refs kept fresh by the effect above.
-  useEffect(() => {
-    if (!map) return
-    const onZoomEnd = () => {
-      clearCaveBounceTimer()
-      if (!caveModeRef.current) return
-      const [caveMin, caveMax] = caveRangeRef.current
-      const z = map.getZoom()
-      if (z >= caveMin && z <= caveMax) return
-      caveBounceTimerRef.current = setTimeout(() => {
-        caveBounceTimerRef.current = null
-        if (!caveModeRef.current) return
-        const [minNow, maxNow] = caveRangeRef.current
-        const zNow = map.getZoom()
-        if (zNow >= minNow && zNow <= maxNow) return
-        map.setZoom(Math.max(minNow, Math.min(maxNow, zNow)), { animate: true })
-      }, CAVE_BOUNCE_SETTLE_MS)
-    }
-    map.on('zoomend', onZoomEnd)
-    return () => { map.off('zoomend', onZoomEnd); clearCaveBounceTimer() }
-  }, [map])
 
   // Cave mode: pointer cursor for block identification
   useEffect(() => {
@@ -554,7 +515,7 @@ export default function MapView() {
           const caveY = effectiveCaveAnchorY(state, state.seedData?.playerY)
           const info = await api.getBlockAt(
             state.worldDir, edition, state.dimension, state.hideWater, caveY,
-            state.caveScanLow, state.caveScanHigh, blockX, blockZ,
+            state.yFilterLow, state.yFilterHigh, blockX, blockZ,
           )
           y = info?.blockY ?? null
         } catch { /* ignore */ }

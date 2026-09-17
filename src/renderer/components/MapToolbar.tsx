@@ -6,6 +6,7 @@ import { minecraftToLeaflet, parseCoordPaste } from '../lib/tileCoords'
 import DayNightBar from './DayNightBar'
 import { caveZoomRange } from '../hooks/overlaySlice'
 import { IconCenter, IconFollow } from './icons'
+import ZoomVisibilityBadge from './ZoomVisibilityBadge'
 import * as api from '../lib/tauriAPI'
 
 const DIM_LABELS: Record<Dimension, string> = {
@@ -375,8 +376,6 @@ function ToolbarZoom() {
   }
 
   const [caveMin, caveMax] = caveZoomRange(state, state.dimension)
-  const effectiveMin = state.caveMode ? caveMin : MIN_ZOOM
-  const effectiveMax = state.caveMode ? caveMax : MAX_ZOOM
 
   return (
     <div className="toolbar-zoom" title={state.caveMode
@@ -385,16 +384,14 @@ function ToolbarZoom() {
       <span className="toolbar-zoom-label">Zoom</span>
       <div className="toolbar-zoom-track">
         {ZOOM_LEVELS.map(z => {
-          const disabled = z < effectiveMin || z > effectiveMax
           const zone = z >= caveMin ? 'cave'
             : z >= state.chunkDataMinZoom ? 'chunk'
             : 'biome'
           return (
             <button
               key={z}
-              className={`toolbar-zoom-dot zone-${zone}${z === state.zoom ? ' active' : ''}${disabled ? ' disabled' : ''}`}
+              className={`toolbar-zoom-dot zone-${zone}${z === state.zoom ? ' active' : ''}`}
               onClick={() => handleZoom(z)}
-              disabled={disabled}
               title={`Zoom ${z > 0 ? '+' : ''}${z}`}
               aria-label={`Zoom ${z > 0 ? '+' : ''}${z}`}
             />
@@ -402,6 +399,7 @@ function ToolbarZoom() {
         })}
       </div>
       <span className="toolbar-zoom-value">{state.zoom > 0 ? `+${state.zoom}` : state.zoom}</span>
+      {state.caveMode && <ZoomVisibilityBadge checked currentZoom={state.zoom} minZoom={caveMin} />}
     </div>
   )
 }

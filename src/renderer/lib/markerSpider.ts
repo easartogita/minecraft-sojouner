@@ -77,6 +77,22 @@ export class MarkerSpider {
     if (openSpider && openSpider !== this) openSpider.collapse()
     openSpider = this
 
+    const offsets = this.fanOffsets()
+
+    // An anchor near a map edge (common — the rail/flyouts eat into the usable
+    // area, and a big stack's spiral radius can run past 100px) would fan part
+    // of the stack past the viewport: the leg still draws toward it, but the
+    // marker itself never becomes visible. Recenter first so the whole fan —
+    // ring or spiral — lands on-screen.
+    const maxRadius = offsets.reduce((m, p) => Math.max(m, Math.abs(p.x), Math.abs(p.y)), 0)
+    const margin = maxRadius + 24
+    const size = this.map.getSize()
+    const anchorPt = this.map.latLngToContainerPoint(this.anchor.getLatLng())
+    const clamp = (v: number, dim: number) => Math.min(Math.max(v, margin), Math.max(dim - margin, margin))
+    const target = L.point(clamp(anchorPt.x, size.x), clamp(anchorPt.y, size.y))
+    const panOffset = anchorPt.subtract(target)
+    if (panOffset.x || panOffset.y) this.map.panBy(panOffset, { animate: false })
+
     // Dim everything else so the fan doesn't blend into surrounding markers.
     // Clicking the dimmer collapses. Padded so a small pan stays covered.
     this.backdrop = L.rectangle(this.map.getBounds().pad(1), {
@@ -86,7 +102,6 @@ export class MarkerSpider {
 
     const from = this.anchor.getLatLng()
     const center = this.map.latLngToLayerPoint(from)
-    const offsets = this.fanOffsets()
     // Legs are readable for a ring but a starburst mess for a big spiral — skip them there.
     const drawLegs = this.children.length <= CIRCLE_MAX
     this.children.forEach((child, i) => {

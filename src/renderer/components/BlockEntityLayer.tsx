@@ -82,7 +82,7 @@ function buildStackAnchor(bes: BlockEntity[]): L.Marker {
 
 function BlockEntityLayer({ map }: { map: L.Map }) {
   const { state } = useApp()
-  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, markerYLow, markerYHigh, changedRegions, markerMinZoom } = state
+  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, yFilterLow, yFilterHigh, changedRegions, markerMinZoom } = state
   const edition = state.seedData?.edition ?? 'java'
   const beGroupLookup = useMemo(() => buildBeGroupLookup(markerGroupDefs), [markerGroupDefs])
   const playerY = state.seedData?.playerY ?? null
@@ -119,7 +119,7 @@ function BlockEntityLayer({ map }: { map: L.Map }) {
 
       if (isAborted()) return
 
-      const [yMin, yMax] = markerYBounds(yAnchor, markerYLow, markerYHigh)
+      const [yMin, yMax] = markerYBounds(yAnchor, yFilterLow, yFilterHigh)
 
       // Group visible block entities by column so a vertical stack (same X/Z,
       // different Y — e.g. Abandoned Camp's two chests) shares one map point.
@@ -174,7 +174,7 @@ function BlockEntityLayer({ map }: { map: L.Map }) {
   useEffect(() => {
     triggerLoad()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabledMarkerGroups, beGroupLookup, yAnchor, markerYLow, markerYHigh])
+  }, [enabledMarkerGroups, beGroupLookup, yAnchor, yFilterLow, yFilterHigh])
 
   return null
 }

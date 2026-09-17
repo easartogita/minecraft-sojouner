@@ -3493,6 +3493,18 @@
   flex-shrink: 0;
 }
 
+/* Chunk (cave mode) and markers share one Y window — shown on whichever panel's
+   gauge isn't the one currently being dragged, so it's clear an edit here moves both. */
+.mp-y-shared-badge, .cmc-shared-badge {
+  font-size: 10px;
+  font-style: italic;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.mp-y-shared-badge { margin-left: 6px; }
+.cmc-shared-badge { margin-right: 6px; }
+
 .mp-y-slider-row {
   display: flex;
   align-items: center;
@@ -4715,7 +4727,7 @@
   opacity: 1;
 }
 
-.toolbar-zoom-dot:hover:not(:disabled):not(.active) {
+.toolbar-zoom-dot:hover:not(.active) {
   height: 12px;
   opacity: 0.8;
 }
@@ -4723,11 +4735,6 @@
 .toolbar-zoom-dot.zone-biome { color: #3fb950; }
 .toolbar-zoom-dot.zone-chunk { color: #d29922; }
 .toolbar-zoom-dot.zone-cave  { color: #a78bfa; }
-
-.toolbar-zoom-dot:disabled {
-  opacity: 0.18;
-  cursor: default;
-}
 
 .toolbar-zoom-label {
   font-size: 10px;

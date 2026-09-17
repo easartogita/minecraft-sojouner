@@ -6,6 +6,44 @@
 
 ---
 
+## Accessibility (a11y)
+
+Goal: an ADA-minded accessibility pass, website + app UI — Minecraft itself is built with
+real accessibility effort (narrator, remappable controls, colorblind options), and this
+project reading its data should hold itself to the same bar. Target is roughly "as
+accessible as Google Maps" — worth being precise about what that actually means: even
+Google Maps doesn't make its map *canvas* screen-reader-narratable (no interactive map
+product really does — a rendered visual surface can't be "read" that way). What it does
+do is make the *surrounding UI* fully accessible — keyboard nav, ARIA-labeled controls,
+live-region status updates — plus a list-based, non-visual alternative to the map itself.
+That's the realistic, achievable target here too.
+
+- [ ] **Website pass** — color contrast, alt text, semantic headings, keyboard-navigable
+  nav/lightbox, ARIA on the lightbox modal (`web-site/index.html` and friends).
+- [ ] **App UI pass** — ARIA roles on the rail/panels, screen-reader labels on every
+  icon-only button, focus management, color contrast in the dark theme.
+- [ ] **Map's non-visual alternative** — already have the right foundation: the Seed
+  panel's "Nearby structures" list (sorted by distance, clickable) is exactly the kind of
+  list-based complement to the visual map that makes this achievable without trying to
+  narrate the Leaflet canvas itself. Extend that pattern (markers, entities) rather than
+  inventing a new one.
+
+**Why this is real, not a checkbox:** Minecraft is genuinely playable by people with a
+wide range of disabilities — blind players are the most striking example (its sound
+design carries real information: footstep and block-break audio differ by material,
+water and lava each have distinct ambient cues, mobs telegraph audibly before they're
+visible, caves have a learnable spatial/echo character — people build, speedrun, and
+stream this way), but the same applies to motor, hearing, and cognitive accessibility
+too — colorblind palettes, remappable controls, subtitles, all real, shipped features.
+A tool that reads a Minecraft world and makes zero effort to be usable by that same
+range of players doesn't make sense — not as compliance, just as basic consistency with
+the game it's built on top of.
+
+Discussed 2026-09-17 — scoped, not started; deliberately deferred to a dedicated session
+rather than squeezed in at the end of a long one.
+
+---
+
 ## Debug Panel (F3)
 
 Hasn't had a real audit since the static-export/tile-rendering rework — likely blind to

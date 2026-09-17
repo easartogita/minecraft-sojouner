@@ -40,8 +40,8 @@ function OreFeatureLayer({ map, slot }: { map: L.Map; slot: number }) {
   // In cave mode, constrain deposits to the visible depth slice (same Y-window as the
   // cave-mode tiles); off → effectiveCaveAnchorY returns null, so no filter applies.
   const caveAnchor = effectiveCaveAnchorY(state, state.seedData?.playerY ?? null)
-  const yMin = caveAnchor != null ? caveAnchor + state.caveScanLow  : undefined
-  const yMax = caveAnchor != null ? caveAnchor + state.caveScanHigh : undefined
+  const yMin = caveAnchor != null ? caveAnchor + state.yFilterLow  : undefined
+  const yMax = caveAnchor != null ? caveAnchor + state.yFilterHigh : undefined
 
   useTileLayer({
     map,

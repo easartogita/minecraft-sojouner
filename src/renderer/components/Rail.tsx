@@ -21,8 +21,13 @@ export default function Rail() {
   const { state } = useApp()
   // active drives the CSS width (0 or panelWidth).
   // renderTarget lags on close so content stays visible during the collapse.
-  const [active,       setActive]       = useState<ActivePanel>('seed')
-  const [renderTarget, setRenderTarget] = useState<ActivePanel>('seed')
+  // Both default closed, not 'seed' — SeedFlyout fires an unconditional, un-viewport-scoped
+  // ±SEARCH_RADIUS structure query the instant it mounts (see SeedFlyout.tsx), which on the
+  // static export means a burst of uncached per-region JSON fetches competing with the
+  // initial map tiles for the browser's connection pool on every cold page load. Opening
+  // the rail defaulted to it for free; let the user open Seed themselves instead.
+  const [active,       setActive]       = useState<ActivePanel>(null)
+  const [renderTarget, setRenderTarget] = useState<ActivePanel>(null)
 
   const worldDataLabel = state.worldDir
     ? (getWorldDisplayName(state.worldDir, state.seedData?.levelName) || 'World Data')

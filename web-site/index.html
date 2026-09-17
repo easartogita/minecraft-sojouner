@@ -251,7 +251,7 @@ footer a:hover{color:var(--pine)}
     <div class="wrap">
       <span class="badge"><span class="dot"></span>Java + Bedrock&nbsp;<a href="#leveldb-credit" class="fn" aria-label="footnote: LevelDB and Snappy">&Dagger;</a> &middot; desktop app &middot; current through MC 26.3, Wilderness Bound</span>
       <h1 class="mark">Your Minecraft world,<br><span class="grad-text">mapped in full.</span></h1>
-      <p class="hook">Sojourner reads a Minecraft world save and renders it in full — <b>terrain, structures, ore veins, chests, villagers, loot</b> — pulled directly from the world files.</p>
+      <p class="hook">It doesn't stop at the map. <b>Every chest and what's in it, every villager's trades, every structure your seed will ever generate</b> — pulled straight from the world files and laid out together. More of your own save, at once, than you've ever actually seen.</p>
       <div class="cta-row">
         <a class="btn btn-grad" href="#get">Download →</a>
         <a class="btn btn-ghost" href="#demos">Try it live, no install</a>
@@ -389,7 +389,7 @@ footer a:hover{color:var(--pine)}
       <h2>Built on other people's hard-won work.</h2>
       <p class="lede">Sojourner didn't solve Java's world generation or Bedrock's storage format from scratch — these projects already had, for free, and let anyone build on top. That's the only reason any of this exists.</p>
       <ul class="credits">
-        <li id="cubiomes-credit"><a href="#cubiomes-credit" class="fn-back" aria-label="jump back up">&dagger;</a> <b>cubiomes</b> <span class="k">(Cubitect, MIT)</span> — the actual Java world-generation math. Every biome, structure, and seed calculation marked &dagger; on this page runs through it, via the <a href="https://github.com/xpple/cubiomes">xpple/cubiomes</a> fork this app is built on. <a href="licenses/cubiomes-LICENSE.txt">License</a></li>
+        <li id="cubiomes-credit"><a href="#cubiomes-credit" class="fn-back" aria-label="jump back up">&dagger;</a> <b>cubiomes</b> <span class="k">(Cubitect, MIT)</span> — the actual Java world-generation math. Every biome, structure, and seed calculation marked &dagger; on this page runs through it, via the <a href="https://github.com/xpple/cubiomes">xpple/cubiomes</a> fork this app is built on. It only knows Java's rules, though — Bedrock generates worlds with different code entirely. On a Java save that means everything &dagger; lines up exactly; opened on a Bedrock save, the biome map and predicted structure locations are Sojourner's best guess using Java's math, not the real Bedrock answer. Ore veins, cave mode, and everything else read straight off your save are unaffected either way. <a href="licenses/cubiomes-LICENSE.txt">License</a></li>
         <li id="leveldb-credit"><a href="#leveldb-credit" class="fn-back" aria-label="jump back up">&Dagger;</a> <b>LevelDB</b> <span class="k">(Google, BSD-3-Clause)</span> — the database format Bedrock worlds are stored in, and the read path marked &Dagger; on this page runs through it, via the <a href="https://github.com/Mojang/leveldb">Mojang/leveldb</a> fork this app is built on. Without it there's no Bedrock support at all. <a href="licenses/leveldb-LICENSE.txt">License</a></li>
         <li><b>Snappy</b> <span class="k">(Google, BSD-3-Clause)</span> — the compression LevelDB&nbsp;<a href="#leveldb-credit" class="fn" aria-label="footnote: LevelDB and Snappy">&Dagger;</a> runs on. <a href="licenses/snappy-COPYING.txt">License</a></li>
         <li><b>Leaflet</b> <span class="k">(BSD-2-Clause)</span> — the map engine under every pan and zoom, including the live demo above. <a href="licenses/leaflet-LICENSE.txt">License</a></li>
@@ -423,7 +423,7 @@ footer a:hover{color:var(--pine)}
           </li>
           <li class="release soon">
             <span class="os">macOS</span>
-            <span class="rtag">not yet</span>
+            <span class="rtag">not yet — see note below</span>
           </li>
           <li class="release">
             <span class="os">Source</span>
@@ -437,7 +437,8 @@ footer a:hover{color:var(--pine)}
              doesn't exist until scripts/release.sh archives its first old build).
         <a class="archive" href="downloads/archive/">Older builds</a>
         -->
-        <p class="disc-blunt">This reads your world files directly, so back up your saves before pointing it at anything you'd miss. It's early-stage software — expect some rough edges. Found a bug? <a href="https://github.com/easartogita/minecraft-sojouner/issues">Open an issue</a>.</p>
+        <p class="disc-blunt">The Windows and Linux downloads above are plain installers — same as installing any other app, nothing extra to set up. This reads your world files directly, so back up your saves before pointing it at anything you'd miss. It's early-stage software — expect some rough edges. Found a bug? <a href="https://github.com/easartogita/minecraft-sojouner/issues">Open an issue</a>.</p>
+        <p class="disc-blunt">No ready-to-run Mac download yet — getting one running today means building it yourself, which needs developer tools (Xcode, Node, Rust) installed first. If that's not something you're set up to do, it's completely fine to just wait; that's not a step regular players should feel like they need to take. <a href="https://github.com/easartogita/minecraft-sojouner#macos">Instructions</a> are there for anyone who wants to anyway.</p>
       </div>
     </div>
   </section>

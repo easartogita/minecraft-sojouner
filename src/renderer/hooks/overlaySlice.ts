@@ -33,21 +33,19 @@ export interface OverlayState {
   markerGroupDefs: CustomMarkerGroup[]
   enabledMarkerGroups: Set<string>
   markerYFilterEnabled: boolean
-  /** Window offsets relative to the marker Y anchor (cave-gauge model). */
-  markerYLow: number
-  markerYHigh: number
-  /** true → window follows the live player Y; false → frozen at markerYAnchorY. */
-  markerYLockedToPlayer: boolean
-  /** Absolute Y captured at the moment of unlock; null while locked. */
-  markerYAnchorY: number | null
   caveMode: boolean
-  caveScanLow: number
-  caveScanHigh: number
-  /** true → scan window follows the player (offsets track live player Y);
-   *  false → window frozen at caveAnchorY, player indicator moves freely. */
-  caveLockedToPlayer: boolean
+  // Chunk rendering (behind caveMode) and markers (behind markerYFilterEnabled) are two
+  // independent on/off switches over one shared Y window — same floor/ceiling either way,
+  // just optionally applied to different things. "Cave mode" isn't a distinct rendering
+  // path: the backend renders a plain top-down surface when this window's off and a Y-slice
+  // when it's on, same pipeline either way (see region_reader.rs's cave_scan_low/high).
+  /** Window offsets relative to yFilterAnchorY. */
+  yFilterLow: number
+  yFilterHigh: number
+  /** true → window follows the live player Y; false → frozen at yFilterAnchorY. */
+  yFilterLockedToPlayer: boolean
   /** Absolute Y captured at the moment of unlock; null while locked. */
-  caveAnchorY: number | null
+  yFilterAnchorY: number | null
   caveZoomMinOverworld: number
   caveZoomMinNether: number
   showLocalDifficulty: boolean
@@ -185,28 +183,35 @@ export function caveZoomRange(
     : [state.caveZoomMinOverworld, MAX_ZOOM]
 }
 
-// Marker-filter counterpart of effectiveCaveAnchorY below: the Y the marker
-// window is centred on. Null when the filter is off or no position is known —
-// markerYBounds treats null as "no filtering".
-export function effectiveMarkerAnchorY(
-  state: Pick<OverlayState, 'markerYFilterEnabled' | 'markerYLockedToPlayer' | 'markerYAnchorY'>,
+// The Y the shared window is centred on, regardless of which consumer is asking.
+// Locked → live player Y (the window follows them); unlocked → the anchor captured
+// at unlock. Null when no position is known yet.
+function effectiveYFilterAnchor(
+  state: Pick<OverlayState, 'yFilterLockedToPlayer' | 'yFilterAnchorY'>,
   playerY: number | null | undefined,
 ): number | null {
-  if (!state.markerYFilterEnabled) return null
-  if (!state.markerYLockedToPlayer && state.markerYAnchorY != null) return state.markerYAnchorY
+  if (!state.yFilterLockedToPlayer && state.yFilterAnchorY != null) return state.yFilterAnchorY
   return playerY != null ? Math.floor(playerY) : null
 }
 
-// The Y the cave-scan window is centred on. Locked → live player Y (the window
-// follows them); unlocked → the anchor captured at unlock. Null when cave mode
-// is off or no position is known — callers already treat null as "no cave render".
+// Marker-filter view of the shared Y window: null (no filtering) when markers
+// haven't opted in, even if chunk rendering (cave mode) currently has it on.
+export function effectiveMarkerAnchorY(
+  state: Pick<OverlayState, 'markerYFilterEnabled' | 'yFilterLockedToPlayer' | 'yFilterAnchorY'>,
+  playerY: number | null | undefined,
+): number | null {
+  if (!state.markerYFilterEnabled) return null
+  return effectiveYFilterAnchor(state, playerY)
+}
+
+// Chunk-rendering (cave mode) view of the same shared Y window: null when cave
+// mode hasn't opted in, even if markers currently have the window on.
 export function effectiveCaveAnchorY(
-  state: Pick<OverlayState, 'caveMode' | 'caveLockedToPlayer' | 'caveAnchorY'>,
+  state: Pick<OverlayState, 'caveMode' | 'yFilterLockedToPlayer' | 'yFilterAnchorY'>,
   playerY: number | null | undefined,
 ): number | null {
   if (!state.caveMode) return null
-  if (!state.caveLockedToPlayer && state.caveAnchorY != null) return state.caveAnchorY
-  return playerY != null ? Math.floor(playerY) : null
+  return effectiveYFilterAnchor(state, playerY)
 }
 
 // ── Session persistence ───────────────────────────────────────────────────────
@@ -236,6 +241,9 @@ export interface OverlaySession {
   markerGroupDefs?: CustomMarkerGroup[]
   enabledMarkerGroups?: string[]
   markerYFilterEnabled?: boolean
+  yFilterLow?: number
+  yFilterHigh?: number
+  /** Deprecated (pre-unification per-marker fields) — read for migration, never written. */
   markerYLow?: number
   markerYHigh?: number
   /** Deprecated (pre-gauge symmetric radius) — read for migration, never written. */
@@ -298,8 +306,8 @@ export function saveOverlaySession(
     markerGroupDefs:         state.markerGroupDefs,
     enabledMarkerGroups:     [...state.enabledMarkerGroups],
     markerYFilterEnabled:    state.markerYFilterEnabled,
-    markerYLow:              state.markerYLow,
-    markerYHigh:             state.markerYHigh,
+    yFilterLow:              state.yFilterLow,
+    yFilterHigh:             state.yFilterHigh,
     caveZoomMinOverworld:    state.caveZoomMinOverworld,
     caveZoomMinNether:       state.caveZoomMinNether,
     showLocalDifficulty:     state.showLocalDifficulty,
@@ -351,16 +359,13 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
       ? new Set(s.enabledMarkerGroups)
       : new Set<string>(['villagers']),
     markerYFilterEnabled:    s.markerYFilterEnabled      ?? false,
-    // Migration: old sessions stored a symmetric radius around the player.
-    markerYLow:              s.markerYLow  ?? (s.markerYFilterRadius != null ? -s.markerYFilterRadius : -32),
-    markerYHigh:             s.markerYHigh ?? (s.markerYFilterRadius != null ?  s.markerYFilterRadius :  32),
-    markerYLockedToPlayer:   true,
-    markerYAnchorY:          null,
     caveMode:                false,
-    caveScanLow:             -40,
-    caveScanHigh:            40,
-    caveLockedToPlayer:      true,
-    caveAnchorY:             null,
+    // Migration: old sessions stored this per-marker (markerYLow/High), and older
+    // still as a symmetric radius around the player (markerYFilterRadius).
+    yFilterLow:              s.yFilterLow ?? s.markerYLow  ?? (s.markerYFilterRadius != null ? -s.markerYFilterRadius : -40),
+    yFilterHigh:             s.yFilterHigh ?? s.markerYHigh ?? (s.markerYFilterRadius != null ?  s.markerYFilterRadius :  40),
+    yFilterLockedToPlayer:   true,
+    yFilterAnchorY:          null,
     caveZoomMinOverworld:    s.caveZoomMinOverworld      ?? CAVE_MODE_MIN_ZOOM,
     caveZoomMinNether:       s.caveZoomMinNether         ?? CAVE_MODE_MIN_ZOOM,
     showLocalDifficulty:     s.showLocalDifficulty       ?? false,
@@ -412,10 +417,9 @@ const RESET: OverlayState = {
   markerMinZoom: DEFAULT_MARKER_MIN_ZOOM,
   markerGroupDefs: DEFAULT_MARKER_GROUPS,
   enabledMarkerGroups: new Set<string>(['villagers']),
-  markerYFilterEnabled: false, markerYLow: -32, markerYHigh: 32,
-  markerYLockedToPlayer: true, markerYAnchorY: null,
-  caveMode: false, caveScanLow: -40, caveScanHigh: 40,
-  caveLockedToPlayer: true, caveAnchorY: null,
+  markerYFilterEnabled: false, caveMode: false,
+  yFilterLow: -40, yFilterHigh: 40,
+  yFilterLockedToPlayer: true, yFilterAnchorY: null,
   caveZoomMinOverworld: CAVE_MODE_MIN_ZOOM, caveZoomMinNether: CAVE_MODE_MIN_ZOOM,
   showLocalDifficulty: false,
   biomeMode: 'surface',
@@ -536,6 +540,9 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
         markerGroupDefs: DEFAULT_MARKER_GROUPS,
         enabledMarkerGroups: new Set<string>(['villagers']),
       }
+    // Chunk (cave mode) and markers are two independent on/off switches over the one
+    // shared yFilterLow/High/LockedToPlayer/AnchorY window below — either can adjust
+    // it, both see the same result.
     case 'SET_MARKER_Y_FILTER': {
       const a = action as OverlayAction & { type: 'SET_MARKER_Y_FILTER' }
       // Enabling always starts from the predictable default: locked to the
@@ -544,26 +551,26 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
       return {
         ...state,
         markerYFilterEnabled: a.enabled ?? state.markerYFilterEnabled,
-        markerYLow:           a.low     ?? state.markerYLow,
-        markerYHigh:          a.high    ?? state.markerYHigh,
-        ...(enabling ? { markerYLockedToPlayer: true, markerYAnchorY: null } : null),
+        yFilterLow:           a.low     ?? state.yFilterLow,
+        yFilterHigh:          a.high    ?? state.yFilterHigh,
+        ...(enabling ? { yFilterLockedToPlayer: true, yFilterAnchorY: null } : null),
       }
     }
     case 'SET_MARKER_Y_LOCK': {
       const a = action as OverlayAction & { type: 'SET_MARKER_Y_LOCK' }
-      return { ...state, markerYLockedToPlayer: a.locked, markerYAnchorY: a.locked ? null : a.anchorY }
+      return { ...state, yFilterLockedToPlayer: a.locked, yFilterAnchorY: a.locked ? null : a.anchorY }
     }
     case 'TOGGLE_CAVE_MODE':
       // Entering/leaving cave mode always resets to the predictable default:
       // locked to the player.
-      return { ...state, caveMode: !state.caveMode, caveLockedToPlayer: true, caveAnchorY: null }
+      return { ...state, caveMode: !state.caveMode, yFilterLockedToPlayer: true, yFilterAnchorY: null }
     case 'SET_CAVE_SCAN_RANGE': {
       const a = action as OverlayAction & { type: 'SET_CAVE_SCAN_RANGE' }
-      return { ...state, caveScanLow: a.low, caveScanHigh: a.high }
+      return { ...state, yFilterLow: a.low, yFilterHigh: a.high }
     }
     case 'SET_CAVE_LOCK': {
       const a = action as OverlayAction & { type: 'SET_CAVE_LOCK' }
-      return { ...state, caveLockedToPlayer: a.locked, caveAnchorY: a.locked ? null : a.anchorY }
+      return { ...state, yFilterLockedToPlayer: a.locked, yFilterAnchorY: a.locked ? null : a.anchorY }
     }
     case 'SET_CAVE_ZOOM_MIN': {
       const a = action as OverlayAction & { type: 'SET_CAVE_ZOOM_MIN' }

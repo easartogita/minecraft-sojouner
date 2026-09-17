@@ -46,7 +46,7 @@ fn print_usage() {
          \x20 -h, --help          Print this and exit.\n\
          \n\
          Examples:\n\
-         \x20 export_cli --world 263s9 --output web-site/263s9\n\
+         \x20 export_cli --world 263s9 --output web-site/worlds/26.3\n\
          \x20 export_cli --world 263s9 --output /tmp/preview --layers biome,chunk"
     );
 }

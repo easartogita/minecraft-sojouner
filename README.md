@@ -1,23 +1,21 @@
 # Sojourner
 
-A desktop map viewer for Minecraft. Sojourner renders a live, interactive map of your world — biomes, structures, real block colors, cave mode, ore veins, block entities, entities, route planning, and more — read directly from your world files. Supports both **Java** and **Bedrock** editions. The map refreshes automatically whenever the world saves. Worlds can also be baked to a self-contained static website for sharing.
+A desktop map viewer for Minecraft — except it doesn't stop at the map. Every chest and what's actually in it, every villager and their trades, every structure your seed will ever generate, real ore veins, real block colors — all read straight from the world files and laid out together. It's more of your own save, at once, than you've ever actually been able to see. Supports both **Java** and **Bedrock** editions. The map refreshes automatically whenever the world saves. Worlds can also be baked to a self-contained static website for sharing.
 
-Built with Tauri 2 + Rust + React + Leaflet. cubiomes is compiled as a native static library and called via Rust FFI. Bedrock worlds are read via LevelDB (Mojang fork) with Snappy decompression.
-
-**[Download a build](https://sojourner.1048576.net/#get)** · **[Try it live, no install](https://sojourner.1048576.net/#demos)** · **[Feature comparison](https://sojourner.1048576.net/comparison.html)** — or build from source below.
+**[Download a build](https://sojourner.1048576.net/#get)** · **[Try it live, no install](https://sojourner.1048576.net/#demos)** · **[See how it compares](https://sojourner.1048576.net/comparison.html)** to other Minecraft map tools — all at [sojourner.1048576.net](https://sojourner.1048576.net). Prefer to build it yourself? Jump to [Building from source](#building-from-source).
 
 > Sojourner is an unofficial, fan-made tool. It is **not** affiliated with, endorsed by, or associated with Mojang Studios or Microsoft. *Minecraft* is a trademark of Mojang Studios.
 
 ---
 
-## Bedrock edition — known limitations
+## Bedrock edition — what's different
 
-Bedrock support is functional for block rendering and markers, but two major features rely on cubiomes which implements **Java Edition algorithms only**:
+Sojourner reads Bedrock worlds directly, and most of it is spot-on: real block colors, cave mode, block entities, entities, POI, ore veins, slime chunks, TIFF export, and the website export all work correctly. Two things don't, because the engine behind them only understands **Java Edition's** world generation:
 
-- **Biome map** — at low zoom, biome tiles are generated using Java Edition's world generation. For Bedrock worlds the colors will not match the actual world; treat them as approximate terrain guidance only.
-- **Structures** — structure positions are predicted using Java Edition's placement logic. Bedrock uses different seeds and placement rules; most positions will be wrong.
+- **Biome map** — at low zoom, the colored terrain map is generated with Java's algorithm. On a Bedrock world, treat it as an approximate guide to the terrain, not an exact match.
+- **Structures** — predicted structure locations use Java's seed and placement rules. Bedrock uses different ones, so most predicted positions will be wrong.
 
-Everything else — block color tiles, cave mode, block entities, entities, POI, ore veins, slime chunks, TIFF export, static site export — works correctly for Bedrock. (Local difficulty and the headless `export_cli` are Java-only; the GUI's static site export otherwise supports Bedrock.)
+(Local difficulty and the command-line export tool are Java-only for now; everything else works the same on both editions.)
 
 ---
 
@@ -50,15 +48,15 @@ Layers with a minimum render zoom (Markers, Ore Veins, Ore Deposits) show a smal
 - **World type support** — Default, Large Biomes, Amplified, Flat, Single Biome, Custom (auto-detected)
 
 ### Map rendering
-- **Biome map** — cubiomes-generated biome colors at low zoom; Overworld, Nether, and End, with real terrain-noise-based hillshading (Overworld and End) *(Java accurate; Bedrock approximate — see above)*
-- **Real block colors** — at zoom ≥ 3 by default (adjustable in Settings), reads actual surface blocks from `.mca` / LevelDB with hillshading and water depth tinting
+- **Biome map** — colored terrain map at low zoom for Overworld, Nether, and End, with realistic hillshading from actual terrain noise (Overworld and End) *(Java accurate; Bedrock approximate — see above)*
+- **Real block colors** — at zoom ≥ 3 by default (adjustable in Settings), reads the actual blocks from your world files, with hillshading and water depth tinting
 - **Cave mode** — underground block colors at a configurable Y depth with adjustable scan window; zoom is restricted to a per-dimension range while active, and springs back to it if you scroll/pinch past the edge instead of hard-blocking
 - **Underground biomes** — biome colors for a subsurface Y slice (a mode of the biome layer)
 - **Tile cache** — rendered tiles cached to disk as PNGs; invalidated automatically on world save
 - **Tile pre-generation** — pre-render all tiles for a configurable radius around spawn so subsequent viewport loads are near-instant
 
 ### Structures *(Java accurate; Bedrock approximate — see above)*
-All cubiomes-supported structures with labels, loot summaries, and variant annotations:
+Every structure Sojourner can predict, with labels, loot summaries, and variant annotations:
 
 **Overworld** — Village, Stronghold, Woodland Mansion, Ocean Monument, Witch Hut, Pillager Outpost, Desert Temple, Jungle Temple, Igloo, Shipwreck, Ruined Portal, Ancient City, Trial Chambers, Trail Ruins, Abandoned Camp, Ocean Ruins, Desert Well, Buried Treasure, Mineshaft, Amethyst Geode
 
@@ -99,7 +97,7 @@ Placed by you (in the **Saved** panel):
 Always on:
 - **Player marker** — last known in-game position; updates on world save
 - **Player respawn marker** — each player's bed/respawn-anchor point, when set, shown only in the dimension it's in
-- **Spawn marker** — the world's actual spawn point (from `level.dat`, reflects `/setworldspawn`); also shows the seed's cubiomes-predicted default spawn as a second marker when it differs
+- **Spawn marker** — the world's actual spawn point (from `level.dat`, reflects `/setworldspawn`); also shows the seed's predicted default spawn as a second marker when it differs
 
 ### Static site export
 - **Export as website** (World panel) — bakes a self-contained folder of PNG tiles + JSON that runs in any browser, no Sojourner backend required. Pick which dimensions and tile layers to include (biome, underground biome, block-color with/without water, cave mode with baked Y presets, ore veins, carvers, local difficulty); structures, block entities, entities, POI, and custom marker groups are always included. Every zoom level is pre-rendered ahead of time — nothing is generated live in the browser. Works for both Java and Bedrock worlds.
@@ -121,42 +119,28 @@ Always on:
 
 ## Multiplayer proxy *(planned — not yet implemented)*
 
-> **Status:** This section describes a design for a future feature. None of it is implemented yet — there is no proxy code, no sidebar panel, and no live multiplayer support in the current build. It is documented here as a roadmap and security model, not as shipping functionality.
+> **Not in the current build.** There's no proxy code, no panel for it, and no live multiplayer support yet. This is a roadmap item, documented ahead of time so the design (and the privacy/security thinking behind it) is out in the open.
 
-The planned **Proxy** panel would let Sojourner observe a live multiplayer session — showing chat, player positions, and chunk data in real time — by acting as a local relay between your Minecraft client and a remote server.
+The idea: a **Proxy** panel that lets Sojourner watch a live multiplayer session as it happens — chat, player positions, chunk data — by quietly sitting between your Minecraft client and the server you're connecting to, without touching or altering any of the traffic that passes through.
 
-### How it would work
+Some ground rules the design commits to, regardless of how it's eventually built:
 
-There are three separate network legs:
+- Your Minecraft client only ever talks to Sojourner on your own machine — that connection never leaves your computer.
+- Sojourner passes every packet through unchanged; it reads along the way but never modifies anything, so the server can't tell it's there.
+- Nothing about your session gets logged to disk or sent to any external service. There is no Sojourner-run server anywhere in the picture — everything happens locally on your machine.
+- Sojourner never stores your Microsoft account password. Signing in (once implemented) happens through Microsoft's own login page in your browser; Sojourner only ever holds the short-lived token Microsoft hands back.
 
-**1. Your Minecraft client → Sojourner (loopback only)**
-Your client connects to `127.0.0.1:<listen port>` — a port on your own machine. This traffic never leaves your computer. There is no TLS here because none is needed: loopback traffic is not reachable from the network.
-
-**2. Sojourner → the real Minecraft server**
-Sojourner opens a second TCP connection to the server you configured. For offline-mode and LAN servers this is plain TCP (Minecraft's own wire protocol). For online-mode servers, Minecraft uses its own AES-128/CFB8 stream encryption — not TLS — once the login handshake completes. Online-mode support is not yet implemented; the proxy disconnects with a clear error message if it encounters an encrypted server.
-
-**3. Sojourner → Microsoft / Mojang (HTTPS only)**
-When online-mode support is enabled in a future update, Sojourner will need to authenticate on your behalf. Those calls — OAuth token exchange, Xbox Live, and the Minecraft session server — go over standard HTTPS. Your credentials and tokens are only ever sent over encrypted connections to Microsoft's and Mojang's own endpoints. They are never sent through the proxy connection, never written to disk unencrypted, and never transmitted to any Sojourner-controlled server. There is no Sojourner server. The app is entirely local.
-
-### What Sojourner does with packet data
-
-Sojourner reads packets as they pass through and emits app events (player positions, chat lines, chunk coordinates). It does **not** modify packets — every byte is forwarded to your client unchanged. The server cannot tell a proxy is in the path.
-
-### What Sojourner does not do
-
-- It does not log your session to disk.
-- It does not send any game data to external services.
-- It does not store your Microsoft account password. The OAuth device-code flow (when implemented) opens a browser window on Microsoft's own site; Sojourner only ever sees the short-lived access token that Microsoft returns.
-
-### Current status
-
-Not implemented. Nothing in the multiplayer-proxy design above ships in the current build — the entire feature is on the roadmap. When built, offline-mode and LAN servers are the first target; online-mode (servers with `online-mode=true`) would follow once the encryption handshake is implemented.
+Offline-mode and LAN servers are the first target once this gets built; official (online-mode) servers will follow once the login/encryption handshake is implemented.
 
 ---
 
-## Prerequisites
+## Building from source
 
-### Windows
+Most players don't need this section — grab a [prebuilt download](https://sojourner.1048576.net/#get) instead. This is for people who want to build Sojourner themselves, tinker with it, or run it on a platform without a prebuilt release.
+
+### Prerequisites
+
+#### Windows
 
 1. **Visual Studio Build Tools 2022** — required to compile Rust and the bundled C/C++ libraries (cubiomes, LevelDB, Snappy). Download from [visualstudio.microsoft.com](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and select the **Desktop development with C++** workload.
 2. **Rust** — download and run `rustup-init.exe` from [rustup.rs](https://rustup.rs). Defaults to the MSVC toolchain, which is correct.
@@ -165,7 +149,7 @@ Not implemented. Nothing in the multiplayer-proxy design above ships in the curr
 
 > WSL is **not** required. Everything builds natively on Windows.
 
-### macOS
+#### macOS
 
 1. **Xcode Command Line Tools** — provides the C/C++ compiler needed for the native libraries:
    ```bash
@@ -177,7 +161,9 @@ Not implemented. Nothing in the multiplayer-proxy design above ships in the curr
    ```
 3. **Node.js 18+** — download the macOS installer (`.pkg`) from [nodejs.org](https://nodejs.org).
 
-### Linux (Debian/Ubuntu)
+> There's no signed/notarized build yet (that needs a paid Apple Developer account), so macOS will flag the `.app` you build as being from an unidentified developer the first time you open it. Right-click the app → **Open** → **Open** again on the warning dialog, or run `xattr -cr` on it, to get past that once.
+
+#### Linux (Debian/Ubuntu)
 
 1. **Rust**:
    ```bash
@@ -191,9 +177,7 @@ Not implemented. Nothing in the multiplayer-proxy design above ships in the curr
 
 For other distros see the [Tauri prerequisites guide](https://tauri.app/start/prerequisites/).
 
----
-
-## Installation
+### Installation
 
 ```bash
 git clone --recurse-submodules https://github.com/easartogita/minecraft-sojouner.git
@@ -206,14 +190,14 @@ If already cloned without `--recurse-submodules`:
 git submodule update --init --recursive
 ```
 
----
-
-## Running
+### Running
 
 ```bash
 npm run dev      # development (Tauri + Vite hot reload)
 npm run build    # production build → src-tauri/target/release/bundle/
 ```
+
+**Blank map / no biomes after building?** The terrain-generation engine compiles as a native library during `cargo build` (triggered automatically by `npm run dev`/`build`). Check the Rust build output for C compilation errors.
 
 ---
 
@@ -244,9 +228,6 @@ npm run build    # production build → src-tauri/target/release/bundle/
 
 ## Troubleshooting
 
-**Blank map / no biomes**
-cubiomes is built via `build.rs` during `cargo build`. Check the Rust build output for C compilation errors.
-
 **Map doesn't update after saving**
 Verify the app is watching the correct world. The file watcher uses a short debounce to wait for the game to finish writing.
 
@@ -260,4 +241,4 @@ Only visible at zoom level 3 or higher by default (configurable in Settings). Re
 Player position is saved in `level.dat` only on session end or auto-save. The marker only appears when the map dimension matches the player's current dimension.
 
 **Bedrock world not opening**
-Requires the LevelDB and Snappy submodules — clone with `--recurse-submodules`.
+If you built Sojourner yourself, make sure you cloned with `--recurse-submodules` (see [Building from source](#building-from-source)) — Bedrock support needs the LevelDB and Snappy submodules.

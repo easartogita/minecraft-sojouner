@@ -30,7 +30,7 @@ tileStats.registerOverlay({ key: 'entity', label: 'Entities', className: 'entity
 
 function EntityLayer({ map }: { map: L.Map }) {
   const { state } = useApp()
-  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, markerYLow, markerYHigh, changedRegions, markerMinZoom } = state
+  const { worldDir, dimension, enabledMarkerGroups, markerGroupDefs, yFilterLow, yFilterHigh, changedRegions, markerMinZoom } = state
   const edition = state.seedData?.edition ?? 'java'
   const entityGroupLookup = useMemo(() => buildEntityGroupLookup(markerGroupDefs), [markerGroupDefs])
   const playerY = state.seedData?.playerY ?? null
@@ -55,7 +55,7 @@ function EntityLayer({ map }: { map: L.Map }) {
 
       if (isAborted()) return
 
-      const [yMin, yMax] = markerYBounds(yAnchor, markerYLow, markerYHigh)
+      const [yMin, yMax] = markerYBounds(yAnchor, yFilterLow, yFilterHigh)
 
       const wanted = new Set<string>()
       for (const e of entities) {
@@ -117,7 +117,7 @@ function EntityLayer({ map }: { map: L.Map }) {
   useEffect(() => {
     triggerLoad()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabledMarkerGroups, entityGroupLookup, yAnchor, markerYLow, markerYHigh])
+  }, [enabledMarkerGroups, entityGroupLookup, yAnchor, yFilterLow, yFilterHigh])
 
   return null
 }

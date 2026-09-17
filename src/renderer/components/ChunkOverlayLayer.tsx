@@ -92,8 +92,8 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
   // Scan-window anchor: live player Y when locked, frozen anchor when unlocked;
   // null when cave mode is off or no position is known.
   const caveY            = effectiveCaveAnchorY(state, playerY)
-  const caveScanLow      = state.caveScanLow
-  const caveScanHigh     = state.caveScanHigh
+  const caveScanLow      = state.yFilterLow
+  const caveScanHigh     = state.yFilterHigh
 
   // Only revalidate in-memory tiles against disk while a live world is watched — offline
   // worlds never change. Ref so watch state is read live without rebuilding the layer.
