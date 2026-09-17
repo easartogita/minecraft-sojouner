@@ -22,7 +22,9 @@ export interface TileJob {
   id:       number
   priority: number   // squared tile-distance from map centre; lower = sooner
   status:   'pending' | 'active' | 'cancelled'
-  run:      () => void
+  // Receives the job itself so the callback can pass it back to release() —
+  // completions arrive in arbitrary order, not the order jobs were started.
+  run:      (job: TileJob) => void
   // Signals the Rust side to bail on an in-flight fetch; job still calls release() when it settles.
   abort?:   () => void
 }
@@ -65,7 +67,7 @@ export class TileJobQueue {
     registry.push(this)
   }
 
-  enqueue(priority: number, run: () => void): TileJob {
+  enqueue(priority: number, run: (job: TileJob) => void): TileJob {
     const job: TileJob = { id: this.nextId++, priority, status: 'pending', run }
     let i = this.queue.length
     while (i > 0 && this.queue[i - 1].priority > priority) i--
@@ -124,11 +126,11 @@ export class TileJobQueue {
     this.onChange?.()
   }
 
-  release() {
-    // No job identity available here (called from settle callbacks), so drop the
-    // oldest active entry — order doesn't matter since every active job releases exactly once.
-    const first = this.activeJobs.values().next()
-    if (!first.done) this.activeJobs.delete(first.value)
+  // Callers must pass the exact job they were handed by `run`/`enqueue` — fetches
+  // settle in whatever order they finish, not the order jobs were started, so
+  // dropping an arbitrary entry here would let more than maxActive run at once.
+  release(job: TileJob) {
+    this.activeJobs.delete(job)
     this.completed++
     this.drain()
     this.onChange?.()
@@ -137,7 +139,6 @@ export class TileJobQueue {
   // Suspend new jobs from starting (in-flight jobs continue to completion).
   pause() { this.paused = true }
 
-  // Resume draining the queue.
   resume() { this.paused = false; this.drain() }
 
   private drain() {
@@ -148,7 +149,7 @@ export class TileJobQueue {
       job.status = 'active'
       this.activeJobs.add(job)
       this.started++
-      job.run()
+      job.run(job)
     }
   }
 }

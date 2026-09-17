@@ -34,6 +34,7 @@ export interface TileLayerManifest {
 // freely-draggable gauge, since a static bundle can't render on demand. One set
 // per dimension — Overworld's -64..320 and Nether's 0..127 don't share a Y space.
 export const DEFAULT_CAVE_RANGE_PRESETS_OVERWORLD: CaveRangePreset[] = [
+  { id: 'above-ground', label: 'Above Ground (Y 48 to 320)', low: 48,  high: 320 },
   { id: 'near-surface', label: 'Near Surface (Y -16 to 48)', low: -16, high: 48 },
   { id: 'mid',          label: 'Mid (Y -48 to -16)',         low: -48, high: -16 },
   { id: 'deepslate',    label: 'Deepslate (Y -64 to -48)',   low: -64, high: -48 },
@@ -54,24 +55,29 @@ export function defaultCaveRangePresets(dimension: string): CaveRangePreset[] {
 
 // ── Region-gridded data layers ─────────────────────────────────────────────────
 // Every non-tile data layer (markers and per-chunk grids alike) is split into
-// one file per world region (512×512 blocks, matching .mca and listRegions) —
-// one partitioning scheme for the whole bundle so a fully-explored world's tens
-// of thousands of block entities/entities don't have to download as one flat
-// array before a single marker renders. Also matches the live app's existing
-// minCx/minCz/maxCx/maxCz windowing, so overlayTileWorker.ts's client-side
-// rendering is reused largely unchanged — it just resolves a static file.
+// one file per grid tile instead of one flat array per dimension, so a
+// fully-explored world's tens of thousands of block entities/entities don't
+// have to download as one blob before a single marker renders. POI/block-
+// entities/entities use one file per world region (512×512 blocks, matching
+// .mca and listRegions), which also matches the live app's existing
+// minCx/minCz/maxCx/maxCz windowing so overlayTileWorker.ts's client-side
+// rendering is reused largely unchanged. Structures use a coarser tile (see
+// STRUCTURE_TILE_BLOCK_SIZE) since their positions aren't tied to real chunk
+// data and are sparse enough that region-sized files are mostly empty.
 //
 // An empty region file is simply not written; DimensionManifest.regions lists
 // which (rx, rz) exist so the viewer never has to 404-probe.
 export const REGION_BLOCK_SIZE = 512 // 32 chunks/axis, matches .mca region size
 
+// Structures get their own coarser grid — see STRUCTURE_TILE_BLOCK_SIZE in
+// static_export.rs for why. Files are still named "{rx}_{rz}.json", just with
+// rx/rz measured in STRUCTURE_TILE_BLOCK_SIZE units instead of REGION_BLOCK_SIZE.
+export const STRUCTURE_TILE_BLOCK_SIZE = REGION_BLOCK_SIZE * 16
+
 export interface GridLayerManifest {
   path: string   // relative dir; files named "{rx}_{rz}.json"
   /** Raw payload shape per file, matching the IPC call/record type it stands in for. */
-  format:
-    | 'poi' | 'block-entities' | 'entities' | 'structures'                                    // PoiRecord[] / BlockEntity[] / GameEntity[] / ExportedStructure[]
-    | 'ore-vein-columns' | 'ore-features' | 'carved-columns'                                    // raw per-column grids, same layout as the live IPC response
-    | 'slime-chunks' | 'local-difficulty'
+  format: 'poi' | 'block-entities' | 'entities' | 'structures'   // PoiRecord[] / BlockEntity[] / GameEntity[] / ExportedStructure[]
 }
 
 // ── Vector data layers ─────────────────────────────────────────────────────────

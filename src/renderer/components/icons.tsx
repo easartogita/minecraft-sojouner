@@ -295,21 +295,32 @@ export function IconLockOpen({ size, className }: IconProps) {
   )
 }
 
-/** Pickaxe, upright — shallow arced head, handle fading like wood under iron.
- *  The app mark; render at 16px multiples (48 on the world picker). */
-export function IconPickaxe({ size, className }: IconProps) {
+/** Drafting compass — a cartography tool for a map viewer, not a mining tool.
+ *  Brass hinge, two stainless-steel legs splayed from it, diamond tips. Each
+ *  leg is the same straight template rotated outward from the hinge, same
+ *  trick as the rest of this file uses for angled shapes — one shape, turned. */
+export function IconCompass({ size, className }: IconProps) {
   return (
     <Px size={size} className={className}>
-      {/* head arc */}
-      <rect x={3} y={2} width={10} height={1} />
-      <rect x={2} y={3} width={3} height={1} />
-      <rect x={11} y={3} width={3} height={1} />
-      <rect x={1} y={4} width={2} height={2} />
-      <rect x={13} y={4} width={2} height={2} />
-      {/* handle */}
-      <g opacity={0.55}>
-        <rect x={7} y={3} width={2} height={10} />
-        <rect x={6} y={13} width={4} height={1} />
+      {/* whole compass canted 15° CCW off the symmetric upright pose — less static */}
+      <g transform="rotate(-15 8 8)">
+        {/* left leg */}
+        <g transform="rotate(-22 8 3)">
+          <rect x={7} y={3} width={1} height={9} fill="#c8ced6" />
+          <rect x={8} y={3} width={1} height={9} fill="#8b93a0" />
+          <polygon points="7,12 8,12 8,15" fill="#8ff2e6" />
+          <polygon points="8,12 9,12 8,15" fill="#2f9e93" />
+        </g>
+        {/* right leg */}
+        <g transform="rotate(22 8 3)">
+          <rect x={7} y={3} width={1} height={9} fill="#c8ced6" />
+          <rect x={8} y={3} width={1} height={9} fill="#8b93a0" />
+          <polygon points="7,12 8,12 8,15" fill="#8ff2e6" />
+          <polygon points="8,12 9,12 8,15" fill="#2f9e93" />
+        </g>
+        {/* brass hinge */}
+        <rect x={7} y={2} width={2} height={2} fill="#b8763f" />
+        <rect x={7} y={2} width={1} height={1} fill="#e0b878" />
       </g>
     </Px>
   )

@@ -17,8 +17,6 @@ export function randomId(): string {
   return Math.random().toString(36).slice(2, 10)
 }
 
-// BE types grouped by render group
-
 const BE_GROUPS_ORDER: BEFilterGroup[] = [
   'containers', 'spawners', 'signs', 'bees', 'utility', 'archeology', 'decorative', 'technical',
 ]
@@ -26,8 +24,6 @@ const BE_GROUPS_ORDER: BEFilterGroup[] = [
 const BE_TYPES_BY_GROUP = new Map<BEFilterGroup, typeof BE_TYPE_DEFS>(
   BE_GROUPS_ORDER.map(g => [g, BE_TYPE_DEFS.filter(t => t.group === g)])
 )
-
-// Entity types grouped by render group
 
 const ENTITY_GROUPS_ORDER: EntityFilterGroup[] = [
   'villagers', 'mounts', 'pets', 'animals', 'livestock',
@@ -37,8 +33,6 @@ const ENTITY_GROUPS_ORDER: EntityFilterGroup[] = [
 const ENTITY_TYPES_BY_GROUP = new Map<EntityFilterGroup, typeof ENTITY_TYPE_DEFS>(
   ENTITY_GROUPS_ORDER.map(g => [g, ENTITY_TYPE_DEFS.filter(t => t.group === g)])
 )
-
-// Sub-section component
 
 function TypeSubSection({
   heading,
@@ -98,14 +92,9 @@ function TypeSubSection({
   )
 }
 
-// Group row: visibility toggle + inline editor
-
-/**
- * One marker group in the World Data panel: the collapsed row combines the
- * visibility checkbox (SET_MARKER_GROUP) with the editing affordances that
- * used to live in the MarkerGroupEditor modal; expanding it reveals the full
- * color/name/type-membership editor in place.
- */
+/** One marker group in the World Data panel: the collapsed row combines the
+ *  visibility checkbox with editing affordances; expanding it reveals the
+ *  full color/name/type-membership editor in place. */
 export default function MarkerGroupRow({
   group: g, enabled, expanded, onToggleEnabled, onToggleExpanded,
 }: {

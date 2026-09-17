@@ -412,6 +412,16 @@
   border-color: var(--accent);
 }
 
+/* Never had a rule of its own — every "active" btn-sm across the app (mode
+   toggles, rotate/mirror, the Structures stepper) relied on the browser's
+   default focus ring instead, which only tracks the last-clicked element,
+   not real selection state. */
+.btn-sm.active {
+  background: rgba(180, 140, 224, 0.16);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 
 /* Version selector */
 .version-select {
@@ -2485,26 +2495,6 @@
   text-align: center;
 }
 
-/* Named Y-band quick-picks (see PresetRow in CaveMapControls.tsx). Static-site
- * cave mode uses this in place of the live app's free-drag YRangeGauge (no
- * player Y to anchor a gauge to); live cave mode shows it as a footer below
- * the gauge, for a one-click jump to a fixed band. */
-.cmc-preset-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  background: var(--bg-dark);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 2px;
-  min-width: 180px;
-}
-.cmc-preset-list .biome-mode-option {
-  justify-content: flex-start;
-  padding: 5px 8px;
-  white-space: nowrap;
-}
-
 .yg-lock {
   display: flex;
   align-items: center;
@@ -2564,6 +2554,7 @@
   cursor: grab;
 }
 .yg-band:active { cursor: grabbing; }
+.yg-band--locked, .yg-band--locked:active { cursor: default; }
 
 /* Handle hit areas straddle the band edges */
 .yg-handle {
@@ -2578,6 +2569,7 @@
 }
 .yg-handle--ceiling { top: -8px; }
 .yg-handle--floor   { bottom: -8px; }
+.yg-handle--locked  { cursor: default; }
 
 .yg-player {
   position: absolute;

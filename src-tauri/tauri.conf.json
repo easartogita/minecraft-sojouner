@@ -1,6 +1,6 @@
 {
   "productName": "Sojourner",
-  "version": "26.3.0-snapshot.8",
+  "version": "2.4.2+MC26.3",
   "identifier": "net.1048576.sojourner",
   "build": {
     "beforeDevCommand": "npm run dev:vite",

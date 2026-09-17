@@ -444,19 +444,7 @@ fn extract_block_entities(chunk: &Value) -> Vec<BlockEntity> {
         let y = map_i32(be, "y");
         let z = map_i32(be, "z");
 
-        let mut entity = BlockEntity {
-            kind: kind.clone(), x, y, z,
-            items: None, spawn_type: None, is_ominous: None,
-            front_text: None, back_text: None,
-            honey_level: None, bee_count: None,
-            primary_effect: None, secondary_effect: None,
-            disc_id: None, book_title: None, book_author: None,
-            ingredients: None, sherds: None, can_summon: None,
-            cooking_item: None, cooking_items: None, loot_table: None, loot_tier: None,
-            exit_portal: None, suspicious_item: None,
-            banner_color: None, banner_patterns: None,
-            skull_owner: None,
-        };
+        let mut entity = BlockEntity { kind: kind.clone(), x, y, z, ..Default::default() };
 
         if is_container(&kind) {
             let loot = strip_ns(map_str(be, "LootTable")).to_string();

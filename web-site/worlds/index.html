@@ -6,46 +6,62 @@
 <title>Live world demos — Sojourner</title>
 <meta name="description" content="Full static exports of real Minecraft worlds rendered by Sojourner — pan and zoom client-side, no install.">
 <meta name="robots" content="noindex">
+<link rel="icon" type="image/png" href="../favicon.png">
 <style>
-:root{--amber:#ffaa00;--amber-dim:#6b4700;--white:#e8e8e0;--muted:#7a6a50;--bg:#010100;--mono:Consolas,'Courier New',monospace}
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--white);font-family:var(--mono);font-size:1rem;line-height:1.7;-webkit-font-smoothing:antialiased}
-.wrap{max-width:640px;margin:0 auto;padding:clamp(3rem,9vw,5rem) clamp(1.4rem,5vw,2.2rem) 4rem}
-.tag{font-size:.7rem;letter-spacing:.22em;color:var(--amber-dim);text-transform:uppercase}
-.mark{font-size:clamp(1.8rem,7vw,2.6rem);letter-spacing:.06em;margin-top:.5rem;text-shadow:0 0 26px rgba(255,170,0,.28)}
-.hook{color:#c9c4b4;margin-top:1rem;max-width:32em}
-.back{display:inline-block;margin-top:1.4rem;color:var(--amber-dim);text-decoration:none;font-size:.86rem}
-.back:hover,.back:focus-visible{color:var(--amber)}
-/* same item-slot demo cards as the homepage's "try it live" section */
-.demos{list-style:none;margin:2.2rem 0 .4rem;display:flex;flex-direction:column;gap:.6rem}
-.demo{position:relative;display:flex;flex-direction:column;gap:.55rem;padding:.85rem 1.1rem .85rem 1.7em;
-  border:1px solid var(--amber-dim);background:#0c0900;text-decoration:none;color:var(--white);
-  box-shadow:inset 1px 1px 0 rgba(255,170,0,.1),inset -2px -2px 0 rgba(0,0,0,.6);
-  transition:border-color .18s,box-shadow .18s}
-.demo::before{content:'›';position:absolute;left:.6em;top:.95rem;color:var(--amber);font-size:.85em}
-.demo:hover,.demo:focus-visible{border-color:var(--amber);
-  box-shadow:inset 1px 1px 0 rgba(255,170,0,.1),inset -2px -2px 0 rgba(0,0,0,.6),0 0 26px rgba(255,170,0,.18);outline:none}
+:root{
+  --paper:#efe7d3; --card:#e6d9b9;
+  --line:rgba(38,46,28,.16); --line-strong:rgba(38,46,28,.32);
+  --ink:#262e1c; --ink-dim:#454f38; --muted:#77705c;
+  --pine:#33502c; --rust:#a3441d; --gold:#a97a1f;
+  --serif:Georgia,'Iowan Old Style','Palatino Linotype','Book Antiqua',Palatino,'Times New Roman',serif;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+}
+*,::before,::after{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:var(--paper);
+  color:var(--ink-dim); font-family:var(--sans); font-size:1rem; line-height:1.7;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:720px;margin:0 auto;padding:clamp(3rem,9vw,5rem) clamp(1.4rem,5vw,2.2rem) 4rem}
+.eyebrow{display:flex;align-items:center;gap:.55rem;font-family:var(--serif);font-style:italic;font-weight:700;
+  font-size:.88rem;color:var(--pine);margin-bottom:.6rem}
+.eyebrow::before{content:'';display:inline-block;width:1.4rem;height:1px;background:var(--gold)}
+h1{font-family:var(--serif);font-size:clamp(1.8rem,6vw,2.6rem);font-weight:700;letter-spacing:-.01em;color:var(--pine)}
+.hook{color:var(--ink-dim);margin-top:1rem;max-width:32em}
+.back{display:inline-block;margin-top:1.6rem;color:var(--muted);text-decoration:none;font-size:.86rem;font-weight:600}
+.back::before{content:'← '}
+.back:hover,.back:focus-visible{color:var(--pine)}
+
+.demos{list-style:none;margin:2.4rem 0 .4rem;display:flex;flex-direction:column;gap:.9rem}
+.demo{position:relative;display:flex;flex-direction:column;gap:.65rem;padding:1.2rem 1.4rem;
+  border-radius:6px;border:1px solid var(--line);background:var(--card);text-decoration:none;color:var(--ink);
+  transition:transform .2s,border-color .2s,box-shadow .2s}
+.demo:hover,.demo:focus-visible{transform:translateY(-3px);border-color:var(--pine);
+  box-shadow:0 16px 32px -20px #26301f66;outline:none}
 .demo-head{display:flex;align-items:baseline;gap:.9rem;flex-wrap:wrap}
-.demo b{color:var(--amber);font-weight:400;flex-shrink:0}
-.demo span{color:#a89f88;font-size:.84rem}
-.demo-note{color:var(--muted);font-size:.78rem;margin-top:1.1rem}
+.demo b{font-family:var(--serif);font-size:1.05rem;font-weight:700;color:var(--pine);flex-shrink:0}
+.demo b::after{content:' →';color:var(--rust)}
+.demo span{color:var(--muted);font-size:.88rem}
+.demo-note{color:var(--muted);font-size:.84rem;margin-top:1.2rem}
+
 /* meta.json is best-effort — older exports predate it and just show no info/pills */
-.demo-meta{color:var(--muted);font-size:.72rem;letter-spacing:.04em}
-.demo-pills{display:flex;flex-wrap:wrap;gap:.35rem}
-.pill{font-size:.66rem;letter-spacing:.03em;padding:.15rem .5rem;border:1px solid #2e2200;color:var(--muted)}
-.pill.on{color:var(--amber);border-color:var(--amber-dim)}
+.demo-meta{color:var(--muted);font-size:.76rem;letter-spacing:.02em}
+.demo-pills{display:flex;flex-wrap:wrap;gap:.4rem}
+.pill{font-size:.68rem;font-weight:700;letter-spacing:.02em;padding:.2rem .6rem;border-radius:3px;
+  border:1px solid var(--line);color:var(--muted)}
+.pill.on{color:var(--pine);border-color:#33502c44;background:#33502c1a}
 </style>
 </head>
 <body>
 <main class="wrap">
-  <div class="tag">SOJOURNER &middot; LIVE DEMOS</div>
-  <h1 class="mark">/worlds</h1>
+  <span class="eyebrow">Sojourner · live demos</span>
+  <h1>/worlds</h1>
   <p class="hook">Full static exports of real saves — the same tile rendering and data the desktop app produces, running entirely client-side. Pan and zoom before you download anything.</p>
 
   <ul class="demos" id="demos"></ul>
   <p class="demo-note">More worlds get added here as they're exported. Nothing in this folder is required for the app itself to work.</p>
 
-  <a class="back" href="/">&lsaquo; back to sojourner</a>
+  <a class="back" href="/">back to sojourner</a>
 </main>
 <script>
 // worlds.json: { "folder-name": "description" } — add a world here, no HTML edit needed.

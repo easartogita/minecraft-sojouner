@@ -92,6 +92,10 @@ export interface OverlayState {
   /** Non-persisted, box mode: rotation/mirror applied before pasting. */
   structureCopyRotation: 0 | 90 | 180 | 270
   structureCopyMirror: 'x' | 'z' | null
+  /** Non-persisted: real block-color thumbnail of the finalized source
+   *  selection (box/template/chunk — region mode has none), for the
+   *  Preview step and StructureCopyGhostLayer's cursor-following stamp. */
+  structureCopyPreview: { dataUrl: string; widthBlocks: number; depthBlocks: number } | null
 }
 
 export type OverlayAction =
@@ -167,6 +171,7 @@ export type OverlayAction =
   | { type: 'SET_STRUCTURE_COPY_BOX_DEST_XZ'; x: number; z: number }
   | { type: 'SET_STRUCTURE_COPY_ROTATION'; rotation: 0 | 90 | 180 | 270 }
   | { type: 'SET_STRUCTURE_COPY_MIRROR'; mirror: 'x' | 'z' | null }
+  | { type: 'SET_STRUCTURE_COPY_PREVIEW'; preview: { dataUrl: string; widthBlocks: number; depthBlocks: number } | null }
 
 // Effective cave-mode zoom range for a dimension. 'end' has no range of its own
 // (cave mode has no effect there) and falls back to the overworld range.
@@ -388,6 +393,7 @@ export function overlayInitialState(s: OverlaySession): OverlayState {
     structureCopyBoxDest:        null,
     structureCopyRotation:       0,
     structureCopyMirror:         null,
+    structureCopyPreview:        null,
   }
 }
 
@@ -422,6 +428,7 @@ const RESET: OverlayState = {
   structureCopyBoxAnchor: null, structureCopyBoxSelection: null,
   structureCopyPlacingBoxDest: false, structureCopyBoxDest: null,
   structureCopyRotation: 0, structureCopyMirror: null,
+  structureCopyPreview: null,
 }
 
 export function overlayReducer<S extends OverlayState>(state: S, action: { type: string }): S {
@@ -588,6 +595,7 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
         structureCopyBoxAnchor: state.structureCopyBoxAnchor, structureCopyBoxSelection: state.structureCopyBoxSelection,
         structureCopyPlacingBoxDest: state.structureCopyPlacingBoxDest, structureCopyBoxDest: state.structureCopyBoxDest,
         structureCopyRotation: state.structureCopyRotation, structureCopyMirror: state.structureCopyMirror,
+        structureCopyPreview: state.structureCopyPreview,
       }
     case 'SET_STRUCTURE_COPY_PANEL_OPEN': {
       const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_PANEL_OPEN' }
@@ -660,6 +668,10 @@ export function overlayReducer<S extends OverlayState>(state: S, action: { type:
     case 'SET_STRUCTURE_COPY_MIRROR': {
       const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_MIRROR' }
       return { ...state, structureCopyMirror: a.mirror }
+    }
+    case 'SET_STRUCTURE_COPY_PREVIEW': {
+      const a = action as OverlayAction & { type: 'SET_STRUCTURE_COPY_PREVIEW' }
+      return { ...state, structureCopyPreview: a.preview }
     }
     case 'SET_ZOOM': {
       const a = action as OverlayAction & { type: 'SET_ZOOM' }

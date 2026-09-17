@@ -11,7 +11,6 @@ function blockCoordsToLatLng(x: number, z: number): L.LatLng {
   return L.latLng(lat, lng)
 }
 
-/** Returns true if the pin should be visible in the given dimension. */
 function pinVisibleIn(pin: Pin, dim: Dimension): boolean {
   if (pin.dimension === dim) return true
   if (!pin.crossDimensional) return false
@@ -20,7 +19,6 @@ function pinVisibleIn(pin: Pin, dim: Dimension): boolean {
       || (pin.dimension === 'nether' && dim === 'overworld')
 }
 
-/** Build coordinate HTML showing native + converted coords for cross-dimensional pins. */
 function coordsHtml(pin: Pin, viewDim: Dimension): string {
   if (!pin.crossDimensional || (pin.dimension !== 'overworld' && pin.dimension !== 'nether')) {
     return `<div class="popup-coords">X: ${pin.x}, Z: ${pin.z}</div>`
@@ -53,7 +51,6 @@ function PinLayer({ map }: { map: L.Map }) {
     for (const pin of state.pins) {
       if (!pinVisibleIn(pin, dim)) continue
 
-      // Position: if viewing a different dimension, convert coordinates
       let markerX = pin.x
       let markerZ = pin.z
       if (pin.dimension !== dim && pin.crossDimensional) {

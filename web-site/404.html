@@ -5,28 +5,32 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
 <title>404 — Sojourner</title>
+<link rel="icon" type="image/png" href="favicon.png">
 <style>
-:root{--amber:#ffaa00;--amber-dim:#6b4700;--white:#e8e8e0;--muted:#7a6a50;--bg:#010100;--mono:Consolas,'Courier New',monospace}
+:root{--paper:#efe7d3;--ink:#262e1c;--ink-dim:#454f38;--muted:#77705c;--line:rgba(38,46,28,.18);
+  --pine:#33502c;--rust:#a3441d;--gold:#a97a1f;
+  --serif:Georgia,'Iowan Old Style','Palatino Linotype','Book Antiqua',Palatino,'Times New Roman',serif;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
 *{margin:0;padding:0;box-sizing:border-box}
-body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.1rem;
-  background:var(--bg);color:var(--white);font-family:var(--mono);text-align:center;padding:2rem}
-.block{width:4rem;height:4rem;image-rendering:pixelated;background-image:
-  repeating-conic-gradient(#050005 0 25%,#f800f8 0 50%);background-size:16px 16px;
-  border:1px solid #000;box-shadow:0 3px 10px rgba(0,0,0,.6)}
-.mark{font-size:clamp(2.4rem,9vw,3.6rem);letter-spacing:.06em;text-shadow:0 0 26px rgba(255,170,0,.28)}
-.tag{font-size:.72rem;letter-spacing:.22em;color:var(--amber-dim);text-transform:uppercase}
-p{max-width:30em;color:#c9c4b4;line-height:1.6}
-.xz{font-size:.78rem;letter-spacing:.06em;color:var(--muted)}
-a{color:var(--amber);text-decoration:none;border-bottom:1px solid var(--amber-dim);padding-bottom:.1em}
-a:hover,a:focus-visible{border-color:var(--amber)}
+body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.2rem;
+  background:var(--paper);
+  color:var(--ink-dim);font-family:var(--sans);text-align:center;padding:2rem}
+.block{width:4rem;height:4rem;border-radius:2px;image-rendering:pixelated;
+  background-image:repeating-conic-gradient(var(--pine) 0 25%,var(--gold) 0 50%);background-size:16px 16px;
+  border:1px solid var(--line);box-shadow:0 12px 28px -14px #26301f4d}
+.mark{font-family:var(--serif);font-size:clamp(2.6rem,9vw,4rem);font-weight:700;letter-spacing:-.01em;color:var(--pine)}
+.tag{font-family:var(--serif);font-style:italic;font-size:.9rem;font-weight:700;color:var(--rust)}
+p{max-width:30em;color:var(--ink-dim);line-height:1.6}
+.xz{font-size:.8rem;letter-spacing:.04em;color:var(--muted);font-variant-numeric:tabular-nums}
+a{color:var(--rust);text-decoration:none;font-weight:700}
+a:hover,a:focus-visible{text-decoration:underline}
 </style>
 </head>
 <body>
   <div class="block" aria-hidden="true"></div>
   <h1 class="mark">404</h1>
   <div class="tag">chunk not generated</div>
-  <p>Whatever was supposed to render at this address never got placed. Sojourner reads worlds off real disks — it can't invent one for a URL that doesn't exist.</p>
-  <div class="xz">X: ??????&nbsp;&nbsp;Z: ??????</div>
+  <div class="xz">X: ?????? &nbsp; Z: ??????</div>
   <p><a href="/">&rsaquo; back to the surface</a></p>
 </body>
 </html>

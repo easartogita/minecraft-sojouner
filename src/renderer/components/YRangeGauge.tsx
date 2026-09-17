@@ -15,14 +15,19 @@ interface YRangeGaugeProps {
   low: number          // window offsets relative to anchorY (low ≤ 0 ≤ high in practice)
   high: number
   playerY: number | null   // green notch; null hides it
-  locked: boolean
+  locked?: boolean
   onRangeChange: (low: number, high: number) => void
-  onLockChange: (locked: boolean, anchorY: number | null) => void
+  // Omit (along with `locked`) where following/freezing a live player makes no sense —
+  // static export has no live player, so it drops the lock button entirely.
+  onLockChange?: (locked: boolean, anchorY: number | null) => void
   yMin?: number
   yMax?: number
   snap?: number
   height?: number
   headerExtra?: React.ReactNode   // renders in the header row, left of the lock button
+  // False renders the same track/band/handles read-only — no pointer handlers, no drag
+  // cursor — for static export, where only the preset swatches can move the window.
+  draggable?: boolean
   // Named absolute-Y bands as same-scale swatches left of the track, for a one-click jump.
   presets?: YRangeGaugePreset[]
   onPresetSelect?: (preset: YRangeGaugePreset) => void
@@ -31,8 +36,8 @@ interface YRangeGaugeProps {
 // Locked: window follows live player Y. Unlocked: anchor freezes at that moment's Y,
 // band stays put, and the player notch roams free of it.
 export default function YRangeGauge({
-  anchorY, low, high, playerY, locked, onRangeChange, onLockChange,
-  yMin = -64, yMax = 320, snap = 10, height = 240, headerExtra,
+  anchorY, low, high, playerY, locked = false, onRangeChange, onLockChange,
+  yMin = -64, yMax = 320, snap = 10, height = 240, headerExtra, draggable = true,
   presets, onPresetSelect,
 }: YRangeGaugeProps) {
   const yToPx = (y: number) => ((yMax - y) / (yMax - yMin)) * height
@@ -92,18 +97,20 @@ export default function YRangeGauge({
     window.addEventListener('pointerup', onUp)
   }
 
-  const toggleLock = () => onLockChange(!locked, locked ? anchorY : null)
+  const toggleLock = () => onLockChange?.(!locked, locked ? anchorY : null)
 
   return (
     <>
       <div className="yg-header">
         {headerExtra}
-        <button className={`yg-lock${locked ? ' yg-lock--locked' : ''}`} onClick={toggleLock}
-          title={locked
-            ? 'Following player — the window moves with them. Click to freeze it in place.'
-            : 'Window frozen in place. Click to follow the player again.'}>
-          {locked ? <IconLock /> : <IconLockOpen />}
-        </button>
+        {onLockChange && (
+          <button className={`yg-lock${locked ? ' yg-lock--locked' : ''}`} onClick={toggleLock}
+            title={locked
+              ? 'Following player — the window moves with them. Click to freeze it in place.'
+              : 'Window frozen in place. Click to follow the player again.'}>
+            {locked ? <IconLock /> : <IconLockOpen />}
+          </button>
+        )}
       </div>
 
       <div className="yg-gauge" style={{ height }}>
@@ -114,14 +121,16 @@ export default function YRangeGauge({
         </div>
 
         <div className="yg-track">
-          <div className="yg-band"
+          <div className={`yg-band${draggable ? '' : ' yg-band--locked'}`}
             style={{ top: yToPx(ceilingY), height: yToPx(floorY) - yToPx(ceilingY) }}
-            onPointerDown={dragStart('band')}
-            title="Drag to shift the window">
-            <div className="yg-handle yg-handle--ceiling"
-              onPointerDown={dragStart('ceiling')} title="Drag the ceiling" />
-            <div className="yg-handle yg-handle--floor"
-              onPointerDown={dragStart('floor')} title="Drag the floor" />
+            onPointerDown={draggable ? dragStart('band') : undefined}
+            title={draggable ? 'Drag to shift the window' : 'Pick a preset to change the range'}>
+            <div className={`yg-handle yg-handle--ceiling${draggable ? '' : ' yg-handle--locked'}`}
+              onPointerDown={draggable ? dragStart('ceiling') : undefined}
+              title={draggable ? 'Drag the ceiling' : undefined} />
+            <div className={`yg-handle yg-handle--floor${draggable ? '' : ' yg-handle--locked'}`}
+              onPointerDown={draggable ? dragStart('floor') : undefined}
+              title={draggable ? 'Drag the floor' : undefined} />
           </div>
           {playerY != null && (
             <div className="yg-player" style={{ top: yToPx(playerY) }}

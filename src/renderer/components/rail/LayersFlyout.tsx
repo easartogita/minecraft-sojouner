@@ -107,7 +107,6 @@ export default function LayersFlyout() {
           </div>
         )}
 
-        {/* Biomes */}
         <div className="flyout-layer-group">
           <label className="overlay-toggle">
             <input type="checkbox" checked={state.showBiomes}
@@ -146,7 +145,6 @@ export default function LayersFlyout() {
           <div className="flyout-section-label flyout-section-label--spaced">Underground</div>
         )}
 
-        {/* Slime chunks */}
         {state.dimension === 'overworld' && (
           <div className="flyout-layer-group">
             <label className="overlay-toggle">
@@ -166,7 +164,6 @@ export default function LayersFlyout() {
           </div>
         )}
 
-        {/* Ore veins */}
         {state.dimension === 'overworld' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
           <div className="flyout-layer-group">
             <label className="overlay-toggle" title={notBaked('oreVeins') ? 'Not available in this export' : undefined}>
@@ -201,7 +198,7 @@ export default function LayersFlyout() {
           </div>
         )}
 
-        {/* Ore deposits (individual ore blobs) — overworld ores + nether ancient debris; live-only, see bugs-resolved.md */}
+        {/* Live-only — see bugs-resolved.md */}
         {state.dimension !== 'end' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
           <div className="flyout-layer-group">
             <label className="overlay-toggle" title={notBaked('oreFeatures') ? 'Not available in this export' : undefined}>
@@ -231,7 +228,7 @@ export default function LayersFlyout() {
           </div>
         )}
 
-        {/* Carvers (caves / ravines / canyons) — overworld + nether (End has none) */}
+        {/* End has no carvers */}
         {state.dimension !== 'end' && MC_VERSIONS[state.selectedVersion] >= MC_VERSIONS['MC_1_18'] && (
           <div className="flyout-layer-group">
             <label className="overlay-toggle" title={notBaked('carvers') ? 'Not available in this export' : undefined}>
@@ -251,7 +248,6 @@ export default function LayersFlyout() {
 
         <div className="flyout-section-label flyout-section-label--spaced">Grids &amp; Reference</div>
 
-        {/* Grids + spawn radius */}
         <div className="flyout-layer-group">
           <label className="overlay-toggle">
             <input type="checkbox" checked={state.showChunkGrid}

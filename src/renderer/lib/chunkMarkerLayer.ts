@@ -9,6 +9,15 @@ import { TileJobQueue } from './tileJobQueue'
 // previous viewport re-read before it can complete and prune.
 const REGION_RELOAD_DEBOUNCE_MS = 600
 
+// Coalesces bursts of external triggerLoad() calls — e.g. every tick of a Y-filter
+// drag, which still arrives every ~250ms even after the gauge's own internal
+// throttle. Each trigger starts a real, un-abortable backend scan of the viewport
+// (see `load` below: the fetch itself isn't gated by generation, only its result
+// is discarded if stale) — without this, a multi-second drag queues up a dozen-plus
+// full, mostly-wasted scans that all still have to finish draining before the
+// loading HUD clears, instead of the one that actually matters.
+const TRIGGER_DEBOUNCE_MS = 300
+
 // Joins non-empty parts with ' · ' for use as a marker title attribute.
 export function tooltipText(...parts: (string | null | undefined | false)[]): string {
   return (parts.filter(Boolean) as string[]).join(' · ')
@@ -157,9 +166,9 @@ export function useChunkMarkerLayer(map: L.Map, opts: HookOpts): () => void {
         await onLoadRef.current(poolRef.current, group, bounds, () => gen !== genRef.current)
         return
       }
+      const job = loadQueue.enqueue(0, () => {})
       let released = false
-      const release = () => { if (!released) { released = true; loadQueue.release() } }
-      loadQueue.enqueue(0, () => {})
+      const release = () => { if (!released) { released = true; loadQueue.release(job) } }
       try {
         await onLoadRef.current(poolRef.current, group, bounds, () => gen !== genRef.current)
       } finally {
@@ -202,5 +211,16 @@ export function useChunkMarkerLayer(map: L.Map, opts: HookOpts): () => void {
     return () => clearTimeout(t)
   }, [changedRegions])
 
-  return useCallback(() => { loadFnRef.current() }, [])
+  const triggerDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (triggerDebounceRef.current) clearTimeout(triggerDebounceRef.current)
+  }, [])
+
+  return useCallback(() => {
+    if (triggerDebounceRef.current) clearTimeout(triggerDebounceRef.current)
+    triggerDebounceRef.current = setTimeout(() => {
+      triggerDebounceRef.current = null
+      loadFnRef.current()
+    }, TRIGGER_DEBOUNCE_MS)
+  }, [])
 }

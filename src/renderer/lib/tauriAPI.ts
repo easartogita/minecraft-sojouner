@@ -5,14 +5,14 @@ import type {
   SavesWorldEntry, RegionChange, RenderedTile, ChunkInfo, ExportParams,
   CaveRangePreset, StaticExportParams, StaticExportProgress, StructurePos, StructureHit,
   EnchantmentInfo, LootItem, ChestSlot, GatewayLink, McaMetricsExtended, OverlayTileKind, TileSizes,
-  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo,
+  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo, PreviewImage,
 } from './tauriAPI.types'
 
 export type {
   SavesWorldEntry, RegionChange, RenderedTile, ChunkInfo, ExportParams,
   CaveRangePreset, StaticExportParams, StaticExportProgress, StructurePos, StructureHit,
   EnchantmentInfo, LootItem, ChestSlot, GatewayLink, OverlayTileKind, TileSizes,
-  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo,
+  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo, PreviewImage,
 } from './tauriAPI.types'
 
 /** False here, true in tauriAPI.static.ts — the one flag distinguishing live-world
@@ -267,9 +267,15 @@ export function copyRegions(
   srcLevelDatPath: string, srcDimension: string,
   dstLevelDatPath: string, dstDimension: string,
   regions: [number, number][],
+  // Bypasses the destination session.lock check when the world is open in a
+  // live Minecraft client. Only ever set true after the user has passed the
+  // in-UI confirmation challenge (see StructureCopyFlyout's LiveLockChallenge) —
+  // never default this to true.
+  overrideLiveLock = false,
 ): Promise<CopyRegionsReport> {
   return invoke<CopyRegionsReport>('copy_regions', {
     srcLevelDatPath, srcDimension, dstLevelDatPath, dstDimension, regions,
+    overrideLiveLock,
   })
 }
 
@@ -281,10 +287,12 @@ export function copyChunks(
   // touching [yMin, yMax] into the *existing* destination chunk instead of
   // replacing it whole; either omitted → v1's full-column relocate.
   yMin?: number, yMax?: number,
+  // See copyRegions' overrideLiveLock doc.
+  overrideLiveLock = false,
 ): Promise<CopyChunksReport> {
   return invoke<CopyChunksReport>('copy_chunks', {
     srcLevelDatPath, srcDimension, dstLevelDatPath, dstDimension, chunks, dx, dz,
-    yMin: yMin ?? null, yMax: yMax ?? null,
+    yMin: yMin ?? null, yMax: yMax ?? null, overrideLiveLock,
   })
 }
 
@@ -295,10 +303,12 @@ export function copyBlocks(
   dstOrigin: [number, number, number],                      // x,y,z
   rotationDeg: 0 | 90 | 180 | 270,
   mirror: 'x' | 'z' | null,
+  // See copyRegions' overrideLiveLock doc.
+  overrideLiveLock = false,
 ): Promise<CopyBlocksReport> {
   return invoke<CopyBlocksReport>('copy_blocks', {
     srcLevelDatPath, srcDimension, dstLevelDatPath, dstDimension,
-    srcBox, dstOrigin, rotationDeg, mirror,
+    srcBox, dstOrigin, rotationDeg, mirror, overrideLiveLock,
   })
 }
 
@@ -329,10 +339,34 @@ export function pasteStructureTemplate(
   dstOrigin: [number, number, number],
   rotationDeg: 0 | 90 | 180 | 270,
   mirror: 'x' | 'z' | null,
+  // See copyRegions' overrideLiveLock doc.
+  overrideLiveLock = false,
 ): Promise<CopyBlocksReport> {
   return invoke<CopyBlocksReport>('paste_structure_template', {
     templatePath, dstLevelDatPath, dstDimension, dstOrigin, rotationDeg, mirror,
+    overrideLiveLock,
   })
+}
+
+// ── Structure-copy source-selection previews (dev-only) — real block-color
+// thumbnails, see structure_copy/preview.rs. Region mode has no equivalent:
+// it copies at identical coordinates, so there's no placement step to preview.
+
+export function previewBoxSelection(
+  srcLevelDatPath: string, srcDimension: string,
+  srcBox: [number, number, number, number, number, number],
+): Promise<PreviewImage> {
+  return invoke<PreviewImage>('preview_box_selection', { srcLevelDatPath, srcDimension, srcBox })
+}
+
+export function previewTemplate(templatePath: string): Promise<PreviewImage> {
+  return invoke<PreviewImage>('preview_template', { templatePath })
+}
+
+export function previewChunkSelection(
+  worldDir: string, dimension: string, chunks: [number, number][],
+): Promise<PreviewImage> {
+  return invoke<PreviewImage>('preview_chunk_selection', { worldDir, dimension, chunks })
 }
 
 export function exportWorldMap(p: ExportParams): Promise<void> {

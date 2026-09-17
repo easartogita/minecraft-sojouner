@@ -20,7 +20,7 @@ export const BIOME_COLORS: Record<number, RGB> = {
   1:  [141, 179, 96],     // plains
   129: [182, 208, 82],    // sunflower_plains
   // Desert
-  2:  [250, 148, 24],     // desert
+  2:  [235, 205, 140],    // desert — sand tone, distinct from beach/wooded-badlands tans
   17: [210, 95, 18],      // desert_hills
   130: [210, 120, 18],    // desert_lakes
   // Mountains / Extreme Hills

@@ -8,8 +8,6 @@ import { IconPin, IconRoute } from '../icons'
 export default function SavedFlyout() {
   const { state, dispatch, mapRef } = useApp()
 
-  // Pins
-
   const [editingPinId, setEditingPinId] = useState<string | null>(null)
   const [editingLabel, setEditingLabel] = useState('')
 
@@ -18,8 +16,6 @@ export default function SavedFlyout() {
     const { x: lng, y: lat } = minecraftToLeaflet(x, z)
     mapRef.current.flyTo(L.latLng(lat, lng), Math.max(mapRef.current.getZoom(), 3))
   }, [mapRef])
-
-  // Saved routes
 
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null)
   const [editingRouteName, setEditingRouteName] = useState('')
@@ -59,7 +55,6 @@ export default function SavedFlyout() {
 
       <div className="flyout-body">
 
-        {/* Pins */}
         <div className="mp-section-header">
           <span className="mp-section-title">Pins</span>
           {state.pins.length > 0 && <span className="mp-count-badge">{state.pins.length}</span>}
@@ -158,7 +153,6 @@ export default function SavedFlyout() {
           </div>
         </>)}
 
-        {/* Saved Routes */}
         <div className="mp-section-header mp-section-header--ruled">
           <span className="mp-section-title">Saved Routes</span>
           {state.savedRoutes.length > 0 && <span className="mp-count-badge">{state.savedRoutes.length}</span>}

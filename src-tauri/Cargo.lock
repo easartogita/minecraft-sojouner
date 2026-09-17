@@ -3476,8 +3476,9 @@ dependencies = [
 
 [[package]]
 name = "sojourner"
-version = "26.3.0-snapshot.8"
+version = "2.4.2+MC26.3"
 dependencies = [
+ "base64 0.22.1",
  "cc",
  "fastnbt",
  "flate2",

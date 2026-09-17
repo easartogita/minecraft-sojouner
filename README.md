@@ -4,6 +4,8 @@ A desktop map viewer for Minecraft. Sojourner renders a live, interactive map of
 
 Built with Tauri 2 + Rust + React + Leaflet. cubiomes is compiled as a native static library and called via Rust FFI. Bedrock worlds are read via LevelDB (Mojang fork) with Snappy decompression.
 
+**[Download a build](https://sojourner.1048576.net/#get)** · **[Try it live, no install](https://sojourner.1048576.net/#demos)** · **[Feature comparison](https://sojourner.1048576.net/comparison.html)** — or build from source below.
+
 > Sojourner is an unofficial, fan-made tool. It is **not** affiliated with, endorsed by, or associated with Mojang Studios or Microsoft. *Minecraft* is a trademark of Mojang Studios.
 
 ---

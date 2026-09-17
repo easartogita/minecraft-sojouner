@@ -14,10 +14,13 @@ interface Props {
   localDifficulty?: { specialMultiplier: number; regionalDifficulty: number } | null
   /** null = layer off, pre-1.18 world, or no vein data for this column */
   oreVein?: OreVeinColumn | null
+  /** Hovered chunk's own DataVersion (Java only). Dev-tools info — only
+   *  ever rendered in dev builds, regardless of whether this is set. */
+  dataVersion?: number | null
 }
 
 export default function CursorInfoBar({
-  coords, biomeName, blockName, terrainY, caveY, slimeChunk, localDifficulty, oreVein,
+  coords, biomeName, blockName, terrainY, caveY, slimeChunk, localDifficulty, oreVein, dataVersion,
 }: Props) {
   const [copied, setCopied] = useState(false)
 
@@ -54,6 +57,11 @@ export default function CursorInfoBar({
   }
   if (oreVein?.ironCount) {
     rows.push(`Iron vein · Y ${oreVein.ironMinY}–${oreVein.ironMaxY} · ${oreVein.ironCount} blocks`)
+  }
+  // Dev-tools only — matches the "(DEV)" gating on the Structures rail panel
+  // this value is most relevant to (per-chunk DataVersion mismatches).
+  if (import.meta.env.DEV && dataVersion != null) {
+    rows.push(`Chunk DataVersion: ${dataVersion}`)
   }
 
   return (

@@ -19,6 +19,8 @@ pub mod blocks;
 mod rotation;
 // Save/load a block-box selection as a portable Structure Block .nbt file.
 pub mod templates;
+// Real block-color thumbnails for the source-selection step (box/template/chunk).
+pub mod preview;
 
 use crate::nbt_reader;
 use crate::region_reader;
@@ -74,6 +76,30 @@ mod session_lock {
 
         try_lock(&file)?;
         Ok(WorldWriteGuard(file))
+    }
+
+    /// Same as `acquire_write_guard`, except when `override_live_lock` is set
+    /// and the *only* problem is the world being open in a live Minecraft
+    /// client — proceeds without holding a lock instead of refusing. Any
+    /// other failure (can't open the file, unexpected OS error) still
+    /// refuses regardless of the override; this only ever bypasses the one
+    /// specific, known-safe-to-name check.
+    ///
+    /// This function trusts the caller's `override_live_lock` outright — it
+    /// isn't itself a confirmation mechanism. The frontend is expected to
+    /// gate setting that flag behind its own explicit user challenge (see
+    /// `StructureCopyFlyout.tsx`) before ever calling in with it set; this
+    /// being a single-user local desktop app, there's no untrusted client to
+    /// defend the flag against on this side.
+    pub fn acquire_write_guard_or_override(
+        world_dir: &str,
+        override_live_lock: bool,
+    ) -> super::Result<Option<WorldWriteGuard>> {
+        match acquire_write_guard(world_dir) {
+            Ok(guard) => Ok(Some(guard)),
+            Err(e) if override_live_lock && e == WORLD_OPEN_MSG => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     #[cfg(unix)]
@@ -143,6 +169,9 @@ pub fn copy_regions(
     dst_level_dat_path: String,
     dst_dimension: String,
     regions: Vec<(i32, i32)>,
+    // See session_lock::acquire_write_guard_or_override's doc — the frontend
+    // only ever sets this after its own explicit user challenge.
+    override_live_lock: bool,
 ) -> Result<CopyRegionsReport> {
     check_same_data_version(&src_level_dat_path, &dst_level_dat_path)?;
 
@@ -152,7 +181,7 @@ pub fn copy_regions(
     let dst_world_dir = dst_world_dir.to_string_lossy().to_string();
 
     // Held until this function returns — see session_lock's module doc above.
-    let _dst_lock = session_lock::acquire_write_guard(&dst_world_dir)?;
+    let _dst_lock = session_lock::acquire_write_guard_or_override(&dst_world_dir, override_live_lock)?;
 
     let mut copied = Vec::new();
     let mut backed_up = Vec::new();
@@ -186,17 +215,64 @@ pub fn copy_regions(
 // LevelDB). A Bedrock level.dat is a different binary header, not gzipped
 // NBT, so read_level_dat naturally errors out on one rather than needing a
 // special case here.
-fn check_same_data_version(src_level_dat_path: &str, dst_level_dat_path: &str) -> Result<()> {
+//
+// Returns the shared version on success so callers doing per-chunk checks
+// (see `require_chunk_data_version`) don't need a second `read_level_dat`.
+fn check_same_data_version(src_level_dat_path: &str, dst_level_dat_path: &str) -> Result<i32> {
     let src_version = nbt_reader::read_level_dat(src_level_dat_path)?.data_version;
     let dst_version = nbt_reader::read_level_dat(dst_level_dat_path)?.data_version;
     if src_version != dst_version {
+        let older = src_version.min(dst_version);
         return Err(format!(
             "Source and destination worlds are different Minecraft versions \
              (DataVersion {src_version} vs {dst_version}) — refusing to copy \
-             across versions."
+             across versions. This app doesn't convert between versions itself: \
+             open the DataVersion {older} world in a Minecraft client to let it \
+             upgrade in place, then retry — or copy between two worlds that are \
+             already on the same version."
         ));
     }
-    Ok(())
+    Ok(src_version)
+}
+
+/// A chunk's own `DataVersion` tag. Unlike the fields `chunk_root`/
+/// `chunk_root_mut` reach for, this is *always* at the absolute top level of
+/// the chunk compound — a sibling of `Level` in the pre-1.18 format, not
+/// nested inside it — so it's read directly here rather than through those.
+fn chunk_data_version(chunk: &Value) -> Option<i32> {
+    let Value::Compound(m) = chunk else { return None };
+    match m.get("DataVersion") {
+        Some(Value::Int(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+/// Hard-fails the *whole* copy (nothing written yet at the point every
+/// caller invokes this — see each call site) if one specific chunk's own
+/// on-disk `DataVersion` doesn't match what both worlds' `level.dat` already
+/// agreed on. Catches a chunk that hasn't been resaved by Minecraft since an
+/// older version even though its world's overall stamp is current — real
+/// Minecraft tolerates that via lazy per-chunk upgrade on load, but this
+/// app's own NBT code assumes one schema, so a stale chunk is a silent
+/// misread/miswrite risk here. Deliberately all-or-nothing rather than
+/// skip-and-continue: a partially-applied multi-chunk copy can leave a
+/// structure looking broken in-game with no obvious cause.
+fn require_chunk_data_version(chunk: &Value, expected: i32, chunk_pos: (i32, i32), role: &str) -> Result<()> {
+    match chunk_data_version(chunk) {
+        Some(v) if v == expected => Ok(()),
+        Some(v) => Err(format!(
+            "{role} chunk c.{}.{} is DataVersion {v}, expected {expected} — refusing the whole copy. \
+             This chunk hasn't been resaved by Minecraft since an older version; visit it in a \
+             Minecraft client (walking nearby is enough to trigger a resave), then retry.",
+            chunk_pos.0, chunk_pos.1
+        )),
+        None => Err(format!(
+            "{role} chunk c.{}.{} has no DataVersion tag — refusing the whole copy. This usually \
+             means hand-edited or corrupted chunk data; regenerate it or restore from backup \
+             before retrying.",
+            chunk_pos.0, chunk_pos.1
+        )),
+    }
 }
 
 fn world_dir_of(level_dat_path: &str) -> Result<PathBuf> {
@@ -312,6 +388,11 @@ pub struct CopyChunksReport {
     pub copied: Vec<(i32, i32)>,
     pub backed_up: Vec<BackupEntry>,
     pub skipped: Vec<SkippedChunk>,
+    // Neighbor-ring chunks auto-relit after the write above — see
+    // `relight_ring_around`. Not part of `copied`/`skipped`'s own bookkeeping
+    // since those are about the requested copy, not this follow-up step.
+    pub relit: Vec<(i32, i32)>,
+    pub relight_warning: Option<String>,
 }
 
 #[tauri::command]
@@ -331,14 +412,17 @@ pub fn copy_chunks(
     // full-column relocate-and-replace behavior, unchanged.
     y_min: Option<i32>,
     y_max: Option<i32>,
+    // See session_lock::acquire_write_guard_or_override's doc — the frontend
+    // only ever sets this after its own explicit user challenge.
+    override_live_lock: bool,
 ) -> Result<CopyChunksReport> {
-    check_same_data_version(&src_level_dat_path, &dst_level_dat_path)?;
+    let expected_version = check_same_data_version(&src_level_dat_path, &dst_level_dat_path)?;
 
     let src_world_dir = world_dir_of(&src_level_dat_path)?.to_string_lossy().to_string();
     let dst_world_dir = world_dir_of(&dst_level_dat_path)?.to_string_lossy().to_string();
 
     // Held until this function returns — see session_lock's module doc above.
-    let _dst_lock = session_lock::acquire_write_guard(&dst_world_dir)?;
+    let _dst_lock = session_lock::acquire_write_guard_or_override(&dst_world_dir, override_live_lock)?;
 
     let section_range: Option<(i32, i32)> = match (y_min, y_max) {
         (Some(a), Some(b)) => {
@@ -359,11 +443,21 @@ pub fn copy_chunks(
     }
 
     let mut copied = Vec::new();
-    let mut backed_up = Vec::new();
     let mut skipped = Vec::new();
+    // Destination-space coords of every chunk actually written — separate
+    // from `copied` (source-space) since relight_ring_around needs to know
+    // where in the *destination* world to look for neighbors.
+    let mut dst_touched: Vec<(i32, i32)> = Vec::new();
     // Cache each source region's bytes so chunks sharing a source region
     // aren't re-read from disk once per chunk.
     let mut src_region_cache: HashMap<(i32, i32), Option<Vec<u8>>> = HashMap::new();
+
+    // ── Phase 1: read + validate + build every substitution, write nothing
+    // yet. A `require_chunk_data_version` mismatch anywhere below returns
+    // `Err` straight out of this function before any region file has been
+    // touched — a bad chunk aborts the whole copy rather than leaving some
+    // regions rewritten and others not (see require_chunk_data_version's doc).
+    let mut planned: Vec<((i32, i32), PathBuf, Option<Vec<u8>>, HashMap<(usize, usize), Vec<u8>>)> = Vec::new();
 
     for (&dst_region, group) in &by_dst_region {
         // Fetched up front (not just at write time, like v1 did) because
@@ -384,7 +478,11 @@ pub fn copy_chunks(
             let Some(buf) = buf.as_ref() else {
                 skipped.push(SkippedChunk {
                     chunk: (cx, cz),
-                    reason: format!("Source region r.{}.{} not found", src_region.0, src_region.1),
+                    reason: format!(
+                        "Source region r.{}.{} not found — visit that area in a Minecraft client \
+                         to generate it, or confirm this is the world you meant to copy from.",
+                        src_region.0, src_region.1
+                    ),
                 });
                 continue;
             };
@@ -392,9 +490,14 @@ pub fn copy_chunks(
             let local_x = cx.rem_euclid(32) as usize;
             let local_z = cz.rem_euclid(32) as usize;
             let Some(mut chunk_nbt) = region_reader::read_chunk_nbt(buf, local_x, local_z) else {
-                skipped.push(SkippedChunk { chunk: (cx, cz), reason: "Chunk not generated".to_string() });
+                skipped.push(SkippedChunk {
+                    chunk: (cx, cz),
+                    reason: "Chunk not generated — visit this location in a Minecraft client first \
+                             so there's something here to copy.".to_string(),
+                });
                 continue;
             };
+            require_chunk_data_version(&chunk_nbt, expected_version, (cx, cz), "Source")?;
 
             let dst_local_x = new_cx.rem_euclid(32) as usize;
             let dst_local_z = new_cz.rem_euclid(32) as usize;
@@ -406,10 +509,17 @@ pub fn copy_chunks(
                     skipped.push(SkippedChunk {
                         chunk: (cx, cz),
                         reason: "Destination chunk not generated — a Y-range copy merges into an \
-                                 existing destination chunk, it can't create one".to_string(),
+                                 existing destination chunk, it can't create one. Visit this location \
+                                 in Minecraft to generate it first, or use a plain (non-Y-range) chunk \
+                                 copy instead, which can create a new destination chunk.".to_string(),
                     });
                     continue;
                 };
+                // Only the merge path needs the *destination* chunk's own
+                // version checked — a plain full-column relocate below
+                // discards the existing destination chunk outright, so
+                // nothing of its schema survives to be at risk.
+                require_chunk_data_version(&dest_chunk, expected_version, (new_cx, new_cz), "Destination")?;
                 splice_y_range(&mut dest_chunk, &chunk_nbt, sec_lo, sec_hi, dx * 16, dz * 16);
                 dest_chunk
             } else {
@@ -424,18 +534,23 @@ pub fn copy_chunks(
 
             substitutions.insert((dst_local_x, dst_local_z), payload);
             copied.push((cx, cz));
+            dst_touched.push((new_cx, new_cz));
         }
 
-        if substitutions.is_empty() {
-            continue;
+        if !substitutions.is_empty() {
+            planned.push((dst_region, dst_dir, existing_bytes, substitutions));
         }
+    }
 
-        if let Some(bytes) = &existing_bytes {
+    // ── Phase 2: every touched chunk passed validation — now actually write.
+    let mut backed_up = Vec::new();
+    for (dst_region, dst_dir, existing_bytes, substitutions) in &planned {
+        if let Some(bytes) = existing_bytes {
             let backup = backup_existing_region(&dst_world_dir, &dst_dimension, dst_region.0, dst_region.1, bytes)?;
             backed_up.push(backup);
         }
 
-        let new_bytes = rewrite_region_with_chunks(existing_bytes.as_deref(), &substitutions);
+        let new_bytes = rewrite_region_with_chunks(existing_bytes.as_deref(), substitutions);
 
         let final_path = dst_dir.join(format!("r.{}.{}.mca", dst_region.0, dst_region.1));
         let tmp_path = dst_dir.join(format!("r.{}.{}.mca.tmp", dst_region.0, dst_region.1));
@@ -453,7 +568,18 @@ pub fn copy_chunks(
         tile_renderer::invalidate_mca_tiles(&cache_root, &dst_world_dir, &affected_regions);
     }
 
-    Ok(CopyChunksReport { copied, backed_up, skipped })
+    // Best-effort: a relight hiccup doesn't undo the copy that already
+    // succeeded above, so its own I/O errors become a warning, not a `?`.
+    let (relit, relight_warning) = match relight_ring_around(&app, &dst_world_dir, &dst_dimension, &dst_touched) {
+        Ok(report) => {
+            backed_up.extend(report.backed_up);
+            skipped.extend(report.skipped);
+            (report.relit, None)
+        }
+        Err(e) => (Vec::new(), Some(format!("Copy succeeded, but relighting the surrounding chunks failed: {e}"))),
+    };
+
+    Ok(CopyChunksReport { copied, backed_up, skipped, relit, relight_warning })
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -470,18 +596,124 @@ pub struct RelightChunksReport {
 /// chunks it writes as needing relight, so a neighbor whose light was
 /// computed against the old boundary can still show a seam; pass the touched
 /// footprint plus a 1-chunk ring to clear that. Nothing else in the chunk changes.
+///
+/// Exposed both as this standalone command (arbitrary manual footprint, e.g.
+/// from `relight_chunks_cli`) and via `relight_ring_around` below, which
+/// `copy_chunks`/`write_blocks_to_destination` call automatically after
+/// every write — see that function's doc for why the ring is limited to 1
+/// chunk rather than covering every light source's full radius.
 #[tauri::command]
 pub fn force_relight_chunks(
     app: tauri::AppHandle,
     dst_level_dat_path: String,
     dst_dimension: String,
     chunks: Vec<(i32, i32)>,
+    // See session_lock::acquire_write_guard_or_override's doc — the frontend
+    // only ever sets this after its own explicit user challenge.
+    override_live_lock: bool,
 ) -> Result<RelightChunksReport> {
     let dst_world_dir = world_dir_of(&dst_level_dat_path)?.to_string_lossy().to_string();
 
     // Held until this function returns — see session_lock's module doc above.
-    let _dst_lock = session_lock::acquire_write_guard(&dst_world_dir)?;
+    let _dst_lock = session_lock::acquire_write_guard_or_override(&dst_world_dir, override_live_lock)?;
 
+    relight_chunks_inner(&app, &dst_world_dir, &dst_dimension, chunks)
+}
+
+/// Neighbor-ring auto-relight for a write that already succeeded: computes
+/// the 1-chunk Chebyshev ring around `touched` (excluding `touched` itself —
+/// those chunks already got `isLightOn` cleared as part of the write that
+/// touched them, no need to redo it) and relights just that ring.
+///
+/// Deliberately 1 chunk, not wider: every light source in the game (torches,
+/// glowstone, lava, the sun) has a max light level of 15, and light can't
+/// cross a chunk boundary and still register more than 15 blocks in — a
+/// 16-block chunk is wider than any single light's falloff, so a ring one
+/// chunk deep already covers every neighbor whose *displayed* lighting could
+/// possibly have depended on what used to be across the boundary. Widening
+/// it wouldn't catch anything a 1-chunk ring misses.
+///
+/// Best-effort: failures here don't fail the write that already succeeded —
+/// the caller folds `relit`/`backed_up`/`skipped` into its own report and
+/// surfaces an outer `Err` (a real I/O failure, not a normal skip) as a
+/// non-fatal warning instead of propagating it with `?`.
+fn relight_ring_around(
+    app: &tauri::AppHandle,
+    dst_world_dir: &str,
+    dst_dimension: &str,
+    touched: &[(i32, i32)],
+) -> Result<RelightChunksReport> {
+    if touched.is_empty() {
+        return Ok(RelightChunksReport { relit: Vec::new(), backed_up: Vec::new(), skipped: Vec::new() });
+    }
+    relight_chunks_inner(app, dst_world_dir, dst_dimension, chunk_ring(touched))
+}
+
+/// The 1-chunk Chebyshev ring around `touched`, excluding `touched` itself
+/// and de-duplicated — pulled out of `relight_ring_around` so the ring math
+/// is unit-testable without touching disk.
+fn chunk_ring(touched: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let touched_set: std::collections::HashSet<(i32, i32)> = touched.iter().copied().collect();
+    let mut ring: Vec<(i32, i32)> = Vec::new();
+    let mut seen: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+    for &(cx, cz) in touched {
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                if dx == 0 && dz == 0 { continue }
+                let neighbor = (cx + dx, cz + dz);
+                if touched_set.contains(&neighbor) { continue }
+                if seen.insert(neighbor) { ring.push(neighbor) }
+            }
+        }
+    }
+    ring
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::chunk_ring;
+    use std::collections::HashSet;
+
+    fn set(v: Vec<(i32, i32)>) -> HashSet<(i32, i32)> { v.into_iter().collect() }
+
+    #[test]
+    fn single_chunk_has_eight_neighbors() {
+        let ring = chunk_ring(&[(0, 0)]);
+        assert_eq!(ring.len(), 8);
+        assert_eq!(set(ring), set(vec![
+            (-1, -1), (0, -1), (1, -1),
+            (-1, 0),           (1, 0),
+            (-1, 1),  (0, 1),  (1, 1),
+        ]));
+    }
+
+    #[test]
+    fn adjacent_touched_chunks_dont_ring_each_other() {
+        // Two side-by-side touched chunks: neither should appear in its own
+        // ring (they're mutual neighbors, but both are already `touched`).
+        let ring = set(chunk_ring(&[(0, 0), (1, 0)]));
+        assert!(!ring.contains(&(0, 0)));
+        assert!(!ring.contains(&(1, 0)));
+        // A shared neighbor (e.g. (0,1), adjacent to both) appears once.
+        assert_eq!(chunk_ring(&[(0, 0), (1, 0)]).iter().filter(|&&c| c == (0, 1)).count(), 1);
+    }
+
+    #[test]
+    fn empty_input_gives_empty_ring() {
+        assert!(chunk_ring(&[]).is_empty());
+    }
+}
+
+/// Shared body behind `force_relight_chunks` and `relight_ring_around` —
+/// assumes the caller already holds the destination world's write lock
+/// (both do), so it neither resolves `dst_world_dir` from a level.dat path
+/// nor acquires its own lock.
+fn relight_chunks_inner(
+    app: &tauri::AppHandle,
+    dst_world_dir: &str,
+    dst_dimension: &str,
+    chunks: Vec<(i32, i32)>,
+) -> Result<RelightChunksReport> {
     let mut by_region: HashMap<(i32, i32), Vec<(i32, i32)>> = HashMap::new();
     for &(cx, cz) in &chunks {
         by_region.entry((cx.div_euclid(32), cz.div_euclid(32))).or_default().push((cx, cz));
@@ -493,10 +725,13 @@ pub fn force_relight_chunks(
 
     for (&region, group) in &by_region {
         let (dst_dir, existing_bytes) =
-            resolve_dst_region_for_chunk_write(&dst_world_dir, &dst_dimension, region.0, region.1)?;
+            resolve_dst_region_for_chunk_write(dst_world_dir, dst_dimension, region.0, region.1)?;
         let Some(existing_bytes) = existing_bytes else {
             for &(cx, cz) in group {
-                skipped.push(SkippedChunk { chunk: (cx, cz), reason: "Region not generated".to_string() });
+                skipped.push(SkippedChunk {
+                    chunk: (cx, cz),
+                    reason: "Region not generated — nothing here to relight yet.".to_string(),
+                });
             }
             continue;
         };
@@ -507,7 +742,10 @@ pub fn force_relight_chunks(
             let local_x = cx.rem_euclid(32) as usize;
             let local_z = cz.rem_euclid(32) as usize;
             let Some(mut chunk_nbt) = region_reader::read_chunk_nbt(&existing_bytes, local_x, local_z) else {
-                skipped.push(SkippedChunk { chunk: (cx, cz), reason: "Chunk not generated".to_string() });
+                skipped.push(SkippedChunk {
+                    chunk: (cx, cz),
+                    reason: "Chunk not generated — nothing here to relight yet.".to_string(),
+                });
                 continue;
             };
 
@@ -529,7 +767,7 @@ pub fn force_relight_chunks(
             continue;
         }
 
-        let backup = backup_existing_region(&dst_world_dir, &dst_dimension, region.0, region.1, &existing_bytes)?;
+        let backup = backup_existing_region(dst_world_dir, dst_dimension, region.0, region.1, &existing_bytes)?;
         backed_up.push(backup);
 
         let new_bytes = rewrite_region_with_chunks(Some(&existing_bytes), &substitutions);
@@ -546,7 +784,7 @@ pub fn force_relight_chunks(
         let cache_root = app.path().app_cache_dir()
             .map(|p| p.join("tile-cache").join(format!("v{}", tile_renderer::CACHE_VERSION)))
             .unwrap_or_else(|_| PathBuf::from("/tmp/msm-tile-cache"));
-        tile_renderer::invalidate_mca_tiles(&cache_root, &dst_world_dir, &affected_regions);
+        tile_renderer::invalidate_mca_tiles(&cache_root, dst_world_dir, &affected_regions);
     }
 
     Ok(RelightChunksReport { relit, backed_up, skipped })

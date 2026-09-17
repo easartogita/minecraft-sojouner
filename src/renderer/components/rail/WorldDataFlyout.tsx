@@ -86,7 +86,6 @@ export default function WorldDataFlyout() {
             </div>
           </div>
 
-          {/* Y filter sits below the marker-type pills */}
           {(playerY !== null || state.markerYAnchorY != null) && (
             <div className="mp-y-section mp-y-section--below">
               <label className="overlay-toggle">

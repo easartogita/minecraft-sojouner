@@ -11,7 +11,7 @@ use super::rotation::{self, Dims, Mirror, Rotation};
 use crate::region_reader;
 use fastnbt::Value;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tauri::Manager;
 
 /// Local position -> canonical `{"id": ..., ["properties": ...]}` `Value` —
@@ -176,6 +176,10 @@ pub struct CopyBlocksReport {
     pub chunks_touched: Vec<(i32, i32)>,
     pub backed_up: Vec<super::BackupEntry>,
     pub skipped: Vec<super::SkippedChunk>,
+    // Neighbor-ring chunks auto-relit after the write above — see
+    // `super::relight_ring_around`.
+    pub relit: Vec<(i32, i32)>,
+    pub relight_warning: Option<String>,
 }
 
 /// Reads every source block + block entity in `box_` into arrays local to
@@ -185,7 +189,8 @@ pub(super) fn extract_box(
     world_dir: &str,
     dimension: &str,
     box_: (i32, i32, i32, i32, i32, i32), // x0,y0,z0,x1,y1,z1 — any order, sorted below
-) -> (Dims, BlockMap, BlockEntityList, usize) {
+    expected_version: i32,
+) -> super::Result<(Dims, BlockMap, BlockEntityList, usize)> {
     let (rx0, ry0, rz0, rx1, ry1, rz1) = box_;
     let (x0, x1) = (rx0.min(rx1), rx0.max(rx1));
     let (y0, y1) = (ry0.min(ry1), ry0.max(ry1));
@@ -194,6 +199,7 @@ pub(super) fn extract_box(
 
     let mut src_region_cache: HashMap<(i32, i32), Option<Vec<u8>>> = HashMap::new();
     let mut src_chunk_cache: HashMap<(i32, i32), Option<Value>> = HashMap::new();
+    let mut checked_chunks: HashSet<(i32, i32)> = HashSet::new();
     let mut blocks: BlockMap = HashMap::with_capacity((dims.width * dims.height * dims.depth).max(0) as usize);
     let mut source_air_assumed = 0usize;
 
@@ -215,6 +221,15 @@ pub(super) fn extract_box(
                 })
             });
             let chunk = src_chunk_cache.get(&(cx, cz)).and_then(|c| c.as_ref());
+            // Checked once per distinct chunk (not once per block/column) —
+            // a stale source chunk aborts the whole extract before any of
+            // its blocks get folded into the result, same all-or-nothing
+            // policy as the live chunk/box copy paths.
+            if let Some(c) = chunk {
+                if checked_chunks.insert((cx, cz)) {
+                    super::require_chunk_data_version(c, expected_version, (cx, cz), "Source")?;
+                }
+            }
 
             for ly in 0..dims.height {
                 let wy = y0 + ly;
@@ -240,7 +255,7 @@ pub(super) fn extract_box(
         }
     }
 
-    (dims, blocks, block_entities, source_air_assumed)
+    Ok((dims, blocks, block_entities, source_air_assumed))
 }
 
 /// Rotates/mirrors block positions and blockstate `properties`, plus block
@@ -289,9 +304,11 @@ pub(super) fn write_blocks_to_destination(
     out_dims: Dims,
     transformed_blocks: BlockMap,
     transformed_block_entities: BlockEntityList,
+    expected_version: i32,
+    override_live_lock: bool,
 ) -> super::Result<CopyBlocksReport> {
     // Held until this function returns — see session_lock's module doc.
-    let _dst_lock = super::session_lock::acquire_write_guard(dst_world_dir)?;
+    let _dst_lock = super::session_lock::acquire_write_guard_or_override(dst_world_dir, override_live_lock)?;
 
     let (dx0, dy0, dz0) = dst_origin;
     let dst_box = (dx0, dy0, dz0, dx0 + out_dims.width - 1, dy0 + out_dims.height - 1, dz0 + out_dims.depth - 1);
@@ -321,11 +338,17 @@ pub(super) fn write_blocks_to_destination(
         chunks_by_region.entry((cx.div_euclid(32), cz.div_euclid(32))).or_default().push((cx, cz));
     }
 
-    // ── Write, reusing v1/v2's Anvil pipeline unchanged ────────────────────
+    // ── Phase 1: read + validate + build every substitution, write nothing
+    // yet — a DataVersion mismatch anywhere below aborts the whole paste via
+    // `?` before any region file has been touched, rather than leaving some
+    // regions rewritten and others not (see require_chunk_data_version's doc
+    // in mod.rs). Box mode always merges into an existing destination chunk
+    // (never fully replaces one, unlike chunk mode's plain relocate), so
+    // every touched destination chunk's own version matters here.
     let mut chunks_touched = Vec::new();
-    let mut backed_up = Vec::new();
     let mut skipped = Vec::new();
     let mut blocks_written = 0usize;
+    let mut planned: Vec<((i32, i32), std::path::PathBuf, Option<Vec<u8>>, HashMap<(usize, usize), Vec<u8>>)> = Vec::new();
 
     for (&region, chunk_list) in &chunks_by_region {
         let (dst_dir, existing_bytes) =
@@ -343,15 +366,18 @@ pub(super) fn write_blocks_to_destination(
                 skipped.push(super::SkippedChunk {
                     chunk: (cx, cz),
                     reason: "Destination chunk not generated — a block-box paste merges into an \
-                             existing destination chunk, it can't create one".to_string(),
+                             existing destination chunk, it can't create one. Visit this location \
+                             in a Minecraft client to generate it first, then retry.".to_string(),
                 });
                 continue;
             };
+            super::require_chunk_data_version(&dest_chunk, expected_version, (cx, cz), "Destination")?;
             if !matches!(super::chunk_root(&dest_chunk).map(|r| r.contains_key("sections")), Some(true)) {
                 skipped.push(super::SkippedChunk {
                     chunk: (cx, cz),
                     reason: "Destination chunk isn't in the modern (1.18+) section format — block-level \
-                             paste doesn't support pre-1.18 chunks".to_string(),
+                             paste doesn't support pre-1.18 chunks. Open it in a current Minecraft \
+                             client to let it upgrade in place, then retry.".to_string(),
                 });
                 continue;
             }
@@ -410,13 +436,18 @@ pub(super) fn write_blocks_to_destination(
             chunks_touched.push((cx, cz));
         }
 
-        if substitutions.is_empty() {
-            continue;
+        if !substitutions.is_empty() {
+            planned.push((region, dst_dir, existing_bytes, substitutions));
         }
-        if let Some(bytes) = &existing_bytes {
+    }
+
+    // ── Phase 2: every touched chunk passed validation — now actually write.
+    let mut backed_up = Vec::new();
+    for (region, dst_dir, existing_bytes, substitutions) in &planned {
+        if let Some(bytes) = existing_bytes {
             backed_up.push(super::backup_existing_region(dst_world_dir, dst_dimension, region.0, region.1, bytes)?);
         }
-        let new_bytes = super::rewrite_region_with_chunks(existing_bytes.as_deref(), &substitutions);
+        let new_bytes = super::rewrite_region_with_chunks(existing_bytes.as_deref(), substitutions);
 
         let final_path = dst_dir.join(format!("r.{}.{}.mca", region.0, region.1));
         let tmp_path = dst_dir.join(format!("r.{}.{}.mca.tmp", region.0, region.1));
@@ -432,9 +463,20 @@ pub(super) fn write_blocks_to_destination(
         crate::tile_renderer::invalidate_mca_tiles(&cache_root, dst_world_dir, &affected_regions);
     }
 
+    // Best-effort: a relight hiccup doesn't undo the paste that already
+    // succeeded above, so its own I/O errors become a warning, not a `?`.
+    let (relit, relight_warning) = match super::relight_ring_around(app, dst_world_dir, dst_dimension, &chunks_touched) {
+        Ok(report) => {
+            backed_up.extend(report.backed_up);
+            skipped.extend(report.skipped);
+            (report.relit, None)
+        }
+        Err(e) => (Vec::new(), Some(format!("Paste succeeded, but relighting the surrounding chunks failed: {e}"))),
+    };
+
     // source_air_assumed is a source-reading concern (extract_box's), not
     // this function's — the caller fills in the real value.
-    Ok(CopyBlocksReport { blocks_written, source_air_assumed: 0, chunks_touched, backed_up, skipped })
+    Ok(CopyBlocksReport { blocks_written, source_air_assumed: 0, chunks_touched, backed_up, skipped, relit, relight_warning })
 }
 
 /// Live source-box → destination-box copy: `extract_box` (read) →
@@ -453,8 +495,11 @@ pub fn copy_blocks(
     dst_origin: (i32, i32, i32),             // where the transformed box's min corner lands
     rotation_deg: i32,                       // 0 | 90 | 180 | 270
     mirror: Option<String>,                  // "x" | "z" | None
+    // See session_lock::acquire_write_guard_or_override's doc — the frontend
+    // only ever sets this after its own explicit user challenge.
+    override_live_lock: bool,
 ) -> super::Result<CopyBlocksReport> {
-    super::check_same_data_version(&src_level_dat_path, &dst_level_dat_path)?;
+    let expected_version = super::check_same_data_version(&src_level_dat_path, &dst_level_dat_path)?;
 
     let src_world_dir = super::world_dir_of(&src_level_dat_path)?.to_string_lossy().to_string();
     let dst_world_dir = super::world_dir_of(&dst_level_dat_path)?.to_string_lossy().to_string();
@@ -463,14 +508,14 @@ pub fn copy_blocks(
     let mir = Mirror::from_str(mirror.as_deref());
 
     let (dims, blocks, block_entities, source_air_assumed) =
-        extract_box(&src_world_dir, &src_dimension, src_box);
+        extract_box(&src_world_dir, &src_dimension, src_box, expected_version)?;
     let (transformed_blocks, transformed_block_entities) =
         apply_transform(dims, mir, rot, blocks, block_entities);
     let out_dims = rotation::transformed_dims(dims, rot);
 
     let report = write_blocks_to_destination(
         &app, &dst_world_dir, &dst_dimension, dst_origin, out_dims,
-        transformed_blocks, transformed_block_entities,
+        transformed_blocks, transformed_block_entities, expected_version, override_live_lock,
     )?;
     Ok(CopyBlocksReport { source_air_assumed, ..report })
 }

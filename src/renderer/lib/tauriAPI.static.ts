@@ -11,15 +11,16 @@ import type {
   SavesWorldEntry, RegionChange, RenderedTile, ChunkInfo, ExportParams,
   CaveRangePreset, StaticExportParams, StaticExportProgress, StructurePos, StructureHit,
   LootItem, ChestSlot, GatewayLink, McaMetricsExtended, OverlayTileKind, TileSizes,
-  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo,
+  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo, PreviewImage,
 } from './tauriAPI.types'
 import type { ExportManifest, DimensionManifest } from './staticExport/schema'
+import { STRUCTURE_TILE_BLOCK_SIZE } from './staticExport/schema'
 
 export type {
   SavesWorldEntry, RegionChange, RenderedTile, ChunkInfo, ExportParams,
   CaveRangePreset, StaticExportParams, StaticExportProgress, StructurePos, StructureHit,
   EnchantmentInfo, LootItem, ChestSlot, GatewayLink, OverlayTileKind, TileSizes,
-  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo,
+  OreVeinColumn, CopyRegionsReport, CopyChunksReport, CopyBlocksReport, SavedTemplateInfo, PreviewImage,
 } from './tauriAPI.types'
 
 export const IS_STATIC_SITE = true
@@ -128,9 +129,11 @@ const DIM_ID_TO_NAME: Record<number, string> = { 0: 'overworld', [-1]: 'nether',
 
 const REGION_BLOCK_SIZE = 512
 
-function regionsForBlockRange(minX: number, minZ: number, maxX: number, maxZ: number): [number, number][] {
-  const rx0 = Math.floor(minX / REGION_BLOCK_SIZE), rx1 = Math.floor(maxX / REGION_BLOCK_SIZE)
-  const rz0 = Math.floor(minZ / REGION_BLOCK_SIZE), rz1 = Math.floor(maxZ / REGION_BLOCK_SIZE)
+function regionsForBlockRange(
+  minX: number, minZ: number, maxX: number, maxZ: number, tileBlockSize = REGION_BLOCK_SIZE,
+): [number, number][] {
+  const rx0 = Math.floor(minX / tileBlockSize), rx1 = Math.floor(maxX / tileBlockSize)
+  const rz0 = Math.floor(minZ / tileBlockSize), rz1 = Math.floor(maxZ / tileBlockSize)
   const out: [number, number][] = []
   for (let rz = rz0; rz <= rz1; rz++) for (let rx = rx0; rx <= rx1; rx++) out.push([rx, rz])
   return out
@@ -368,7 +371,7 @@ export async function findAllStructures(
   const manifest = await ensureManifest()
   const layer = findDimension(manifest, dimension)?.data.structures
   if (!layer) return []
-  const regions = regionsForBlockRange(bx0, bz0, bx1, bz1)
+  const regions = regionsForBlockRange(bx0, bz0, bx1, bz1, STRUCTURE_TILE_BLOCK_SIZE)
   const chunks = await Promise.all(regions.map(([rx, rz]) => fetchRegionJson<ExportedStructureRecord>(layer.path, rx, rz)))
   const enabledSet = new Set(enabled)
   const out: StructureHit[] = []
@@ -538,6 +541,7 @@ export function copyRegions(
   _srcLevelDatPath: string, _srcDimension: string,
   _dstLevelDatPath: string, _dstDimension: string,
   _regions: [number, number][],
+  _overrideLiveLock = false,
 ): Promise<CopyRegionsReport> {
   return Promise.reject(new Error('copyRegions: not available in a static export'))
 }
@@ -547,6 +551,7 @@ export function copyChunks(
   _dstLevelDatPath: string, _dstDimension: string,
   _chunks: [number, number][], _dx: number, _dz: number,
   _yMin?: number, _yMax?: number,
+  _overrideLiveLock = false,
 ): Promise<CopyChunksReport> {
   return Promise.reject(new Error('copyChunks: not available in a static export'))
 }
@@ -558,6 +563,7 @@ export function copyBlocks(
   _dstOrigin: [number, number, number],
   _rotationDeg: 0 | 90 | 180 | 270,
   _mirror: 'x' | 'z' | null,
+  _overrideLiveLock = false,
 ): Promise<CopyBlocksReport> {
   return Promise.reject(new Error('copyBlocks: not available in a static export'))
 }
@@ -584,8 +590,26 @@ export function pasteStructureTemplate(
   _dstOrigin: [number, number, number],
   _rotationDeg: 0 | 90 | 180 | 270,
   _mirror: 'x' | 'z' | null,
+  _overrideLiveLock = false,
 ): Promise<CopyBlocksReport> {
   return Promise.reject(new Error('pasteStructureTemplate: not available in a static export'))
+}
+
+export function previewBoxSelection(
+  _srcLevelDatPath: string, _srcDimension: string,
+  _srcBox: [number, number, number, number, number, number],
+): Promise<PreviewImage> {
+  return Promise.reject(new Error('previewBoxSelection: not available in a static export'))
+}
+
+export function previewTemplate(_templatePath: string): Promise<PreviewImage> {
+  return Promise.reject(new Error('previewTemplate: not available in a static export'))
+}
+
+export function previewChunkSelection(
+  _worldDir: string, _dimension: string, _chunks: [number, number][],
+): Promise<PreviewImage> {
+  return Promise.reject(new Error('previewChunkSelection: not available in a static export'))
 }
 
 export function selectExportDir(_defaultPath?: string | null): Promise<string | null> { return Promise.resolve(null) }

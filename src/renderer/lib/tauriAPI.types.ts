@@ -28,6 +28,9 @@ export interface ChunkInfo {
   regionalDifficulty?: number
   /** Surface Y of the queried block. Null when chunk isn't generated or the column is air. */
   blockY?: number | null
+  /** The hovered chunk's own DataVersion tag. Java only — always absent for
+   *  Bedrock. Dev-tools info; CursorInfoBar only shows it in dev builds. */
+  dataVersion?: number
 }
 
 /** Ore-vein detail for a single hovered column (getOreVeinColumnAt). Counts of
@@ -168,6 +171,11 @@ export interface CopyChunksReport {
   copied: [number, number][]
   backedUp: { region: [number, number]; backupPath: string }[]
   skipped: { chunk: [number, number]; reason: string }[]
+  /** Neighbor-ring chunks auto-relit after the write above (1-chunk ring). */
+  relit: [number, number][]
+  /** Set only if the copy itself succeeded but the follow-up relight step hit
+   *  an I/O error — non-fatal, surfaced separately from `skipped`. */
+  relightWarning: string | null
 }
 
 /** Result of a dev-only arbitrary block-box copy with rotation/mirror
@@ -180,6 +188,11 @@ export interface CopyBlocksReport {
   chunksTouched: [number, number][]
   backedUp: { region: [number, number]; backupPath: string }[]
   skipped: { chunk: [number, number]; reason: string }[]
+  /** Neighbor-ring chunks auto-relit after the write above (1-chunk ring). */
+  relit: [number, number][]
+  /** Set only if the paste itself succeeded but the follow-up relight step hit
+   *  an I/O error — non-fatal, surfaced separately from `skipped`. */
+  relightWarning: string | null
 }
 
 /** Result of saving a block-box selection as a portable Structure Block
@@ -189,6 +202,16 @@ export interface SavedTemplateInfo {
   height: number
   depth: number
   blockCount: number
+}
+
+/** A real block-color top-down thumbnail of a structure-copy source
+ *  selection (structure_copy/preview.rs). `widthBlocks`/`depthBlocks` are the
+ *  true footprint the ghost overlay should be sized to — `dataUrl`'s own
+ *  pixel dimensions may be smaller for a large, downsampled selection. */
+export interface PreviewImage {
+  widthBlocks: number
+  depthBlocks: number
+  dataUrl: string
 }
 
 export interface McaMetricsExtended {

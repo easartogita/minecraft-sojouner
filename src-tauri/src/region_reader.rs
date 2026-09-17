@@ -29,7 +29,7 @@ pub fn compute_local_difficulty(game_difficulty: i32, world_time: i64, inhabited
     (special, regional)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkInfo {
     pub block_name:         Option<String>,
@@ -42,6 +42,13 @@ pub struct ChunkInfo {
     /// None when the chunk isn't generated or the column is air.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_y: Option<i32>,
+    /// The hovered chunk's own `DataVersion` tag — dev-tools info surfaced by
+    /// CursorInfoBar in dev builds only (see structure_copy's per-chunk
+    /// DataVersion checks for why this can differ from the world's own
+    /// level.dat version). Always None for Bedrock, which doesn't carry the
+    /// same NBT versioning scheme.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_version: Option<i32>,
 }
 
 /// Find the .mca region file for a given region coord, handling old and new layouts.
@@ -129,6 +136,9 @@ pub(crate) fn unpack_long(longs: &[i64], index: usize, bits_per_value: u32) -> u
 
 /// Write-side mirror of `unpack_long`. Values are unchecked (`< 2^bits_per_value`) —
 /// callers always pack valid palette indices.
+/// Only called from `structure_copy`, which is debug-only (see lib.rs) — release
+/// builds would otherwise warn this dead, hence the cfg_attr.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub(crate) fn pack_long(values: &[u32], bits_per_value: u32) -> Vec<i64> {
     let vpl = 64 / bits_per_value as usize;
     let mut longs = vec![0i64; values.len().div_ceil(vpl)];
@@ -551,6 +561,8 @@ pub fn read_chunk_nbt(file_buf: &[u8], local_x: usize, local_z: usize) -> Option
 /// still-compressed data) instead of decoding it. Used by the chunk-level
 /// writer (`structure_copy.rs`) to pass untouched chunks through a region
 /// rewrite byte-for-byte, without a wasted decompress/recompress round trip.
+/// Debug-only consumer (see lib.rs), hence the cfg_attr — see `pack_long` above.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub(crate) fn read_chunk_raw_payload(file_buf: &[u8], local_x: usize, local_z: usize) -> Option<Vec<u8>> {
     let header_offset = 4 * (local_x + local_z * 32);
     if header_offset + 4 > file_buf.len() {
@@ -867,7 +879,7 @@ pub fn get_chunk_info_from_mca(
     let rx = cx.div_euclid(32);
     let rz = cz.div_euclid(32);
 
-    let null = ChunkInfo { block_name: None, inhabited_time: None, special_multiplier: None, regional_difficulty: None, block_y: None };
+    let null = ChunkInfo::default();
 
     let mca_path = match find_region_file(world_dir, dimension, rx, rz) {
         Some(p) => p,
@@ -920,6 +932,9 @@ pub fn get_chunk_info_from_mca(
     };
 
     let inhabited_time = get(&chunk_val, "InhabitedTime").and_then(as_i64);
+    // Always top-level (sibling of `Level` pre-1.18, `xPos` post-1.18) — same
+    // spot structure_copy's `chunk_data_version` reads it from.
+    let data_version = get(&chunk_val, "DataVersion").and_then(as_i32);
 
     let (special_multiplier, regional_difficulty) = match (game_difficulty, world_time, inhabited_time) {
         (Some(gd), Some(wt), Some(it)) => {
@@ -937,5 +952,5 @@ pub fn get_chunk_info_from_mca(
     let block_y = surface_entry
         .and_then(|(name, y, _)| if name.is_empty() { None } else { Some(*y) });
 
-    ChunkInfo { block_name, inhabited_time, special_multiplier, regional_difficulty, block_y }
+    ChunkInfo { block_name, inhabited_time, special_multiplier, regional_difficulty, block_y, data_version }
 }

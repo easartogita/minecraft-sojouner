@@ -16,6 +16,7 @@ import { parseShareLink, clearShareLinkFromUrl } from '../lib/shareLink'
 import BiomeTileLayer from './BiomeTileLayer'
 import GeneratedRegionsLayer from './GeneratedRegionsLayer'
 import StructureCopySelectionLayer from './StructureCopySelectionLayer'
+import StructureCopyGhostLayer from './StructureCopyGhostLayer'
 import SpawnChunksLayer from './SpawnChunksLayer'
 import WorldBorderLayer from './WorldBorderLayer'
 import ChunkOverlayLayer from './ChunkOverlayLayer'
@@ -60,6 +61,7 @@ export default function MapView() {
   const [mouseCoords, setMouseCoords] = useState<{ x: number; z: number } | null>(null)
   const [biomeName, setBiomeName] = useState<string | null>(null)
   const [blockName, setBlockName] = useState<string | null>(null)
+  const [chunkDataVersion, setChunkDataVersion] = useState<number | null>(null)
   const [terrainY, setTerrainY] = useState<number | null>(null)
   const [localDifficulty, setLocalDifficulty] = useState<{ specialMultiplier: number; regionalDifficulty: number } | null>(null)
   const [oreVeinColumn, setOreVeinColumn] = useState<OreVeinColumn | null>(null)
@@ -89,6 +91,10 @@ export default function MapView() {
   // local state (not dispatched) since mousemove fires far more often than
   // Redux-style state should churn; only StructureCopySelectionLayer reads it.
   const [boxHoverPos, setBoxHoverPos] = useState<[number, number] | null>(null)
+  // Cursor position while placing a structure-copy destination (chunk-mode's
+  // "Place destination on map" / box-and-template's "Place destination X/Z on
+  // map") — local for the same reason as boxHoverPos. Feeds StructureCopyGhostLayer.
+  const [destHoverPos, setDestHoverPos] = useState<[number, number] | null>(null)
 
   // Cave-mode elastic zoom: refs so the always-registered zoomend bounce
   // listener (below) can read current cave state without closing over stale
@@ -173,6 +179,7 @@ export default function MapView() {
     if (blockTimerRef.current) clearTimeout(blockTimerRef.current)
     if (!mouseCoords || !state.worldDir) {
       setBlockName(null)
+      setChunkDataVersion(null)
       setTerrainY(null)
       setLocalDifficulty(null)
       return
@@ -191,6 +198,7 @@ export default function MapView() {
           showDifficulty ? (seedData?.worldTime  ?? undefined) : undefined,
         )
         setBlockName(showBlockName ? (info?.blockName ?? null) : null)
+        setChunkDataVersion(showBlockName ? (info?.dataVersion ?? null) : null)
         // Unexplored region → no chunk Y; fall back to the cubiomes height
         // estimate (Java overworld only — cubiomes heights are wrong for Bedrock).
         // Not in cave mode: a surface height is not the cave-scan Y.
@@ -257,7 +265,15 @@ export default function MapView() {
       maxZoom: MAX_ZOOM,
       center: [0, 0],
       zoomControl: false,
-      attributionControl: true
+      attributionControl: true,
+      // Leaflet's default (40ms) only coalesces wheel ticks that land within one
+      // frame of each other — a real scroll-wheel spin (or our own rapid-zoom
+      // repro) spaces ticks wider than that, so each one still lands its own
+      // zoomend and fetches a full viewport of tiles for a level abandoned a
+      // moment later. A longer window coalesces a whole spin into the one zoom
+      // level it actually settles on, instead of rendering-then-discarding every
+      // level passed through on the way there.
+      wheelDebounceTime: 200,
     })
 
     // Mouse coordinate tracking — rAF-throttled so React re-renders at most once per frame
@@ -378,6 +394,25 @@ export default function MapView() {
     map.on('mousemove', onMove)
     return () => { map.off('mousemove', onMove) }
   }, [map, state.structureCopyBoxAnchor])
+
+  // Destination-placement ghost cursor: chunk mode snaps to whole-chunk
+  // boundaries (matches the click dispatch's `rawX >> 4` chunk-granularity),
+  // box/template track the raw block position (matches `SET_STRUCTURE_COPY_BOX_DEST_XZ`).
+  useEffect(() => {
+    if (!map || (!state.structureCopyPlacingDest && !state.structureCopyPlacingBoxDest)) {
+      setDestHoverPos(null)
+      return
+    }
+    const chunkSnap = state.structureCopyPlacingDest
+    const onMove = (e: L.LeafletMouseEvent) => {
+      const { x, z } = leafletToMinecraft(e.latlng.lng, e.latlng.lat)
+      const bx = Math.floor(x)
+      const bz = Math.floor(z)
+      setDestHoverPos(chunkSnap ? [(bx >> 4) << 4, (bz >> 4) << 4] : [bx, bz])
+    }
+    map.on('mousemove', onMove)
+    return () => { map.off('mousemove', onMove) }
+  }, [map, state.structureCopyPlacingDest, state.structureCopyPlacingBoxDest])
 
   // Fit to a 32×32 chunk view centered on spawn when seed changes — unless a static-export
   // share link (?x=&z=&zoom=&dim=&filters=, see shareLink.ts) asked for a specific view.
@@ -661,6 +696,15 @@ export default function MapView() {
                (state.structureCopyMode === 'chunk' && state.structureCopySelectedChunks.length > 0) ||
                (state.structureCopyMode === 'box' && (state.structureCopyBoxAnchor != null || state.structureCopyBoxSelection != null))) &&
               <StructureCopySelectionLayer map={map} boxHoverPos={boxHoverPos} />}
+            {state.structureCopyPreview && (state.structureCopyPlacingDest || state.structureCopyPlacingBoxDest) && (
+              <StructureCopyGhostLayer
+                map={map}
+                preview={state.structureCopyPreview}
+                anchor={destHoverPos}
+                rotation={state.structureCopyRotation}
+                mirror={state.structureCopyMirror}
+              />
+            )}
             {(state.showChunkGrid || state.showRegionGrid || forceChunkGrid) && (
               <ChunkGridLayer
                 map={map}
@@ -710,6 +754,7 @@ export default function MapView() {
           slimeChunk={slimeChunkResult}
           localDifficulty={localDifficulty}
           oreVein={oreVeinColumn}
+          dataVersion={chunkDataVersion}
         />
         {localError && (
           <div className="error-banner">

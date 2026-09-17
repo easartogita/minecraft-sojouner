@@ -1,5 +1,4 @@
 // Slime chunk detection — pure Java LCG reimplementation.
-// Mirrors the BigInt logic in the deleted TS slimeChunks.ts.
 //
 // Java source:
 //   new Random(seed + (long)(cx*cx*0x4c1906) + (long)(cx*0x5ac0db)

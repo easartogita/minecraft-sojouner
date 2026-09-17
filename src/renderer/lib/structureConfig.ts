@@ -74,7 +74,7 @@ export const STRUCTURE_CONFIG: Record<StructureType, StructureConfig> = {
   trail_ruins:         { label: 'Trail Ruins',       color: '#b8732c', dimension: 'overworld', minZoom: 1,
                          summary: 'Buried archaeology site; pottery sherds, rare armour trims' },
   abandoned_camp:      { label: 'Abandoned Camp',    color: '#8a7f5c', dimension: 'overworld', minZoom: 1,
-                         summary: 'Surface camp (26.3+); barrel plus common and secret loot chests',
+                         summary: 'Surface camp; barrel plus common and secret loot chests',
                          notableLoot: { label: 'Has secret chest', summary: 'Depends on which campsite piece rolled — bigger camps have better odds' } },
   desert_well:         { label: 'Desert Well',       color: '#d4ac6e', dimension: 'overworld', minZoom: 2,
                          summary: 'Decorative; no loot' },

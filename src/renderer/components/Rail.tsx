@@ -116,16 +116,12 @@ export default function Rail() {
   )
 }
 
-function RailBtn({ icon, label, active, onClick, indicator }: {
+function RailBtn({ icon, label, active, onClick }: {
   icon: React.ReactNode; label: string; active: boolean; onClick: () => void
-  indicator?: 'green' | 'red'
 }) {
   return (
     <button className={`rail-btn${active ? ' active' : ''}`} onClick={onClick} title={label}>
-      <span className="rail-btn-icon">
-        {icon}
-        {indicator && <span className={`rail-btn-indicator rail-btn-indicator--${indicator}`} />}
-      </span>
+      <span className="rail-btn-icon">{icon}</span>
       <span className="rail-btn-label">{label}</span>
     </button>
   )

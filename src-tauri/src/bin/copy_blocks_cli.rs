@@ -10,7 +10,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 13 {
         eprintln!(
-            "Usage: {} <level.dat> <dimension> <x0> <y0> <z0> <x1> <y1> <z1> <dst_x> <dst_y> <dst_z> <rotation> [mirror: x|z]",
+            "Usage: {} <level.dat> <dimension> <x0> <y0> <z0> <x1> <y1> <z1> <dst_x> <dst_y> <dst_z> <rotation> [mirror: x|z] [--override-live-lock]",
             args[0]
         );
         std::process::exit(1);
@@ -21,7 +21,8 @@ fn main() {
     let src_box = (n(3), n(4), n(5), n(6), n(7), n(8));
     let dst_origin = (n(9), n(10), n(11));
     let rotation = n(12);
-    let mirror = args.get(13).cloned();
+    let override_live_lock = args.iter().any(|a| a == "--override-live-lock");
+    let mirror = args.get(13).filter(|a| a.as_str() != "--override-live-lock").cloned();
 
     let app = tauri::Builder::default()
         .build(tauri::generate_context!())
@@ -33,7 +34,7 @@ fn main() {
         handle,
         level_dat.clone(), dimension.clone(),
         level_dat, dimension,
-        src_box, dst_origin, rotation, mirror,
+        src_box, dst_origin, rotation, mirror, override_live_lock,
     );
     let elapsed = start.elapsed();
 

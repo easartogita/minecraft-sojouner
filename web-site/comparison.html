@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sojourner — feature comparison</title>
+<meta name="description" content="How Sojourner stacks up against every other tool that reads or renders Minecraft world data — save-data viewers, live server maps, editors, static renderers, seed tools, and in-game minimaps.">
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/png" href="favicon.png">
+<style>
+:root{
+  --paper:#efe7d3; --card:#e6d9b9; --line:rgba(38,46,28,.16); --line-strong:rgba(38,46,28,.32);
+  --ink:#262e1c; --ink-dim:#454f38; --muted:#77705c;
+  --pine:#33502c; --rust:#a3441d; --gold:#a97a1f;
+  --serif:Georgia,'Iowan Old Style','Palatino Linotype','Book Antiqua',Palatino,'Times New Roman',serif;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+}
+*,::before,::after{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  background:var(--paper);
+  color:var(--ink-dim); font-family:var(--sans); font-size:.98rem; line-height:1.7;
+  overflow-x:hidden; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:clamp(2.2rem,6vw,3.6rem) clamp(1.2rem,4vw,2rem) 4rem}
+a{color:var(--rust);text-decoration:none} a:hover,a:focus-visible{text-decoration:underline}
+.back{display:inline-block;margin-bottom:1.6rem;font-size:.86rem;font-weight:700;color:var(--ink-dim)}
+.back::before{content:'← '}
+.back:hover{color:var(--pine)}
+
+header.top{margin-bottom:clamp(2rem,5vw,3rem)}
+.eyebrow{display:flex;align-items:center;gap:.55rem;font-family:var(--serif);font-style:italic;font-weight:700;
+  font-size:.9rem;color:var(--pine);margin-bottom:.7rem}
+.eyebrow::before{content:'';display:inline-block;width:1.4rem;height:1px;background:var(--gold)}
+h1{font-family:var(--serif);font-size:clamp(1.7rem,4vw,2.5rem);font-weight:700;letter-spacing:-.005em;color:var(--pine);margin-bottom:.9rem}
+h2{font-family:var(--serif);font-size:clamp(1.2rem,2.6vw,1.5rem);font-weight:700;letter-spacing:-.005em;color:var(--pine);margin:0 0 .9rem}
+p{margin-bottom:.8rem;color:var(--ink-dim);max-width:66em}
+p.lede{color:var(--ink-dim)}
+.k{color:var(--ink);font-weight:700}
+
+section{margin-bottom:clamp(2.4rem,5vw,3.4rem)}
+
+/* legend */
+.legend{display:flex;flex-wrap:wrap;gap:1.4rem;margin:1rem 0 .4rem;font-size:.86rem;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:.5rem}
+.pill{display:inline-flex;align-items:center;justify-content:center;min-width:1.6em;height:1.6em;padding:0 .35em;
+  border-radius:3px;font-weight:800;font-size:.82em}
+.pill.yes{background:#33502c1a;color:var(--pine);border:1px solid #33502c44}
+.pill.part{background:#a97a1f1a;color:var(--gold);border:1px solid #a97a1f4d}
+.pill.no{background:transparent;color:var(--muted);border:1px solid var(--line)}
+
+/* table */
+.tblwrap{overflow-x:auto;margin:1.4rem 0 .4rem;border:1px solid var(--line-strong);border-radius:6px;background:var(--card)}
+table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:.86rem}
+caption{caption-side:top;text-align:left;padding:.9rem 1.1rem;font-size:.72rem;letter-spacing:.02em;
+  font-weight:700;font-style:italic;font-family:var(--serif);color:var(--muted);background:var(--paper-deep2,#ded0ab);border-bottom:1px solid var(--line);
+  border-radius:6px 6px 0 0}
+th,td{padding:.65rem .6rem;text-align:left;border-bottom:1px solid var(--line);overflow-wrap:break-word}
+thead th{background:#ded0ab80;color:var(--pine);font-weight:700;font-size:.72rem;letter-spacing:.01em;
+  line-height:1.35;position:sticky;top:0}
+tbody tr:hover{background:#ded0ab40}
+tbody tr.cat td{background:#ded0ab66;color:var(--muted);font-size:.72rem;font-weight:700;letter-spacing:.02em;
+  font-style:italic;font-family:var(--serif);padding-top:.75rem;padding-bottom:.6rem}
+td.tool{color:var(--ink)}
+td.tool b{color:var(--ink);font-weight:700}
+td.tool span{display:block;color:var(--muted);font-size:.76rem;margin-top:.15rem;font-weight:400}
+td.cell{text-align:center}
+td.note{color:var(--muted);font-size:.78rem}
+
+/* below this width, wrapped columns get too cramped to read — fall back to the old scrolling table */
+@media (max-width:760px){
+  table{table-layout:auto;min-width:1020px}
+  th,td{white-space:nowrap}
+  td.tool,td.note{white-space:normal;min-width:11em}
+}
+
+.gaps{list-style:none;margin:.8rem 0}
+.gaps li{position:relative;padding-left:1.8em;margin-bottom:.8rem;color:var(--ink-dim)}
+.gaps li::before{content:'→';position:absolute;left:0;top:0;color:var(--rust);font-weight:800}
+.gaps b{color:var(--ink);font-weight:800}
+.caveat{margin-top:1.2rem;padding:1.1rem 1.3rem;border-radius:4px;border:1px solid var(--line-strong);
+  border-left:3px solid var(--rust);background:var(--card);color:var(--ink-dim);font-size:.88rem}
+
+footer{margin-top:clamp(2.5rem,6vw,3.5rem);padding-top:1.6rem;border-top:1px solid var(--line);
+  font-size:.82rem;line-height:1.7;color:var(--muted)}
+</style>
+</head>
+<body>
+<main class="wrap">
+
+  <a class="back" href="index.html">Sojourner</a>
+
+  <header class="top">
+    <span class="eyebrow">Internal working doc</span>
+    <h1>Where Sojourner stands, and where it doesn't</h1>
+    <p class="lede">Every tool that reads, predicts, or renders Minecraft world data, lined up next to Sojourner — grouped by what they actually are, because "map viewer" means five different things depending who's selling it. No score being kept, just an honest table.</p>
+  </header>
+
+  <section>
+    <span class="eyebrow">How to read this</span>
+    <p>Marks are pulled from public docs, READMEs, and screenshots — not hands-on testing of all 17 tools. A dash can mean "doesn't do it" or just "couldn't find proof it does." If something here looks wrong, it might be — go check.</p>
+    <div class="legend">
+      <span><span class="pill yes">✓</span> full support</span>
+      <span><span class="pill part">◐</span> partial / limited</span>
+      <span><span class="pill no">—</span> absent or not applicable</span>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">The matrix</span>
+    <h2>Feature-by-feature</h2>
+    <div class="tblwrap">
+      <table>
+        <caption>17 tools · grouped by category</caption>
+        <colgroup>
+          <col style="width:15%"><col style="width:11%"><col style="width:9%">
+          <col style="width:10%"><col style="width:10%"><col style="width:9%">
+          <col style="width:8%"><col style="width:7%"><col style="width:12%">
+          <col style="width:9%">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th>Editions</th>
+            <th>Real block colors</th>
+            <th>Seed-ahead prediction</th>
+            <th>Chest / loot content</th>
+            <th>Entities &amp; mobs</th>
+            <th>Ore veins</th>
+            <th>3D view</th>
+            <th>Editing</th>
+            <th>Distribution</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <tr class="cat"><td colspan="10">Reads real save files — standalone viewers</td></tr>
+          <tr>
+            <td class="tool"><b>Sojourner</b><span>this project</span></td>
+            <td>Java + Bedrock</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">Structure copy/paste (dev-build only)</td>
+            <td class="note">Free desktop, offline, no telemetry</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>uNmINeD</b><span>closest overall shape</span></td>
+            <td>Java + Bedrock + Hytale</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">Chunk transfer between saves (not entities)</td>
+            <td class="note">Free desktop</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>Minutor</b></td>
+            <td>Java only</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">—</td>
+            <td class="note">Free desktop, simple/older</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>Bedrock Viz</b></td>
+            <td>Bedrock only</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">—</td>
+            <td class="note">Free, desktop + generated web app</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>PapyrusCS</b><span>same Leaflet engine as Sojourner</span></td>
+            <td>Bedrock only</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">—</td>
+            <td class="note">Free, C#, self-hosted web map</td>
+          </tr>
+
+          <tr class="cat"><td colspan="10">Live server web-map plugins</td></tr>
+          <tr>
+            <td class="tool"><b>Dynmap</b></td>
+            <td>Java, live server</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="note">—</td>
+            <td class="note">Free, server plugin</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>BlueMap</b></td>
+            <td>Java, server or standalone CLI</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="note">—</td>
+            <td class="note">Free, plugin/mod or offline CLI</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>squaremap / Pl3xMap</b></td>
+            <td>Java, live server</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">—</td>
+            <td class="note">Free, server plugin, low overhead</td>
+          </tr>
+
+          <tr class="cat"><td colspan="10">World editors</td></tr>
+          <tr>
+            <td class="tool"><b>Amulet Editor</b><span>MCEdit's successor</span></td>
+            <td>Java 1.12+ &amp; Bedrock 1.7+</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="note">Full NBT/block edit + Java↔Bedrock convert</td>
+            <td class="note">Free desktop</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>WorldPainter</b></td>
+            <td>Java (export)</td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">Terrain authoring — builds new worlds, doesn't map existing ones</td>
+            <td class="note">Free desktop</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>NBT Studio</b><span>NBTExplorer's successor</span></td>
+            <td>Java + Bedrock</td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">Raw NBT tree editing, no map at all</td>
+            <td class="note">Free desktop</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>Chunker</b></td>
+            <td>Java ↔ Bedrock</td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">Dedicated world-format converter</td>
+            <td class="note">Free desktop</td>
+          </tr>
+
+          <tr class="cat"><td colspan="10">Static renderers</td></tr>
+          <tr>
+            <td class="tool"><b>Minecraft Overviewer</b></td>
+            <td>Java-focused</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="note">—</td>
+            <td class="note">Free, Python, static export (like Sojourner's static-site mode)</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>Chunky</b></td>
+            <td>Java</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="note">—</td>
+            <td class="note">Free, path-traced single renders, not a browsable map</td>
+          </tr>
+
+          <tr class="cat"><td colspan="10">Seed-only prediction (no save file)</td></tr>
+          <tr>
+            <td class="tool"><b>Chunkbase Seed Map / AMIDST</b></td>
+            <td>Java, seed only</td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">—</td>
+            <td class="note">Free, web (Chunkbase) / desktop (AMIDST)</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>SeedMapper</b><span>in-game Fabric mod</span></td>
+            <td>Java, seed only</td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">In-world block highlighting + Baritone auto-mine</td>
+            <td class="note">Free, Fabric mod, in-game</td>
+          </tr>
+
+          <tr class="cat"><td colspan="10">In-game live minimaps</td></tr>
+          <tr>
+            <td class="tool"><b>Xaero's Minimap / World Map</b></td>
+            <td>Java (Fabric/Forge)</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">Waypoints</td>
+            <td class="note">Free, client mod, in-game only</td>
+          </tr>
+          <tr>
+            <td class="tool"><b>JourneyMap</b></td>
+            <td>Java (Fabric/Forge)</td>
+            <td class="cell"><span class="pill yes">✓</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill part">◐</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="cell"><span class="pill no">—</span></td>
+            <td class="note">Waypoints, web view of explored map</td>
+            <td class="note">Free, client mod, in-game only</td>
+          </tr>
+
+        </tbody>
+      </table>
+    </div>
+    <div class="caveat">"Seed-ahead prediction" and "map built by exploring" are different products wearing the same word — a seed tool describes a world that doesn't exist yet; a minimap describes only what you've walked past. Sojourner does both — predicted seed data <em>and</em> the real save, on the same map — which is why it doesn't sort cleanly into either category above.</div>
+  </section>
+
+  <section>
+    <span class="eyebrow">Reading the gaps</span>
+    <h2>What's worth a look</h2>
+    <p class="lede">Not every dash above is a missing feature — some of these are just different products (a live multiplayer server map and a local single-save viewer solve different problems). These are the dashes that actually sting:</p>
+    <ul class="gaps">
+      <li><b>3D view.</b> BlueMap renders full 3D terrain in-browser; Amulet's editor viewport is 3D too. Sojourner is 2D top-down only (plus the cave-mode depth slice). A real gap if "explore in 3D" ever becomes a goal — a large one, not a quick add.</li>
+      <li><b>Java ↔ Bedrock conversion.</b> Chunker and Amulet both convert a world between formats. Sojourner reads both editions but has no write-path between them — out of scope today, but worth naming as a capability nobody's asked for yet.</li>
+      <li><b>General world editing.</b> Amulet and NBT Studio let you edit anything, anywhere. Sojourner's write path is narrowly structure copy/paste, and still dev-build-gated pending backup/restore (see <span class="k">project_structure_copy_paste</span> memory). Expanding that is a deliberate, gated decision, not a gap to close casually.</li>
+      <li><b>Live, in-the-moment exploration.</b> Xaero's, JourneyMap, and SeedMapper's minimap all update while you play, in-game. Sojourner is a separate desktop app you tab out to — a real UX difference, but also the tradeoff that makes the deep chest/entity/loot inspection possible at all in the first place.</li>
+      <li><b>Standalone-without-a-save 3D screenshots.</b> Chunky's path-traced renders are a different value prop entirely (marketing/cinematic shots vs. functional map) — not a gap, just a non-goal.</li>
+    </ul>
+    <p class="lede">Nobody else on this list does all of it at once — real block colors, seed prediction, structure loot, container contents, entity depth, and ore veins, on both editions. That's the actual pitch. The gaps above are real; just don't let them drown that out.</p>
+  </section>
+
+  <footer>
+    Compiled from public docs, READMEs, and screenshots as of September 2026 — not a hands-on audit. Double-check before you bet anything on it.
+  </footer>
+
+</main>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import L from 'leaflet'
 import { useApp } from '../../App'
+import * as api from '../../lib/tauriAPI'
 import { useTileStats } from '../../hooks/useTileStats'
 import { MC_VERSION_LABELS, MCVersionKey, MC_VERSIONS } from '../../lib/constants'
 import { WorldType } from '../../hooks/useSeed'
@@ -104,9 +105,8 @@ export default function SeedFlyout() {
     const cx = Math.round(hasPlayer ? playerX : 0)
     const cz = Math.round(hasPlayer ? playerZ : 0)
     const seed = BigInt(state.seedData.seed)
-    // The cubiomes enum value — the old Places panel passed the MCVersionKey
-    // string here, which failed i32 deserialization on the Rust side and left
-    // the Nearby list empty.
+    // Must be the cubiomes numeric enum, not the MCVersionKey string — the
+    // string fails i32 deserialization on the Rust side.
     const mcVersion = MC_VERSIONS[state.selectedVersion]
     const worldFlags = state.worldType === 'large_biomes' ? 1 : 0
 
@@ -304,10 +304,14 @@ export default function SeedFlyout() {
               </>
             )}
 
-            <div className="recent-worlds-more" style={{ marginBottom: 8 }} onClick={() => setShowSeedEntry(v => !v)}>
-              {showSeedEntry ? 'hide manual seed entry' : 'From seed…'}
-            </div>
-            {showSeedEntry && <div style={{ marginBottom: 8 }}>{seedEntry}</div>}
+            {!api.IS_STATIC_SITE && (
+              <>
+                <div className="recent-worlds-more" style={{ marginBottom: 8 }} onClick={() => setShowSeedEntry(v => !v)}>
+                  {showSeedEntry ? 'hide manual seed entry' : 'From seed…'}
+                </div>
+                {showSeedEntry && <div style={{ marginBottom: 8 }}>{seedEntry}</div>}
+              </>
+            )}
 
             <hr className="flyout-divider" />
             <div className="recent-worlds-title">Structures</div>

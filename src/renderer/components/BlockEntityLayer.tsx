@@ -17,9 +17,21 @@ let _stats: LayerStats = makeLayerStats()
 export function getBELayerStats(): LayerStats { return { ..._stats } }
 export function resetBELayerStats(): void { _stats = makeLayerStats() }
 
-// Single-slot queue purely so an in-flight load shows up in TileLoadingHud/DebugOverlay
-// via the same registerOverlay mechanism the tile-queue layers use.
-const loadQueue = new TileJobQueue(1, () => tileStats.notify(), 'blockentity')
+// Queue purely so an in-flight load shows up in TileLoadingHud/DebugOverlay via the
+// same registerOverlay mechanism the tile-queue layers use — chunkMarkerLayer's `load`
+// starts the real fetch itself and only uses this queue's job as a bookkeeping token
+// (see its "Status signal only" doc comment), so a capped maxActive here doesn't gate
+// any real concurrency. It used to be capped at 1, which was actively harmful: with a
+// no-op `run`, a job's real work can finish and call release() *before* drain() ever
+// promotes it out of the pending queue (whenever an earlier job is still occupying the
+// one slot) — release() on a job that was never in `activeJobs` is a no-op, so that
+// job sits in the pending array until some later drain() promotes it anyway, at which
+// point it's permanently "active" since nothing will ever release it again. Every
+// overlapping load whose fetch happens to settle before an earlier one's left one of
+// these phantom entries behind — an ever-growing, never-draining queue count with
+// nothing actually in flight. Uncapped removes the pending state entirely: every job
+// promotes to active immediately, so promotion and completion can never race.
+const loadQueue = new TileJobQueue(Infinity, () => tileStats.notify(), 'blockentity')
 tileStats.registerOverlay({ key: 'blockentity', label: 'Block entities', className: 'blockentity', queues: [loadQueue], caches: [] })
 
 // These block types also auto-register a POI (bell → meeting point, job sites →

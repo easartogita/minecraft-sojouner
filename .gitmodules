@@ -1,7 +1,7 @@
 [submodule "cubiomes"]
 	path = cubiomes
 	url = git@github.com:xpple/cubiomes.git
-	branch = 26.3
+	branch = master
 [submodule "leveldb"]
 	path = leveldb
 	url = git@github.com:Mojang/leveldb.git

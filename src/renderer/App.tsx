@@ -11,10 +11,9 @@ import { getAllQueues } from './lib/tileJobQueue'
 import MapView from './components/MapView'
 import Rail from './components/Rail'
 import RightRail from './components/RightRail'
-import { IconPickaxe, IconDice } from './components/icons'
+import { IconCompass, IconDice } from './components/icons'
 import './styles/app.css'
 
-// Contexts
 interface AppContextValue {
   state: AppState
   dispatch: React.Dispatch<Action>
@@ -63,7 +62,6 @@ export default function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Ignore when typing in an input/textarea
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
 
@@ -156,7 +154,7 @@ export default function App() {
             <MapView />
           ) : api.IS_STATIC_SITE ? (
             <div className="empty-state">
-              <div className="empty-icon"><IconPickaxe size={48} /></div>
+              <div className="empty-icon"><IconCompass size={48} /></div>
               <h2 className="wordmark">Sojourner</h2>
               <p className="empty-desc">{staticBootFailed ? 'Could not load manifest.json.' : 'Loading map…'}</p>
             </div>
@@ -258,7 +256,7 @@ function EmptyState({ onOpen, onLoad, dispatch }: {
         // HTML5 drop: try to get file names for feedback (actual paths come via tauri://file-drop)
       }}
     >
-      <div className="empty-icon"><IconPickaxe size={48} /></div>
+      <div className="empty-icon"><IconCompass size={48} /></div>
       <h2 className="wordmark">Sojourner</h2>
 
       {!showSeedForm ? (

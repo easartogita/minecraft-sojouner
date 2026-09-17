@@ -120,35 +120,57 @@ const MAX_TEMPLATE_AXIS: i32 = 2048;
 /// hand-edited or corrupted — a `pos` outside the declared `size` would
 /// otherwise flow through as a normal block and land wherever that computes
 /// relative to `dst_origin`, writing into destination chunks nobody selected.
-fn parse_structure_nbt(root: &Value) -> super::Result<(Dims, BlockMap, BlockEntityList)> {
-    let Value::Compound(root_m) = root else { return Err("structure file root is not a compound".to_string()) };
+pub(super) fn parse_structure_nbt(root: &Value) -> super::Result<(Dims, BlockMap, BlockEntityList)> {
+    let Value::Compound(root_m) = root else {
+        return Err("structure file root is not a compound — this doesn't look like a valid \
+                     Structure Block .nbt file; check you selected the right file.".to_string())
+    };
 
-    let Some(Value::List(size)) = root_m.get("size") else { return Err("structure file has no size list".to_string()) };
+    let Some(Value::List(size)) = root_m.get("size") else {
+        return Err("structure file has no size list — this doesn't look like a valid Structure \
+                     Block .nbt file; check you selected the right file.".to_string())
+    };
     if size.len() != 3 {
-        return Err(format!("structure file's size list has {} entries, expected 3", size.len()));
+        return Err(format!(
+            "structure file's size list has {} entries, expected 3 — the file is corrupted or \
+             was hand-edited; re-export it instead of fixing it by hand.",
+            size.len()
+        ));
     }
     let dim = |i: usize| match &size[i] {
         Value::Int(n) => Ok(*n),
-        other => Err(format!("structure file size[{i}] isn't an int: {other:?}")),
+        other => Err(format!(
+            "structure file size[{i}] isn't an int: {other:?} — the file is corrupted or was \
+             hand-edited; re-export it instead of fixing it by hand."
+        )),
     };
     let dims = Dims { width: dim(0)?, height: dim(1)?, depth: dim(2)? };
     if dims.width <= 0 || dims.height <= 0 || dims.depth <= 0 {
         return Err(format!(
-            "structure file has a non-positive size ({}x{}x{}) — refusing to load",
+            "structure file has a non-positive size ({}x{}x{}) — refusing to load. The file is \
+             corrupted or was hand-edited; re-export it instead of fixing it by hand.",
             dims.width, dims.height, dims.depth
         ));
     }
     if dims.width > MAX_TEMPLATE_AXIS || dims.height > MAX_TEMPLATE_AXIS || dims.depth > MAX_TEMPLATE_AXIS {
         return Err(format!(
-            "structure file's size ({}x{}x{}) exceeds the {MAX_TEMPLATE_AXIS}-block-per-axis limit — refusing to load",
+            "structure file's size ({}x{}x{}) exceeds the {MAX_TEMPLATE_AXIS}-block-per-axis limit \
+             — refusing to load. This is larger than anything Sojourner saves itself, so the file \
+             is likely corrupted or was hand-edited; re-export it instead of fixing it by hand.",
             dims.width, dims.height, dims.depth
         ));
     }
 
-    let Some(Value::List(palette)) = root_m.get("palette") else { return Err("structure file has no palette list".to_string()) };
+    let Some(Value::List(palette)) = root_m.get("palette") else {
+        return Err("structure file has no palette list — this doesn't look like a valid Structure \
+                     Block .nbt file; check you selected the right file.".to_string())
+    };
     let canon_palette: Vec<Value> = palette.iter().map(from_structure_palette_entry).collect();
 
-    let Some(Value::List(blocks_list)) = root_m.get("blocks") else { return Err("structure file has no blocks list".to_string()) };
+    let Some(Value::List(blocks_list)) = root_m.get("blocks") else {
+        return Err("structure file has no blocks list — this doesn't look like a valid Structure \
+                     Block .nbt file; check you selected the right file.".to_string())
+    };
     let mut blocks = HashMap::with_capacity(blocks_list.len());
     let mut block_entities = Vec::new();
     let mut out_of_bounds = 0usize;
@@ -222,7 +244,8 @@ pub fn save_structure_template(
     let src_world_dir = super::world_dir_of(&src_level_dat_path)?.to_string_lossy().to_string();
     let data_version = crate::nbt_reader::read_level_dat(&src_level_dat_path)?.data_version;
 
-    let (dims, blocks, block_entities, _source_air_assumed) = extract_box(&src_world_dir, &src_dimension, src_box);
+    let (dims, blocks, block_entities, _source_air_assumed) =
+        extract_box(&src_world_dir, &src_dimension, src_box, data_version)?;
     let root = build_structure_nbt(dims, &blocks, &block_entities, data_version);
 
     let raw = fastnbt::to_bytes(&root).map_err(|e| format!("Couldn't serialize structure NBT: {e}"))?;
@@ -238,6 +261,18 @@ pub fn save_structure_template(
 
 /// Loads `template_path`, rotates/mirrors it, and pastes it at `dst_origin`
 /// via the same `write_blocks_to_destination` pipeline `copy_blocks` uses.
+/// Reads + gunzips + parses a `.nbt` structure file into its raw `Value`
+/// tree — shared by `paste_structure_template` and `preview::render_template_preview`,
+/// neither of which needs anything beyond this before going their separate ways
+/// (version-checked paste vs. version-agnostic preview).
+pub(super) fn read_template_nbt(template_path: &str) -> super::Result<Value> {
+    let compressed = std::fs::read(template_path).map_err(|e| format!("Couldn't read {template_path}: {e}"))?;
+    let mut decoder = GzDecoder::new(&compressed[..]);
+    let mut raw = Vec::new();
+    decoder.read_to_end(&mut raw).map_err(|e| format!("Couldn't decompress {template_path} (not a valid gzip file?): {e}"))?;
+    fastnbt::from_bytes(&raw).map_err(|e| format!("Couldn't parse {template_path} as NBT: {e}"))
+}
+
 #[tauri::command]
 pub fn paste_structure_template(
     app: tauri::AppHandle,
@@ -247,14 +282,13 @@ pub fn paste_structure_template(
     dst_origin: (i32, i32, i32),
     rotation_deg: i32,
     mirror: Option<String>,
+    // See session_lock::acquire_write_guard_or_override's doc — the frontend
+    // only ever sets this after its own explicit user challenge.
+    override_live_lock: bool,
 ) -> super::Result<CopyBlocksReport> {
     let dst_world_dir = super::world_dir_of(&dst_level_dat_path)?.to_string_lossy().to_string();
 
-    let compressed = std::fs::read(&template_path).map_err(|e| format!("Couldn't read {template_path}: {e}"))?;
-    let mut decoder = GzDecoder::new(&compressed[..]);
-    let mut raw = Vec::new();
-    decoder.read_to_end(&mut raw).map_err(|e| format!("Couldn't decompress {template_path} (not a valid gzip file?): {e}"))?;
-    let root: Value = fastnbt::from_bytes(&raw).map_err(|e| format!("Couldn't parse {template_path} as NBT: {e}"))?;
+    let root = read_template_nbt(&template_path)?;
 
     // A byte-level write skips Minecraft's own data-fixer upgrade pipeline
     // (that only runs when the game loads an old structure file), so a
@@ -264,16 +298,24 @@ pub fn paste_structure_template(
     let template_version = match &root {
         Value::Compound(m) => match m.get("DataVersion") {
             Some(Value::Int(v)) => *v,
-            _ => return Err(format!("{template_path} has no DataVersion — not a structure file this app wrote?")),
+            _ => return Err(format!(
+                "{template_path} has no DataVersion — not a structure file this app wrote? \
+                 Select a .nbt file saved from Sojourner's \"Save as template…\" instead."
+            )),
         },
-        _ => return Err(format!("{template_path}: root is not a compound")),
+        _ => return Err(format!(
+            "{template_path}: root is not a compound — not a valid structure file; select a \
+             .nbt file saved from Sojourner's \"Save as template…\" instead."
+        )),
     };
     let dst_version = crate::nbt_reader::read_level_dat(&dst_level_dat_path)?.data_version;
     if template_version != dst_version {
         return Err(format!(
             "Template and destination world are different Minecraft versions \
              (DataVersion {template_version} vs {dst_version}) — refusing to paste \
-             across versions."
+             across versions. Open the destination world in a Minecraft client matching \
+             DataVersion {template_version} first, or re-save this template from a source \
+             world that's on DataVersion {dst_version}."
         ));
     }
 
@@ -286,7 +328,7 @@ pub fn paste_structure_template(
 
     write_blocks_to_destination(
         &app, &dst_world_dir, &dst_dimension, dst_origin, out_dims,
-        transformed_blocks, transformed_block_entities,
+        transformed_blocks, transformed_block_entities, dst_version, override_live_lock,
     )
 }
 
@@ -320,7 +362,10 @@ mod tests {
 
         let Value::Compound(root_m) = &root else { panic!() };
         assert_eq!(root_m.get("author"), Some(&Value::String("Sojourner".to_string())));
-        assert!(root_m.contains_key("DataVersion"));
+        let template_version = match root_m.get("DataVersion") {
+            Some(Value::Int(v)) => *v,
+            _ => panic!("no DataVersion in saved template"),
+        };
 
         let (dims, blocks, _block_entities) = parse_structure_nbt(&root).expect("parse_structure_nbt failed");
         assert_eq!((dims.width, dims.height, dims.depth), (50, 125, 18));
@@ -328,7 +373,8 @@ mod tests {
 
         // Re-extract the box live and confirm it matches the reparsed file exactly.
         let src_world_dir = "/home/user/.minecraft/saves/Sunflower Plains".to_string();
-        let (live_dims, live_blocks, _live_be, _air) = extract_box(&src_world_dir, "overworld", src_box);
+        let (live_dims, live_blocks, _live_be, _air) =
+            extract_box(&src_world_dir, "overworld", src_box, template_version).expect("extract_box failed");
         assert_eq!((live_dims.width, live_dims.height, live_dims.depth), (dims.width, dims.height, dims.depth));
 
         let mut mismatches = 0usize;

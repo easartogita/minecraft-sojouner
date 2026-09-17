@@ -547,20 +547,15 @@ fn extract_entity(e: &HashMap<String, Value>) -> Option<GameEntity> {
     }
 
     if kind == "item_frame" || kind == "glow_item_frame" {
-        let item_m = e.get("Item").and_then(cmp)?;
         let item = parse_entity_item(e.get("Item"))?;
         if item.id.is_empty() || item.id == "air" { return None; }
         entity.frame_item = Some(item.id.clone());
         entity.frame_item_enchantment = item.enchantment.clone();
-        entity.frame_rotation = {
-            let r = match e.get("ItemRotation") {
-                Some(Value::Byte(n)) => *n as i32,
-                Some(Value::Int(n)) => *n,
-                _ => 0,
-            };
-            Some(r)
-        };
-        let _ = item_m;
+        entity.frame_rotation = Some(match e.get("ItemRotation") {
+            Some(Value::Byte(n)) => *n as i32,
+            Some(Value::Int(n)) => *n,
+            _ => 0,
+        });
         return Some(entity);
     }
 

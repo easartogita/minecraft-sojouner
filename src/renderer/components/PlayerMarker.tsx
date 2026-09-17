@@ -53,8 +53,6 @@ function blockDiscOutline(cx: number, cz: number, r: number): L.LatLngExpression
   return pts
 }
 
-// A ridden mount is stored on the player (RootVehicle), not in the region
-// files, so its own marker vanishes — these surface it on the player marker.
 function titleCase(id: string): string {
   return id.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
 }

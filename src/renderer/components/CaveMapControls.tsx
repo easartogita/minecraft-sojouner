@@ -24,36 +24,17 @@ function ZoomStepper({ zoom, min, max, onChange }: { zoom: number; min: number; 
   )
 }
 
-// Row of named Y-band quick picks — the static-export stand-in for the live gauge, which
-// has no track to size these against. Live renders the same idea in-scale via YRangeGauge's
-// `presets` prop.
-function PresetRow({
-  presets, low, high, active, onSelect,
-}: { presets: CaveRangePreset[]; low: number; high: number; active: boolean; onSelect: (p: CaveRangePreset) => void }) {
-  if (presets.length === 0) return null
-  return (
-    <div className="cmc-preset-list">
-      {presets.map(p => (
-        <button key={p.id}
-          className={`biome-mode-option${active && p.low === low && p.high === high ? ' active' : ''}`}
-          onClick={() => onSelect(p)}>
-          {p.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 // Floating depth gauge for Chunk Data cave mode.
 //
 // Live app: the shared YRangeGauge, whose window follows or freezes relative to a real
 // player Y. Clicking a preset unlocks from the player (anchorY 0) and sets
 // caveScanLow/High to its bounds directly, then the gauge is free to fine-tune from there.
 //
-// Static export: no live player position to lock to, so this renders only the preset
-// picker, over the fixed Y-ranges baked into the bundle for the current dimension —
-// anything else resolves to a blank tile (tauriAPI.static.ts's renderTile matches
-// caveScanLow/High against a preset exactly).
+// Static export: no live player position to lock to and no backend to render an arbitrary
+// window, so this renders the same gauge (anchorY pinned to 0) with dragging switched off —
+// only the preset swatches can move the window, over the fixed Y-ranges baked into the
+// bundle for the current dimension (tauriAPI.static.ts's renderTile matches caveScanLow/High
+// against a preset exactly; anything else resolves to a blank tile).
 export default function CaveMapControls() {
   const { state, dispatch, mapRef } = useApp()
 
@@ -110,11 +91,15 @@ export default function CaveMapControls() {
   if (api.IS_STATIC_SITE) {
     return (
       <div className="cave-map-controls" onMouseDown={e => e.stopPropagation()}>
-        <div className="yg-header">
-          <ZoomStepper zoom={zoom} min={caveMin} max={caveMax} onChange={setZoom} />
-        </div>
-        <PresetRow presets={presets} low={caveScanLow} high={caveScanHigh} active
-          onSelect={p => dispatch({ type: 'SET_CAVE_SCAN_RANGE', low: p.low, high: p.high })} />
+        <YRangeGauge
+          anchorY={anchorY} low={caveScanLow} high={caveScanHigh}
+          playerY={playerY} draggable={false} snap={10}
+          yMin={yMin} yMax={yMax}
+          onRangeChange={() => {}}
+          headerExtra={<ZoomStepper zoom={zoom} min={caveMin} max={caveMax} onChange={setZoom} />}
+          presets={presets}
+          onPresetSelect={p => dispatch({ type: 'SET_CAVE_SCAN_RANGE', low: p.low, high: p.high })}
+        />
       </div>
     )
   }

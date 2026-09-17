@@ -8,7 +8,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 8 {
         eprintln!(
-            "Usage: {} <template.nbt> <dst level.dat> <dimension> <dst_x> <dst_y> <dst_z> <rotation> [mirror: x|z]",
+            "Usage: {} <template.nbt> <dst level.dat> <dimension> <dst_x> <dst_y> <dst_z> <rotation> [mirror: x|z] [--override-live-lock]",
             args[0]
         );
         std::process::exit(1);
@@ -19,7 +19,8 @@ fn main() {
     let n = |i: usize| args[i].parse::<i32>().unwrap_or_else(|e| panic!("bad integer argument {:?}: {e}", args[i]));
     let dst_origin = (n(4), n(5), n(6));
     let rotation = n(7);
-    let mirror = args.get(8).cloned();
+    let override_live_lock = args.iter().any(|a| a == "--override-live-lock");
+    let mirror = args.get(8).filter(|a| a.as_str() != "--override-live-lock").cloned();
 
     let app = tauri::Builder::default()
         .build(tauri::generate_context!())
@@ -29,6 +30,7 @@ fn main() {
     let start = std::time::Instant::now();
     let result = sojourner_lib::structure_copy::templates::paste_structure_template(
         handle, template_path, dst_level_dat_path, dst_dimension, dst_origin, rotation, mirror,
+        override_live_lock,
     );
     let elapsed = start.elapsed();
 

@@ -46,7 +46,6 @@ function RulerLayer({ map, mouseCoords }: {
     }
   }, [map])
 
-  // Redraw waypoints, polyline, and per-leg labels
   useEffect(() => {
     const group = groupRef.current
     if (!group) return
@@ -106,7 +105,6 @@ function RulerLayer({ map, mouseCoords }: {
       }
     }
 
-    // Numbered waypoint markers
     wps.forEach((w, i) => {
       L.marker(toLatLng(w.x, w.z), {
         icon: L.divIcon({
@@ -121,7 +119,6 @@ function RulerLayer({ map, mouseCoords }: {
     })
   }, [state.rulerWaypoints, state.rulerLegModes, legSegments])
 
-  // Ghost line from last waypoint to cursor
   useEffect(() => {
     const ghost = ghostRef.current
     const casing = ghostCasingRef.current

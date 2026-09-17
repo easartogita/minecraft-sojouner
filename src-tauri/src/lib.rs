@@ -15,6 +15,7 @@ mod static_site_assets;
 // Still fully compiled out of release builds either way.
 #[cfg(debug_assertions)]
 pub mod structure_copy;
+mod tile_pyramid;
 mod tile_renderer;
 
 use bedrock::leveldb::LdbDatabase;
@@ -60,11 +61,6 @@ impl BedrockDbCache {
         guard.as_ref()
             .filter(|(dir, _)| dir == world_dir)
             .map(|(_, db)| db.clone())
-    }
-
-    #[allow(dead_code)]
-    fn close(&self) {
-        *self.0.lock().unwrap() = None;
     }
 }
 
@@ -254,7 +250,6 @@ fn list_saves_worlds() -> Vec<SavesWorldEntry> {
     }
     worlds.sort_by(|a, b| b.modified_secs.cmp(&a.modified_secs));
     worlds
-    // Deduplicate by path in case dirs overlap on unusual setups
 }
 
 #[tauri::command]
@@ -400,23 +395,20 @@ async fn render_tile(
         let dim2 = dimension.clone();
 
         let _ = permit; // release permit — blocking work is below on current thread
-        let result = {
-            let ldb_result = db_cache.with(&world_dir, |db| {
-                tile_renderer::get_or_render_tile(
-                    &cache_root,
-                    &world_dir2,
-                    &dim2,
-                    tile_x, tile_y, zoom,
-                    hide_water, cave_y, cave_scan_low, cave_scan_high,
-                    false, // Bedrock LevelDB reads are atomic — never torn, no retry needed.
-                    |_, _, _, _| bedrock::chunk_reader::max_ldb_mtime(&world_dir2),
-                    |reqs| bedrock::chunk_reader::read_bedrock_chunk_colors(
-                        db, &dim2, reqs, hide_water, cave_y, cave_scan_low, cave_scan_high,
-                    ),
-                )
-            });
-            ldb_result
-        };
+        let result = db_cache.with(&world_dir, |db| {
+            tile_renderer::get_or_render_tile(
+                &cache_root,
+                &world_dir2,
+                &dim2,
+                tile_x, tile_y, zoom,
+                hide_water, cave_y, cave_scan_low, cave_scan_high,
+                false, // Bedrock LevelDB reads are atomic — never torn, no retry needed.
+                |_, _, _, _| bedrock::chunk_reader::max_ldb_mtime(&world_dir2),
+                |reqs| bedrock::chunk_reader::read_bedrock_chunk_colors(
+                    db, &dim2, reqs, hide_water, cave_y, cave_scan_low, cave_scan_high,
+                ),
+            )
+        });
         Ok(result.flatten().map(|(path, mtime, _torn)| (path, mtime)))
     } else {
         // A torn .mca read self-heals once the file settles, but accepting it as-is
@@ -812,6 +804,12 @@ pub fn run() {
             structure_copy::templates::save_structure_template,
             #[cfg(debug_assertions)]
             structure_copy::templates::paste_structure_template,
+            #[cfg(debug_assertions)]
+            structure_copy::preview::preview_box_selection,
+            #[cfg(debug_assertions)]
+            structure_copy::preview::preview_template,
+            #[cfg(debug_assertions)]
+            structure_copy::preview::preview_chunk_selection,
             #[cfg(debug_assertions)]
             select_template_save_path,
             #[cfg(debug_assertions)]

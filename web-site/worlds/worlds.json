@@ -1,5 +1,7 @@
 {
   "263s9": "Small, early-game save · quick to load, easy to get your bearings — every layer this app can render, kept simple",
   "bad-land": "A long-running survival world · 6,300+ structures, 28,000+ chests, and 690+ villagers found — what the map looks like once you've actually lived in it",
-  "large-biome": "A real save on a non-default world type · Large Biomes shifts structure spacing and biome scale from the default — this lets you check cubiomes' predictions against what actually generated, not just trust a seed-only guess"
+  "large-biome": "A real save on a non-default world type · Large Biomes shifts structure spacing and biome scale from the default — this lets you check cubiomes' predictions against what actually generated, not just trust a seed-only guess",
+  "Mansion": "Built out around a Woodland Mansion · a good test of structure markers and interior block-entity/loot data on a landmark that sprawls across many chunks",
+  "Chickenfeet": "Another real survival save · a second data point alongside Bad Land for chest loot, entities, and POI density on a default-type world"
 }

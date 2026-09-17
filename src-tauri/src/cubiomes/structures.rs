@@ -310,12 +310,16 @@ pub fn find_all_structures_cached(
         }
     }
 
-    // Region-based structures: tile cache with ±1 tile margin
+    // Region-based structures: tile cache with ±1 tile margin. No cap on the
+    // tile count here — every tile is independently disk-cached (cheap after
+    // the first computation), so a large box just means more tiles processed,
+    // never silently incomplete results. A caller wanting a huge area (the
+    // static exporter routinely does) gets a correct, if slower, answer
+    // instead of having to know about and pre-batch around an internal limit.
     let tx0 = bx0.div_euclid(STRUCT_TILE_BLOCKS) - 1;
     let tz0 = bz0.div_euclid(STRUCT_TILE_BLOCKS) - 1;
     let tx1 = bx1.div_euclid(STRUCT_TILE_BLOCKS) + 1;
     let tz1 = bz1.div_euclid(STRUCT_TILE_BLOCKS) + 1;
-    if (tx1 - tx0 + 1).saturating_mul(tz1 - tz0 + 1) > 512 { return hits; }
 
     for tx in tx0..=tx1 {
         for tz in tz0..=tz1 {

@@ -92,6 +92,25 @@ export function useTileLayer({
 
     let stale = false
 
+    // A straggling fetch (resolves after its canvas was swapped out, e.g. by a zoom
+    // change) still needs its data on screen if the map slot it belongs to is still
+    // showing. layer.redraw() used to handle this by discarding and recreating every
+    // visible tile — but a zoom disconnects a whole batch of canvases at once, so
+    // their fetches tend to resolve in a tight burst, and redraw() tearing down the
+    // whole layer once per straggler is exactly what reads as flicker (confirmed by
+    // disabling it: the same repro that flickered with it enabled loads cleanly
+    // without it). Repainting just the one current tile at this coordinate — reaching
+    // into GridLayer's own tile registry, the only way to reach a specific tile
+    // in place — gets the data on screen without touching anything else.
+    const repaintIfCurrent = (coords: L.Coords, imageData: ImageData) => {
+      const key = (layer as any)._tileCoordsToKey(coords)
+      const entry = (layer as any)._tiles?.[key]
+      if (!entry?.current) return
+      const el = entry.el as HTMLCanvasElement | undefined
+      if (!el?.isConnected) return
+      el.getContext('2d')?.putImageData(imageData, 0, 0)
+    }
+
     const GridLayerClass = L.GridLayer.extend({
       _initTile(tile: HTMLElement) {
         (L.GridLayer.prototype as any)._initTile.call(this, tile)
@@ -160,11 +179,11 @@ export function useTileLayer({
             const centre = map.project(map.getCenter(), nativeZoom)
             const dx = parentX + 0.5 - centre.x / tileSize
             const dy = parentY + 0.5 - centre.y / tileSize
-            const job = queue.enqueue(dx * dx + dy * dy, () => {
-              if (!canvas.isConnected || stale) { queue.release(); done(undefined, canvas); return }
+            const job = queue.enqueue(dx * dx + dy * dy, j => {
+              if (!canvas.isConnected || stale) { queue.release(j); done(undefined, canvas); return }
               fetch(parentCoords)
                 .then(async parent => {
-                  queue.release()
+                  queue.release(j)
                   if (!parent) { done(undefined, canvas); return }
                   const imageData = typeof parent === 'string'
                     ? await urlToImageData(parent, tileSize)
@@ -172,7 +191,7 @@ export function useTileLayer({
                   if (parentKey && cache) { cache.set(parentKey, imageData); evictCache(cache, maxCacheRef.current) }
                   applyScale(imageData)
                 })
-                .catch(() => { queue.release(); if (!stale) done(undefined, canvas) })
+                .catch(() => { queue.release(j); if (!stale) done(undefined, canvas) })
             })
             ;(canvas as any)._tileJob = job
           })
@@ -186,9 +205,9 @@ export function useTileLayer({
           const priority = dx * dx + dy * dy
 
           const controller = new AbortController()
-          const job = queue.enqueue(priority, () => {
+          const job = queue.enqueue(priority, j => {
             if (!canvas.isConnected || stale) {
-              queue.release(); done(undefined, canvas); return
+              queue.release(j); done(undefined, canvas); return
             }
 
             // Reveal the canvas and start the animation; putImageData below updates
@@ -216,7 +235,7 @@ export function useTileLayer({
                 animating = false
                 const connected = !stale && canvas.isConnected
                 if (!result) {
-                  queue.release()
+                  queue.release(j)
                   if (connected) ctx.clearRect(0, 0, tileSize, tileSize)
                   if (!loadingAnimation) done(undefined, canvas)
                   return
@@ -227,32 +246,31 @@ export function useTileLayer({
                   // getImageData throws — which would wedge the tile forever.
                   urlToImageData(result, tileSize)
                     .then(imageData => {
-                      queue.release()
+                      queue.release(j)
                       if (cacheKey && cache) {
                         cache.set(cacheKey, imageData)
                         evictCache(cache, maxCacheRef.current)
                       }
                       if (!connected) {
                         if (!loadingAnimation) done(undefined, canvas)
-                        // Canvas is gone but the data landed in cache — redraw()
-                        // makes Leaflet re-request visible tiles, which hit
-                        // createTile's cache-fast-path and repaint synchronously
-                        // (no network round-trip). Without this a tile that
-                        // resolves after its canvas is swapped stays blank.
-                        if (!stale) layer.redraw()
+                        // Canvas is gone but the data landed in cache — repaint
+                        // whatever tile currently occupies this coordinate in place.
+                        // Without this a tile that resolves after its canvas is
+                        // swapped stays blank.
+                        repaintIfCurrent(coords, imageData)
                         return
                       }
                       ctx.putImageData(imageData, 0, 0)
                       if (!loadingAnimation) done(undefined, canvas)
                     })
                     .catch(() => {
-                      queue.release()
+                      queue.release(j)
                       if (connected) ctx.clearRect(0, 0, tileSize, tileSize)
                       if (!loadingAnimation) done(undefined, canvas)
                     })
                   return
                 }
-                queue.release()
+                queue.release(j)
                 if (cacheKey && cache) {
                   cache.set(cacheKey, result)
                   evictCache(cache, maxCacheRef.current)
@@ -260,7 +278,7 @@ export function useTileLayer({
                 if (!connected) {
                   if (!loadingAnimation) done(undefined, canvas)
                   // See the matching comment in the urlToImageData branch above.
-                  if (!stale) layer.redraw()
+                  repaintIfCurrent(coords, result)
                   return
                 }
                 ctx.putImageData(result, 0, 0)
@@ -268,7 +286,7 @@ export function useTileLayer({
               })
               .catch(err => {
                 animating = false
-                queue.release()
+                queue.release(j)
                 if (stale) { if (!loadingAnimation) done(undefined, canvas); return }
                 if (!loadingAnimation) done(err as Error, canvas)
               })

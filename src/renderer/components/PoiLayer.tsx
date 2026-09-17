@@ -16,9 +16,16 @@ let _stats: LayerStats = makeLayerStats()
 export function getPoiLayerStats(): LayerStats { return { ..._stats } }
 export function resetPoiLayerStats(): void { _stats = makeLayerStats() }
 
-// Single-slot queue purely so an in-flight load shows up in TileLoadingHud/DebugOverlay
-// via the same registerOverlay mechanism the tile-queue layers use.
-const loadQueue = new TileJobQueue(1, () => tileStats.notify(), 'poi')
+// Queue purely so an in-flight load shows up in TileLoadingHud/DebugOverlay via the
+// same registerOverlay mechanism the tile-queue layers use — chunkMarkerLayer's `load`
+// starts the real fetch itself, so this queue's job is only a bookkeeping token and a
+// capped maxActive gates nothing real. It must stay uncapped: with a no-op `run`, a
+// capped queue lets a job's real work finish and release() *before* drain() ever
+// promotes it out of the pending array (see BlockEntityLayer.tsx's loadQueue for the
+// full race) — that job then gets promoted later with no real work left to release it,
+// permanently occupying an "active" slot. Uncapped means every job promotes immediately,
+// so promotion and completion can never race.
+const loadQueue = new TileJobQueue(Infinity, () => tileStats.notify(), 'poi')
 tileStats.registerOverlay({ key: 'poi', label: 'POI', className: 'poi', queues: [loadQueue], caches: [] })
 
 function PoiLayer({ map }: { map: L.Map }) {

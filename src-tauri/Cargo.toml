@@ -1,6 +1,6 @@
 [package]
 name = "sojourner"
-version = "26.3.0-snapshot.8"
+version = "2.4.2+MC26.3"
 edition = "2021"
 default-run = "sojourner"
 
@@ -24,6 +24,7 @@ flate2 = "1"
 lru = "0.12"
 png = "0.17"
 tiff = "0.9"
+base64 = "0.22"
 notify-debouncer-mini = "0.4"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros"] }
 rust-embed = "8"

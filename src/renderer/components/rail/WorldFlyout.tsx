@@ -145,8 +145,6 @@ export default function WorldFlyout() {
     ? Math.round(pregenProgress.done / pregenProgress.total * 100)
     : 0
 
-  // Export TIFF
-
   const dimension = state.dimension
   const exportSeed = state.seedData?.seed != null ? BigInt(state.seedData.seed) : null
   const mcVersion = MC_VERSIONS[state.selectedVersion]
@@ -222,8 +220,6 @@ export default function WorldFlyout() {
   }, [exporting])
 
   const exportEst = exportEstimate()
-
-  // Export as static website
 
   const [siteSectionOpen, setSiteSectionOpen] = useState(false)
   const [siteDimensions, setSiteDimensions] = useState<Set<string>>(new Set(SITE_EXPORT_DIMENSIONS))

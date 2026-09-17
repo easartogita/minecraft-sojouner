@@ -395,6 +395,10 @@ pub fn get_or_render_tile(
 
     // ── Pixel loop ───────────────────────────────────────────────────────────
     let mut pixels = vec![0u8; TILE_SIZE * TILE_SIZE * 4];
+    // Low-zoom branch only: per-column averaged height from the row above, so
+    // that branch can do the same north-neighbour shade comparison as the
+    // high-zoom branch despite each pixel covering many blocks, not one.
+    let mut prev_row_avg_y: Vec<Option<f64>> = vec![None; TILE_SIZE];
 
     for py in 0..TILE_SIZE {
         for px in 0..TILE_SIZE {
@@ -423,7 +427,8 @@ pub fn get_or_render_tile(
                 let b0 = cc[i + 2] as f64;
                 let y_here = cc[i + 3] as i32 - 64;
 
-                // North neighbour Y (block above in Z)
+                // North neighbour Y (block above in Z) — the only neighbour vanilla's
+                // own map-item shading compares against, see mojang_shade's doc comment.
                 let y_north = if lz > 0 {
                     cc[((lz - 1) * CHUNK + lx) * 4 + 3] as i32 - 64
                 } else {
@@ -432,19 +437,7 @@ pub fn get_or_render_tile(
                         .unwrap_or(y_here)
                 };
 
-                // West neighbour Y (block left in X)
-                let y_west = if lx > 0 {
-                    cc[(lz * CHUNK + (lx - 1)) * 4 + 3] as i32 - 64
-                } else {
-                    chunk_map.get(&(cx - 1, cz))
-                        .map(|wc| wc[(lz * CHUNK + 15) * 4 + 3] as i32 - 64)
-                        .unwrap_or(y_here)
-                };
-
-                let alt_f = 0.75 + 0.42 * ((y_here + 64) as f64 / 280.0).clamp(0.0, 1.0);
-                let dy    = (y_here - y_north) + (y_here - y_west);
-                let hill_f = (1.0 - dy as f64 * 0.09).clamp(0.65, 1.25);
-                let f = alt_f * hill_f;
+                let f = crate::tile_pyramid::mojang_shade(y_here as f64, y_north as f64);
 
                 ((r0 * f).round().min(255.0) as u8,
                  (g0 * f).round().min(255.0) as u8,
@@ -491,12 +484,13 @@ pub fn get_or_render_tile(
                 let r0 = (sr / cnt) as f64;
                 let g0 = (sg / cnt) as f64;
                 let b0 = (sb / cnt) as f64;
-                let avg_y = (sh / cnt) as i32 - 64;
-                let alt_f = 0.75 + 0.42 * ((avg_y + 64) as f64 / 280.0).clamp(0.0, 1.0);
+                let avg_y = ((sh / cnt) as i32 - 64) as f64;
+                let f = crate::tile_pyramid::mojang_shade(avg_y, prev_row_avg_y[px].unwrap_or(avg_y));
+                prev_row_avg_y[px] = Some(avg_y);
 
-                ((r0 * alt_f).round().min(255.0) as u8,
-                 (g0 * alt_f).round().min(255.0) as u8,
-                 (b0 * alt_f).round().min(255.0) as u8)
+                ((r0 * f).round().min(255.0) as u8,
+                 (g0 * f).round().min(255.0) as u8,
+                 (b0 * f).round().min(255.0) as u8)
             };
 
             pixels[idx] = r; pixels[idx + 1] = g; pixels[idx + 2] = b; pixels[idx + 3] = 255;
@@ -775,11 +769,7 @@ pub fn render_biome_tile(
                     .min(h_qw - 1);
                 let y       = h[hz * h_qw + hx];
                 let y_north = h[(hz - 1) * h_qw + hx];
-                let y_west  = h[hz * h_qw + (hx - 1)];
-                let alt_f   = 0.75 + 0.42 * (y / 280.0).clamp(0.0, 1.0);
-                let dy      = (y - y_north) + (y - y_west);
-                let hill_f  = (1.0 - dy * 0.09).clamp(0.65, 1.25);
-                let shade   = alt_f * hill_f;
+                let shade   = crate::tile_pyramid::mojang_shade(y as f64, y_north as f64) as f32;
                 r = (r as f32 * shade).round().min(255.0) as u8;
                 g = (g as f32 * shade).round().min(255.0) as u8;
                 b = (b as f32 * shade).round().min(255.0) as u8;
@@ -1018,6 +1008,7 @@ fn render_region_to_buf(
     }
 
     // Pixel fill with hillshading (same logic as get_or_render_tile at 1px/block)
+    let mut prev_row_avg_y: Vec<Option<f64>> = vec![None; px];
     for py in 0..px {
         for pxx in 0..px {
             let bx = block_x0 as f64 + pxx as f64 * blocks_per_pixel;
@@ -1036,11 +1027,7 @@ fn render_region_to_buf(
                 let y_here = cc[i + 3] as i32 - 64;
                 let y_north = if lz > 0 { cc[((lz-1)*CHUNK+lx)*4+3] as i32 - 64 }
                     else { chunk_map.get(&(cx, cz-1)).map(|nc| nc[(15*CHUNK+lx)*4+3] as i32 - 64).unwrap_or(y_here) };
-                let y_west  = if lx > 0 { cc[(lz*CHUNK+(lx-1))*4+3] as i32 - 64 }
-                    else { chunk_map.get(&(cx-1, cz)).map(|wc| wc[(lz*CHUNK+15)*4+3] as i32 - 64).unwrap_or(y_here) };
-                let alt_f  = 0.75 + 0.42 * ((y_here + 64) as f64 / 280.0).clamp(0.0, 1.0);
-                let hill_f = (1.0 - ((y_here-y_north)+(y_here-y_west)) as f64 * 0.09).clamp(0.65, 1.25);
-                let f = alt_f * hill_f;
+                let f = crate::tile_pyramid::mojang_shade(y_here as f64, y_north as f64);
                 ((r0*f).round().min(255.0) as u8, (g0*f).round().min(255.0) as u8, (b0*f).round().min(255.0) as u8)
             } else {
                 let step = ((blocks_per_pixel / 4.0).round() as usize).max(1);
@@ -1065,9 +1052,10 @@ fn render_region_to_buf(
                 }
                 if cnt == 0 { continue; }
                 let r0=(sr/cnt) as f64; let g0=(sg/cnt) as f64; let b0=(sb/cnt) as f64;
-                let avg_y=(sh/cnt) as i32 - 64;
-                let alt_f = 0.75 + 0.42 * ((avg_y+64) as f64 / 280.0).clamp(0.0,1.0);
-                ((r0*alt_f).round().min(255.0) as u8, (g0*alt_f).round().min(255.0) as u8, (b0*alt_f).round().min(255.0) as u8)
+                let avg_y = ((sh/cnt) as i32 - 64) as f64;
+                let f = crate::tile_pyramid::mojang_shade(avg_y, prev_row_avg_y[pxx].unwrap_or(avg_y));
+                prev_row_avg_y[pxx] = Some(avg_y);
+                ((r0*f).round().min(255.0) as u8, (g0*f).round().min(255.0) as u8, (b0*f).round().min(255.0) as u8)
             };
 
             out[idx]=r; out[idx+1]=g; out[idx+2]=b; out[idx+3]=255;

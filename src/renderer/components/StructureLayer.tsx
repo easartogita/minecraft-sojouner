@@ -13,9 +13,16 @@ import * as api from '../lib/tauriAPI'
 import { TileJobQueue } from '../lib/tileJobQueue'
 import * as tileStats from '../lib/tileStats'
 
-// Single-slot "queue" purely so an in-flight scan shows up in TileLoadingHud /
-// DebugOverlay via the same registerOverlay mechanism the tile-queue layers use.
-const loadQueue = new TileJobQueue(1, () => tileStats.notify(), 'structure')
+// Queue purely so an in-flight scan shows up in TileLoadingHud/DebugOverlay via the
+// same registerOverlay mechanism the tile-queue layers use — runUpdateStructures below
+// starts the real scan itself, so this queue's job is only a bookkeeping token and a
+// capped maxActive gates nothing real. It must stay uncapped: with a no-op `run`, a
+// capped queue lets a job's real work finish and release() *before* drain() ever
+// promotes it out of the pending array (see BlockEntityLayer.tsx's loadQueue for the
+// full race) — that job then gets promoted later with no real work left to release it,
+// permanently occupying an "active" slot. Uncapped means every job promotes immediately,
+// so promotion and completion can never race.
+const loadQueue = new TileJobQueue(Infinity, () => tileStats.notify(), 'structure')
 tileStats.registerOverlay({ key: 'structure', label: 'Structures', className: 'structure', queues: [loadQueue], caches: [] })
 
 // Module-level stats, read by DebugOverlay.
@@ -616,9 +623,9 @@ function StructureLayer({ map, slot }: { map: L.Map; slot: number | null }) {
     }
 
     const runUpdateStructures = () => {
+      const job = loadQueue.enqueue(0, () => {})
       let released = false
-      const release = () => { if (!released) { released = true; loadQueue.release() } }
-      loadQueue.enqueue(0, () => {})
+      const release = () => { if (!released) { released = true; loadQueue.release(job) } }
       updateStructures().finally(release)
     }
 

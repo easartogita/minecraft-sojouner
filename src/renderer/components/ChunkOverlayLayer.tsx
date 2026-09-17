@@ -196,10 +196,10 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
         const centre = map.project(map.getCenter(), renderZ)
         const dx = rx + 0.5 - centre.x / activeTileSize()
         const dy = ry + 0.5 - centre.y / activeTileSize()
-        queue.enqueue(dx * dx + dy * dy, () => {
+        queue.enqueue(dx * dx + dy * dy, j => {
           api.renderTile(worldDir, edition, dimension, rx, ry, renderZ, hideWater, caveY, caveScanLow, caveScanHigh)
             .then(async rt => {
-              queue.release()
+              queue.release(j)
               if (!rt) return
               const parentData = await loadTileImageData(rt.path, rt.mtime)
               if (!parentData) return
@@ -220,7 +220,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
               }
               if (!unlimitedCacheRef.current) evictCache(tileCache, MAX_CACHE)
             })
-            .catch(() => queue.release())
+            .catch(() => queue.release(j))
         })
       }
     })
@@ -277,13 +277,13 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
       const centre = map.project(map.getCenter(), renderZ)
       const dx = rx + 0.5 - centre.x / activeTileSize()
       const dy = ry + 0.5 - centre.y / activeTileSize()
-      queue.enqueue(dx * dx + dy * dy, () => {
-        if (stale || !canvas.isConnected) { queue.release(); return }
+      queue.enqueue(dx * dx + dy * dy, j => {
+        if (stale || !canvas.isConnected) { queue.release(j); return }
         api.renderTile(
           capturedWorldDir, capturedEdition, capturedDimension,
           rx, ry, renderZ, capturedHideWater, capturedCaveY, capturedCaveScanLow, capturedCaveScanHigh,
         ).then(async rt => {
-          queue.release()
+          queue.release(j)
           if (stale || !rt || !canvas.isConnected) return
           const parentData = await loadTileImageData(rt.path, rt.mtime)
           if (stale || !parentData || !canvas.isConnected) return
@@ -299,7 +299,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
           ctx.putImageData(imageData, 0, 0)
           tileCache.set(key, { data: imageData, mtime: rt.mtime })
           if (!capturedUnlimitedCache) evictCache(tileCache, MAX_CACHE)
-        }).catch(() => queue.release())
+        }).catch(() => queue.release(j))
       })
     }
 
@@ -379,8 +379,8 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
             const centre = map.project(map.getCenter(), CHUNK_NATIVE_ZOOM)
             const dx = parentX + 0.5 - centre.x / activeTileSize()
             const dy = parentY + 0.5 - centre.y / activeTileSize()
-            const job = queue.enqueue(dx * dx + dy * dy, () => {
-              if (!canvas.isConnected || stale) { queue.release(); done(undefined, canvas); return }
+            const job = queue.enqueue(dx * dx + dy * dy, j => {
+              if (!canvas.isConnected || stale) { queue.release(j); done(undefined, canvas); return }
               if (!stale) tileStats.mcaLoadingStart()
               const t0 = performance.now()
               api.renderTile(
@@ -389,7 +389,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
                 capturedHideWater, capturedCaveY,
                 capturedCaveScanLow, capturedCaveScanHigh
               ).then(async rt => {
-                queue.release()
+                queue.release(j)
                 if (stale) { done(undefined, canvas); return }
                 if (!rt) { tileStats.mcaLoadingDone(Math.round(performance.now() - t0)); done(undefined, canvas); return }
                 const parentData = await loadTileImageData(rt.path, rt.mtime)
@@ -399,7 +399,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
                 if (!capturedUnlimitedCache) evictCache(tileCache, MAX_CACHE)
                 applyScale(parentData, rt.mtime)
               }).catch(err => {
-                queue.release()
+                queue.release(j)
                 if (stale) { done(undefined, canvas); return }
                 tileStats.mcaLoadingDone(Math.round(performance.now() - t0))
                 console.error('Chunk tile render error:', err)
@@ -421,8 +421,8 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
         const dy = coords.y + 0.5 - centre.y / activeTileSize()
         const priority = dx * dx + dy * dy
 
-        const job = queue.enqueue(priority, () => {
-          if (!canvas.isConnected || stale) { queue.release(); done(undefined, canvas); return }
+        const job = queue.enqueue(priority, j => {
+          if (!canvas.isConnected || stale) { queue.release(j); done(undefined, canvas); return }
 
           if (!stale) tileStats.mcaLoadingStart()
           const t0 = performance.now()
@@ -432,7 +432,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
             capturedHideWater, capturedCaveY,
             capturedCaveScanLow, capturedCaveScanHigh
           ).then(async rt => {
-            queue.release()
+            queue.release(j)
             if (stale) { done(undefined, canvas); return }
             if (!rt || !canvas.isConnected) { tileStats.mcaLoadingDone(Math.round(performance.now() - t0)); done(undefined, canvas); return }
             const imageData = await loadTileImageData(rt.path, rt.mtime)
@@ -443,7 +443,7 @@ function ChunkOverlayLayer({ map, unlimitedCache = false }: { map: L.Map; unlimi
             if (!capturedUnlimitedCache) evictCache(tileCache, MAX_CACHE)
             done(undefined, canvas)
           }).catch(err => {
-            queue.release()
+            queue.release(j)
             if (stale) { done(undefined, canvas); return }
             tileStats.mcaLoadingDone(Math.round(performance.now() - t0))
             console.error('Chunk tile render error:', err)

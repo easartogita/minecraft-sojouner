@@ -91,6 +91,14 @@ strategy exists — see `TODO_MCA_WRITE_EDITING.md`.
 - [ ] **Migrate Route Planner into the right rail** — `RightRail.tsx` currently
   hosts only the Structure Copy flyout; folding `RulerPanel.tsx` in is a recommended
   fast-follow now that the right rail exists.
+- [x] ~~`force_relight_chunks` has no UI~~ — superseded: `copy_chunks` and
+  `write_blocks_to_destination` now call it automatically after every write
+  (`relight_ring_around`, 1-chunk ring — see its doc for why 1 chunk covers every
+  vanilla light source). `force_relight_chunks` itself is still only reachable via
+  `relight_chunks_cli`, for the rarer case of fixing a seam left by a copy done
+  before this existed, or relighting a footprint wider than the automatic 1-chunk
+  ring — a UI button for that manual case is still a fair fast-follow, just no
+  longer the common-case gap.
 
 ---
 

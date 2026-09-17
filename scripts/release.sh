@@ -14,8 +14,11 @@ DOWNLOADS=web-site/downloads
 INDEX=web-site/index.html
 VERSION=$(node -p "require('./package.json').version")
 
-# The version currently linked from the site is what we're replacing.
-OLD_VERSION=$(grep -oE '26\.3\.0-snapshot\.[0-9]+' "$INDEX" | head -1 || true)
+# The version currently linked from the site is what we're replacing --
+# read it straight out of the first (== "current") release entry's <span
+# class="rver"> rather than hardcoding a version-string pattern, since the
+# scheme itself changes over time (MC-only -> <semver>-MC<mc-version>).
+OLD_VERSION=$(grep -oE '<span class="rver">[^<]+</span>' "$INDEX" | head -1 | sed -E 's/<[^>]+>//g' || true)
 
 echo "==> Releasing $VERSION (site currently links ${OLD_VERSION:-none})"
 

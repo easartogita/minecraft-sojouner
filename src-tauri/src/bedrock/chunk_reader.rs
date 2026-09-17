@@ -347,6 +347,7 @@ pub fn get_bedrock_block_at(
         special_multiplier:  None,
         regional_difficulty: None,
         block_y:             if y == 0 && name_empty { None } else { Some(y) },
+        data_version:        None,
     }
 }
 

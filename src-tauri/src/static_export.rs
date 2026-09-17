@@ -14,6 +14,15 @@ use tauri::{Emitter, Manager};
 pub const EXPORT_FORMAT_VERSION: &str = "1.0.0";
 pub const REGION_BLOCK_SIZE: i32 = 512; // 32 chunks/axis, matches .mca region size
 
+/// Structures get their own, coarser grid than POI/block-entities/entities:
+/// unlike those, structure positions come straight from the seed rather than
+/// generated-chunk data, so there's no reason to tie their file split to the
+/// .mca region size — and structures are sparse enough that REGION_BLOCK_SIZE
+/// tiling produces hundreds of near-empty files per dimension. 16 regions/side
+/// (8192 blocks) also matches the sub-box size cubiomes_find_all_structures is
+/// already batched into below, so one query batch maps to one output file.
+pub const STRUCTURE_TILE_BLOCK_SIZE: i32 = REGION_BLOCK_SIZE * 16;
+
 /// PNG size for the layers rasterized here (ore-veins/carvers/local-difficulty);
 /// biome/chunk layers reuse the live-app renderers at their own tile size instead.
 const PNG_TILE_PX: i32 = 512;
@@ -241,36 +250,10 @@ impl Bounds {
     }
 }
 
-/// Everything a tile-pyramid layer function needs to know which (zoom, tx,
-/// ty) tiles to render: the block-space box, the zoom range, and the actual
-/// PNG pixel size those tiles render at (not necessarily PNG_TILE_PX).
-#[derive(Clone, Copy)]
-pub struct TileRange {
-    pub bounds: Bounds,
-    pub zoom_min: i32,
-    pub zoom_max: i32,
-    pub tile_px: i32,
-}
-
-impl TileRange {
-    fn xy_at(&self, zoom: i32) -> (i32, i32, i32, i32) {
-        let blocks_per_tile = self.tile_px as f64 * crate::tile_renderer::blocks_per_pixel_at(zoom);
-        let tx0 = (self.bounds.min_block_x as f64 / blocks_per_tile).floor() as i32;
-        let tx1 = (self.bounds.max_block_x as f64 / blocks_per_tile).floor() as i32;
-        let ty0 = (self.bounds.min_block_z as f64 / blocks_per_tile).floor() as i32;
-        let ty1 = (self.bounds.max_block_z as f64 / blocks_per_tile).floor() as i32;
-        (tx0, tx1, ty0, ty1)
-    }
-
-    fn total_tiles(&self) -> u32 {
-        (self.zoom_min..=self.zoom_max)
-            .map(|zoom| {
-                let (tx0, tx1, ty0, ty1) = self.xy_at(zoom);
-                (tx1 - tx0 + 1).max(0) as u32 * (ty1 - ty0 + 1).max(0) as u32
-            })
-            .sum()
-    }
-}
+// TileRange (block-space box + zoom range + tile pixel size, and the
+// zoom->tile-index math) now lives in tile_pyramid.rs, shared with
+// run_tile_pyramid.
+pub use crate::tile_pyramid::TileRange;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -504,10 +487,6 @@ where
         .map_err(|e| format!("blocking I/O task panicked: {e}"))?
 }
 
-/// How often (in tiles) to emit a progress event within one layer/zoom pass —
-/// per-tile would flood the frontend on a big export.
-const PROGRESS_TILE_STRIDE: u32 = 64;
-
 #[allow(clippy::too_many_arguments)]
 async fn export_biome_like_layer(
     app: &tauri::AppHandle,
@@ -520,40 +499,26 @@ async fn export_biome_like_layer(
     cancel: &Arc<AtomicBool>,
 ) -> Result<TileLayerManifest, String> {
     let layer_root = out_dir.join("tiles").join(dimension).join(layer_dir_name);
-    let mut done = 0u32;
-    let total = range.total_tiles();
 
-    for zoom in range.zoom_min..=range.zoom_max {
-        let (tx0, tx1, ty0, ty1) = range.xy_at(zoom);
-        for ty in ty0..=ty1 {
-            for tx in tx0..=tx1 {
-                if cancel.load(Ordering::Relaxed) {
-                    return Err("Export cancelled.".to_string());
-                }
-                let result = if underground {
-                    crate::render_underground_biome_tile(
-                        app.clone(), slot, seed_low, seed_high, mc_version, world_flags,
-                        dimension.to_string(), tx, ty, zoom,
-                    ).await
-                } else {
-                    crate::render_biome_tile(
-                        app.clone(), slot, seed_low, seed_high, mc_version, world_flags,
-                        dimension.to_string(), tx, ty, zoom,
-                    ).await
-                };
-                if let Some((src_path, _mtime)) = result {
-                    let (src_path_c, layer_root_c) = (src_path.clone(), layer_root.clone());
-                    blocking_io(move || copy_tile(&src_path_c, &layer_root_c, zoom, tx, ty)).await?;
-                }
-                done += 1;
-                if done % PROGRESS_TILE_STRIDE == 0 {
-                    let _ = app.emit("static-export:progress", StaticExportProgress {
-                        stage: layer_dir_name, dimension: Some(dimension), done, total,
-                    });
-                }
+    crate::tile_pyramid::run_tile_pyramid(app, cancel, layer_dir_name, dimension, range, |zoom, tx, ty| {
+        let (app, layer_root) = (app.clone(), layer_root.clone());
+        let dimension = dimension.to_string();
+        async move {
+            let result = if underground {
+                crate::render_underground_biome_tile(
+                    app, slot, seed_low, seed_high, mc_version, world_flags, dimension, tx, ty, zoom,
+                ).await
+            } else {
+                crate::render_biome_tile(
+                    app, slot, seed_low, seed_high, mc_version, world_flags, dimension, tx, ty, zoom,
+                ).await
+            };
+            if let Some((src_path, _mtime)) = result {
+                blocking_io(move || copy_tile(&src_path, &layer_root, zoom, tx, ty)).await?;
             }
+            Ok(())
         }
-    }
+    }).await?;
 
     Ok(TileLayerManifest {
         path: format!("tiles/{dimension}/{layer_dir_name}"),
@@ -579,34 +544,21 @@ async fn export_chunk_layer(
     cancel: &Arc<AtomicBool>,
 ) -> Result<TileLayerManifest, String> {
     let layer_root = out_dir.join("tiles").join(dimension).join(layer_dir_name);
-    let mut done = 0u32;
-    let total = range.total_tiles();
 
-    for zoom in range.zoom_min..=range.zoom_max {
-        let (tx0, tx1, ty0, ty1) = range.xy_at(zoom);
-        for ty in ty0..=ty1 {
-            for tx in tx0..=tx1 {
-                if cancel.load(Ordering::Relaxed) {
-                    return Err("Export cancelled.".to_string());
-                }
-                let result = crate::render_tile(
-                    app.clone(), sem.clone(), db_cache.clone(),
-                    world_dir.to_string(), edition.to_string(), dimension.to_string(),
-                    tx, ty, zoom, hide_water, cave_y, cave_scan_low, cave_scan_high,
-                ).await.map_err(|_| "Tile render task failed.".to_string())?;
-                if let Some((src_path, _mtime)) = result {
-                    let (src_path_c, layer_root_c) = (src_path.clone(), layer_root.clone());
-                    blocking_io(move || copy_tile(&src_path_c, &layer_root_c, zoom, tx, ty)).await?;
-                }
-                done += 1;
-                if done % PROGRESS_TILE_STRIDE == 0 {
-                    let _ = app.emit("static-export:progress", StaticExportProgress {
-                        stage: layer_dir_name, dimension: Some(dimension), done, total,
-                    });
-                }
+    crate::tile_pyramid::run_tile_pyramid(app, cancel, layer_dir_name, dimension, range, |zoom, tx, ty| {
+        let (app, sem, db_cache, layer_root) = (app.clone(), sem.clone(), db_cache.clone(), layer_root.clone());
+        let (world_dir, edition, dimension) = (world_dir.to_string(), edition.to_string(), dimension.to_string());
+        async move {
+            let result = crate::render_tile(
+                app, sem, db_cache, world_dir, edition, dimension,
+                tx, ty, zoom, hide_water, cave_y, cave_scan_low, cave_scan_high,
+            ).await.map_err(|_| "Tile render task failed.".to_string())?;
+            if let Some((src_path, _mtime)) = result {
+                blocking_io(move || copy_tile(&src_path, &layer_root, zoom, tx, ty)).await?;
             }
+            Ok(())
         }
-    }
+    }).await?;
 
     Ok(TileLayerManifest {
         path: format!("tiles/{dimension}/{layer_dir_name}"),
@@ -657,8 +609,10 @@ where
 /// Structures: unlike POI/block-entities/entities, positions are known
 /// straight from the seed even in ungenerated chunks, so this queries the
 /// *whole* export bounds rather than being restricted to generated regions.
-/// Structures can land in regions with no generated chunks at all — the
-/// caller unions the written region set into `DimensionManifest.regions`.
+/// Structures can land in regions with no generated chunks at all — that's
+/// fine, `DimensionManifest.regions` only ever tracks real generated-chunk
+/// regions (for the "generated regions" overlay); the frontend's structures
+/// fetch doesn't consult it and just treats a missing tile file as empty.
 #[allow(clippy::too_many_arguments)]
 async fn export_structures_layer(
     app: &tauri::AppHandle,
@@ -677,7 +631,7 @@ async fn export_structures_layer(
     // back to strongholds-only if a single box exceeds it — the export's
     // bounds routinely do. Tile our own query into sub-boxes under the cap
     // and de-dupe by (type, x, z), since adjacent sub-boxes' margins overlap.
-    const QUERY_BATCH_BLOCKS: i32 = 8192;
+    const QUERY_BATCH_BLOCKS: i32 = STRUCTURE_TILE_BLOCK_SIZE;
     let mut hits = Vec::new();
     let mut seen = std::collections::HashSet::<(String, i32, i32)>::new();
     let mut bx0 = bounds.min_block_x;
@@ -742,8 +696,8 @@ async fn export_structures_layer(
             }
         }
 
-        let rx = hit.x.div_euclid(REGION_BLOCK_SIZE);
-        let rz = hit.z.div_euclid(REGION_BLOCK_SIZE);
+        let rx = hit.x.div_euclid(STRUCTURE_TILE_BLOCK_SIZE);
+        let rz = hit.z.div_euclid(STRUCTURE_TILE_BLOCK_SIZE);
         by_region.entry((rx, rz)).or_default().push(ExportedStructure {
             struct_type: hit.struct_type, x: hit.x, z: hit.z, flags: hit.flags,
             variant_tag: hit.variant_tag, variant_color: hit.variant_color,
@@ -929,52 +883,45 @@ async fn export_ore_veins_layer(
     app: &tauri::AppHandle, cancel: &Arc<AtomicBool>,
 ) -> Result<TileLayerManifest, String> {
     let layer_root = out_dir.join("tiles").join(dimension).join("ore-veins");
-    let mut done = 0u32;
-    let total = range.total_tiles();
-    for zoom in range.zoom_min..=range.zoom_max {
-        let (tx0, tx1, ty0, ty1) = range.xy_at(zoom);
-        for ty in ty0..=ty1 {
-            for tx in tx0..=tx1 {
-                if cancel.load(Ordering::Relaxed) { return Err("Export cancelled.".to_string()); }
-                let (min_cx, max_cx, min_cz, max_cz) = crate::tile_renderer::tile_chunk_bounds(tx, ty, zoom);
-                let data = crate::cubiomes::cubiomes_get_ore_vein_columns(
-                    slot, seed_low, seed_high, dim_id, world_flags, mc_version, min_cx, min_cz, max_cx, max_cz, 0,
-                ).await;
-                if data.len() >= 2 {
-                    let nx = data[0].max(0);
-                    let nz = data[1].max(0);
-                    if nx > 0 && nz > 0 {
-                        let (origin_x, origin_z, bpp) = crate::tile_renderer::tile_origin_blocks(tx, ty, zoom, PNG_TILE_PX as usize);
-                        let mut pixels = vec![0u8; PNG_TILE_PX as usize * PNG_TILE_PX as usize * 4];
-                        for py in 0..PNG_TILE_PX {
-                            for px in 0..PNG_TILE_PX {
-                                let bx = (origin_x + (px as f64 + 0.5) * bpp).floor() as i32;
-                                let bz = (origin_z + (py as f64 + 0.5) * bpp).floor() as i32;
-                                let ci = bx.div_euclid(16) - min_cx;
-                                let cj = bz.div_euclid(16) - min_cz;
-                                if ci < 0 || ci >= nx || cj < 0 || cj >= nz { continue; }
-                                let lx = bx.rem_euclid(16);
-                                let lz = bz.rem_euclid(16);
-                                let base = 2 + ((cj * nx + ci) * 256 + lz * 16 + lx) as usize * 2;
-                                let (copper, iron) = (data[base], data[base + 1]);
-                                if copper == 0 && iron == 0 { continue; }
-                                let (rgb, count) = if copper >= iron { ([210u8, 120, 30], copper) } else { ([165u8, 165, 170], iron) };
-                                let off = (py * PNG_TILE_PX + px) as usize * 4;
-                                pixels[off] = rgb[0]; pixels[off + 1] = rgb[1]; pixels[off + 2] = rgb[2];
-                                pixels[off + 3] = (80 + count * 14).min(235) as u8;
-                            }
+
+    crate::tile_pyramid::run_tile_pyramid(app, cancel, "ore-veins", dimension, range, |zoom, tx, ty| {
+        let layer_root = layer_root.clone();
+        async move {
+            let (min_cx, max_cx, min_cz, max_cz) = crate::tile_renderer::tile_chunk_bounds(tx, ty, zoom);
+            let data = crate::cubiomes::cubiomes_get_ore_vein_columns(
+                slot, seed_low, seed_high, dim_id, world_flags, mc_version, min_cx, min_cz, max_cx, max_cz, 0,
+            ).await;
+            if data.len() >= 2 {
+                let nx = data[0].max(0);
+                let nz = data[1].max(0);
+                if nx > 0 && nz > 0 {
+                    let (origin_x, origin_z, bpp) = crate::tile_renderer::tile_origin_blocks(tx, ty, zoom, PNG_TILE_PX as usize);
+                    let mut pixels = vec![0u8; PNG_TILE_PX as usize * PNG_TILE_PX as usize * 4];
+                    for py in 0..PNG_TILE_PX {
+                        for px in 0..PNG_TILE_PX {
+                            let bx = (origin_x + (px as f64 + 0.5) * bpp).floor() as i32;
+                            let bz = (origin_z + (py as f64 + 0.5) * bpp).floor() as i32;
+                            let ci = bx.div_euclid(16) - min_cx;
+                            let cj = bz.div_euclid(16) - min_cz;
+                            if ci < 0 || ci >= nx || cj < 0 || cj >= nz { continue; }
+                            let lx = bx.rem_euclid(16);
+                            let lz = bz.rem_euclid(16);
+                            let base = 2 + ((cj * nx + ci) * 256 + lz * 16 + lx) as usize * 2;
+                            let (copper, iron) = (data[base], data[base + 1]);
+                            if copper == 0 && iron == 0 { continue; }
+                            let (rgb, count) = if copper >= iron { ([210u8, 120, 30], copper) } else { ([165u8, 165, 170], iron) };
+                            let off = (py * PNG_TILE_PX + px) as usize * 4;
+                            pixels[off] = rgb[0]; pixels[off + 1] = rgb[1]; pixels[off + 2] = rgb[2];
+                            pixels[off + 3] = (80 + count * 14).min(235) as u8;
                         }
-                        let layer_root_c = layer_root.clone();
-                        blocking_io(move || write_raster_tile(&pixels, &layer_root_c, zoom, tx, ty)).await?;
                     }
-                }
-                done += 1;
-                if done % PROGRESS_TILE_STRIDE == 0 {
-                    let _ = app.emit("static-export:progress", StaticExportProgress { stage: "ore-veins", dimension: Some(dimension), done, total });
+                    blocking_io(move || write_raster_tile(&pixels, &layer_root, zoom, tx, ty)).await?;
                 }
             }
+            Ok(())
         }
-    }
+    }).await?;
+
     Ok(TileLayerManifest { path: format!("tiles/{dimension}/ore-veins"), min_zoom: range.zoom_min, max_zoom: range.zoom_max, tile_size: range.tile_px })
 }
 
@@ -988,50 +935,43 @@ async fn export_carvers_layer(
 ) -> Result<TileLayerManifest, String> {
     const CARVE_RGB: [u8; 3] = [56, 132, 156];
     let layer_root = out_dir.join("tiles").join(dimension).join("carvers");
-    let mut done = 0u32;
-    let total = range.total_tiles();
-    for zoom in range.zoom_min..=range.zoom_max {
-        let (tx0, tx1, ty0, ty1) = range.xy_at(zoom);
-        for ty in ty0..=ty1 {
-            for tx in tx0..=tx1 {
-                if cancel.load(Ordering::Relaxed) { return Err("Export cancelled.".to_string()); }
-                let (min_cx, max_cx, min_cz, max_cz) = crate::tile_renderer::tile_chunk_bounds(tx, ty, zoom);
-                let data = crate::cubiomes::cubiomes_get_carved_columns(
-                    slot, seed_low, seed_high, dim_id, world_flags, mc_version, min_cx, min_cz, max_cx, max_cz, 0,
-                ).await;
-                if data.len() >= 2 {
-                    let nx = data[0].max(0);
-                    let nz = data[1].max(0);
-                    if nx > 0 && nz > 0 {
-                        let (origin_x, origin_z, bpp) = crate::tile_renderer::tile_origin_blocks(tx, ty, zoom, PNG_TILE_PX as usize);
-                        let mut pixels = vec![0u8; PNG_TILE_PX as usize * PNG_TILE_PX as usize * 4];
-                        for py in 0..PNG_TILE_PX {
-                            for px in 0..PNG_TILE_PX {
-                                let bx = (origin_x + (px as f64 + 0.5) * bpp).floor() as i32;
-                                let bz = (origin_z + (py as f64 + 0.5) * bpp).floor() as i32;
-                                let ci = bx.div_euclid(16) - min_cx;
-                                let cj = bz.div_euclid(16) - min_cz;
-                                if ci < 0 || ci >= nx || cj < 0 || cj >= nz { continue; }
-                                let lx = bx.rem_euclid(16);
-                                let lz = bz.rem_euclid(16);
-                                let count = data[2 + ((cj * nx + ci) * 256 + lz * 16 + lx) as usize];
-                                if count <= 0 { continue; }
-                                let off = (py * PNG_TILE_PX + px) as usize * 4;
-                                pixels[off] = CARVE_RGB[0]; pixels[off + 1] = CARVE_RGB[1]; pixels[off + 2] = CARVE_RGB[2];
-                                pixels[off + 3] = (70 + count * 10).min(220) as u8;
-                            }
+
+    crate::tile_pyramid::run_tile_pyramid(app, cancel, "carvers", dimension, range, |zoom, tx, ty| {
+        let layer_root = layer_root.clone();
+        async move {
+            let (min_cx, max_cx, min_cz, max_cz) = crate::tile_renderer::tile_chunk_bounds(tx, ty, zoom);
+            let data = crate::cubiomes::cubiomes_get_carved_columns(
+                slot, seed_low, seed_high, dim_id, world_flags, mc_version, min_cx, min_cz, max_cx, max_cz, 0,
+            ).await;
+            if data.len() >= 2 {
+                let nx = data[0].max(0);
+                let nz = data[1].max(0);
+                if nx > 0 && nz > 0 {
+                    let (origin_x, origin_z, bpp) = crate::tile_renderer::tile_origin_blocks(tx, ty, zoom, PNG_TILE_PX as usize);
+                    let mut pixels = vec![0u8; PNG_TILE_PX as usize * PNG_TILE_PX as usize * 4];
+                    for py in 0..PNG_TILE_PX {
+                        for px in 0..PNG_TILE_PX {
+                            let bx = (origin_x + (px as f64 + 0.5) * bpp).floor() as i32;
+                            let bz = (origin_z + (py as f64 + 0.5) * bpp).floor() as i32;
+                            let ci = bx.div_euclid(16) - min_cx;
+                            let cj = bz.div_euclid(16) - min_cz;
+                            if ci < 0 || ci >= nx || cj < 0 || cj >= nz { continue; }
+                            let lx = bx.rem_euclid(16);
+                            let lz = bz.rem_euclid(16);
+                            let count = data[2 + ((cj * nx + ci) * 256 + lz * 16 + lx) as usize];
+                            if count <= 0 { continue; }
+                            let off = (py * PNG_TILE_PX + px) as usize * 4;
+                            pixels[off] = CARVE_RGB[0]; pixels[off + 1] = CARVE_RGB[1]; pixels[off + 2] = CARVE_RGB[2];
+                            pixels[off + 3] = (70 + count * 10).min(220) as u8;
                         }
-                        let layer_root_c = layer_root.clone();
-                        blocking_io(move || write_raster_tile(&pixels, &layer_root_c, zoom, tx, ty)).await?;
                     }
-                }
-                done += 1;
-                if done % PROGRESS_TILE_STRIDE == 0 {
-                    let _ = app.emit("static-export:progress", StaticExportProgress { stage: "carvers", dimension: Some(dimension), done, total });
+                    blocking_io(move || write_raster_tile(&pixels, &layer_root, zoom, tx, ty)).await?;
                 }
             }
+            Ok(())
         }
-    }
+    }).await?;
+
     Ok(TileLayerManifest { path: format!("tiles/{dimension}/carvers"), min_zoom: range.zoom_min, max_zoom: range.zoom_max, tile_size: range.tile_px })
 }
 
@@ -1045,49 +985,43 @@ async fn export_local_difficulty_layer(
     app: &tauri::AppHandle, cancel: &Arc<AtomicBool>,
 ) -> Result<TileLayerManifest, String> {
     let layer_root = out_dir.join("tiles").join(dimension).join("local-difficulty");
-    let mut done = 0u32;
-    let total = range.total_tiles();
-    for zoom in range.zoom_min..=range.zoom_max {
-        let (tx0, tx1, ty0, ty1) = range.xy_at(zoom);
-        for ty in ty0..=ty1 {
-            for tx in tx0..=tx1 {
-                if cancel.load(Ordering::Relaxed) { return Err("Export cancelled.".to_string()); }
-                let (min_cx, max_cx, min_cz, max_cz) = crate::tile_renderer::tile_chunk_bounds(tx, ty, zoom);
-                let (world_dir_c, dim_c) = (world_dir.to_string(), dimension.to_string());
-                let inhabited = tauri::async_runtime::spawn_blocking(move || {
-                    crate::region_reader::get_inhabited_times_from_mca(&world_dir_c, &dim_c, min_cx, min_cz, max_cx, max_cz)
-                }).await.unwrap_or_default();
-                let width = max_cx - min_cx + 1;
-                if !inhabited.is_empty() && width > 0 {
-                    let (origin_x, origin_z, bpp) = crate::tile_renderer::tile_origin_blocks(tx, ty, zoom, PNG_TILE_PX as usize);
-                    let mut pixels = vec![0u8; PNG_TILE_PX as usize * PNG_TILE_PX as usize * 4];
-                    for py in 0..PNG_TILE_PX {
-                        for px in 0..PNG_TILE_PX {
-                            let bx = origin_x + (px as f64 + 0.5) * bpp;
-                            let bz = origin_z + (py as f64 + 0.5) * bpp;
-                            let ci = (bx / 16.0).floor() as i32 - min_cx;
-                            let cj = (bz / 16.0).floor() as i32 - min_cz;
-                            if ci < 0 || ci >= width || cj < 0 { continue; }
-                            let idx = (cj * width + ci) as usize;
-                            let Some(&t) = inhabited.get(idx) else { continue };
-                            if t < 0 { continue; }
-                            let (special, _) = crate::region_reader::compute_local_difficulty(game_difficulty, world_time, t);
-                            let rgb = difficulty_color(special);
-                            let off = (py * PNG_TILE_PX + px) as usize * 4;
-                            pixels[off] = rgb[0]; pixels[off + 1] = rgb[1]; pixels[off + 2] = rgb[2];
-                            pixels[off + 3] = if special == 0.0 { 80 } else { 180 };
-                        }
+
+    crate::tile_pyramid::run_tile_pyramid(app, cancel, "local-difficulty", dimension, range, |zoom, tx, ty| {
+        let layer_root = layer_root.clone();
+        let (world_dir, dimension) = (world_dir.to_string(), dimension.to_string());
+        async move {
+            let (min_cx, max_cx, min_cz, max_cz) = crate::tile_renderer::tile_chunk_bounds(tx, ty, zoom);
+            let (world_dir_c, dim_c) = (world_dir.clone(), dimension.clone());
+            let inhabited = tauri::async_runtime::spawn_blocking(move || {
+                crate::region_reader::get_inhabited_times_from_mca(&world_dir_c, &dim_c, min_cx, min_cz, max_cx, max_cz)
+            }).await.unwrap_or_default();
+            let width = max_cx - min_cx + 1;
+            if !inhabited.is_empty() && width > 0 {
+                let (origin_x, origin_z, bpp) = crate::tile_renderer::tile_origin_blocks(tx, ty, zoom, PNG_TILE_PX as usize);
+                let mut pixels = vec![0u8; PNG_TILE_PX as usize * PNG_TILE_PX as usize * 4];
+                for py in 0..PNG_TILE_PX {
+                    for px in 0..PNG_TILE_PX {
+                        let bx = origin_x + (px as f64 + 0.5) * bpp;
+                        let bz = origin_z + (py as f64 + 0.5) * bpp;
+                        let ci = (bx / 16.0).floor() as i32 - min_cx;
+                        let cj = (bz / 16.0).floor() as i32 - min_cz;
+                        if ci < 0 || ci >= width || cj < 0 { continue; }
+                        let idx = (cj * width + ci) as usize;
+                        let Some(&t) = inhabited.get(idx) else { continue };
+                        if t < 0 { continue; }
+                        let (special, _) = crate::region_reader::compute_local_difficulty(game_difficulty, world_time, t);
+                        let rgb = difficulty_color(special);
+                        let off = (py * PNG_TILE_PX + px) as usize * 4;
+                        pixels[off] = rgb[0]; pixels[off + 1] = rgb[1]; pixels[off + 2] = rgb[2];
+                        pixels[off + 3] = if special == 0.0 { 80 } else { 180 };
                     }
-                    let layer_root_c = layer_root.clone();
-                    blocking_io(move || write_raster_tile(&pixels, &layer_root_c, zoom, tx, ty)).await?;
                 }
-                done += 1;
-                if done % PROGRESS_TILE_STRIDE == 0 {
-                    let _ = app.emit("static-export:progress", StaticExportProgress { stage: "local-difficulty", dimension: Some(dimension), done, total });
-                }
+                blocking_io(move || write_raster_tile(&pixels, &layer_root, zoom, tx, ty)).await?;
             }
+            Ok(())
         }
-    }
+    }).await?;
+
     Ok(TileLayerManifest { path: format!("tiles/{dimension}/local-difficulty"), min_zoom: range.zoom_min, max_zoom: range.zoom_max, tile_size: range.tile_px })
 }
 

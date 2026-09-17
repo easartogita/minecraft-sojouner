@@ -23,6 +23,7 @@ fn default_cave_presets(dimension: &str) -> Vec<static_export::CaveRangePreset> 
         ]
     } else {
         vec![
+            static_export::CaveRangePreset { id: "above-ground".into(), label: "Above Ground (Y 48 to 320)".into(), low: 48, high: 320 },
             static_export::CaveRangePreset { id: "near-surface".into(), label: "Near Surface (Y -16 to 48)".into(), low: -16, high: 48 },
             static_export::CaveRangePreset { id: "mid".into(), label: "Mid (Y -48 to -16)".into(), low: -48, high: -16 },
             static_export::CaveRangePreset { id: "deepslate".into(), label: "Deepslate (Y -64 to -48)".into(), low: -64, high: -48 },
